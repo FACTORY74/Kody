@@ -1,10 +1,31 @@
 # Kody Symbols Service
 
-This service supplies named SVG map symbols at `/api/symbols`. Each definition
-declares either `orientable` (rotated by a feature's `bearingDegrees`) or
-`alwaysup` (kept upright on screen). Definitions also declare `colorMode`:
-`colorable` symbols inherit a feature's `color`, while `fixed` symbols retain
-their built-in SVG palette.
+This service supplies named SVG map symbols at `/api/symbols`. It reads its
+catalogue from `<dataDirectory>\symbols\symbols.json` and reads each referenced
+SVG file from that same folder. It does not generate symbol artwork.
+
+Each JSON entry has a string `name`, an SVG `file` name, and the default
+rendering flags `orientation` and `colorMode`:
+
+```json
+{
+  "name": "surveillance-aircraft",
+  "file": "aircraft.svg",
+  "orientation": "orientable",
+  "colorMode": "colorable",
+  "scale": 2
+}
+```
+
+`name` is the identifier used by feature data and is independent of the SVG
+filename. `orientation` is either `orientable` (rotated by a feature's
+`bearingDegrees`) or `alwaysup` (kept upright on screen). `colorMode` is
+either `colorable` (the SVG uses `currentColor` and inherits a feature's
+`color`) or `fixed` (the SVG retains its own palette). The starter data folder
+includes the default `symbols.json` and SVG assets. `scale` is a positive
+number that multiplies Kody's 28-pixel base marker size; the starter symbols
+use `2` for 56-pixel markers. An empty symbols directory is valid and
+publishes an empty catalogue.
 
 Run it on port 8007:
 

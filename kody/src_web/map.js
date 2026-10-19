@@ -875,7 +875,8 @@ function drawFeatureSymbol(properties, geometry) {
   if (definition.orientation === "orientable") {
     context.rotate((Number(properties.bearingDegrees) || 0) * Math.PI / 180);
   }
-  context.drawImage(image, -14, -14, 28, 28);
+  const size = 28 * definition.scale;
+  context.drawImage(image, -size / 2, -size / 2, size, size);
   context.restore();
 }
 
@@ -1515,7 +1516,8 @@ function drawGridLayer() {
     const image = definition && symbolImage(definition, "#ffffff");
     if (image?.complete) {
       const point = viewportCrosshairPoint();
-      context.drawImage(image, point.x - 14, point.y - 14, 28, 28);
+      const size = 28 * definition.scale;
+      context.drawImage(image, point.x - size / 2, point.y - size / 2, size, size);
     }
   }
   context.restore();
@@ -1944,6 +1946,9 @@ function symbolImage(definition, featureColor) {
 function validateSymbolDefinition(definition) {
   return ["orientable", "alwaysup"].includes(definition.orientation)
     && ["colorable", "fixed"].includes(definition.colorMode)
+    && typeof definition.scale === "number"
+    && Number.isFinite(definition.scale)
+    && definition.scale > 0
     && typeof definition.name === "string"
     && typeof definition.svg === "string";
 }

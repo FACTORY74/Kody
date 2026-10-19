@@ -1,0 +1,25 @@
+{
+  "symbols": [
+    {"name": "plane", "file": "plane.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "ship", "file": "ship.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "sailboat", "file": "sailboat.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "yacht", "file": "yacht.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "fishing_boat", "file": "fishing_boat.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "tug", "file": "tug.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "pilot_boat", "file": "pilot_boat.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "rescue_boat", "file": "rescue_boat.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "passenger_ship", "file": "passenger_ship.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "cargo_ship", "file": "cargo_ship.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "tanker", "file": "tanker.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "high_speed_craft", "file": "high_speed_craft.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "military_ship", "file": "military_ship.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "law_enforcement_boat", "file": "law_enforcement_boat.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "service_boat", "file": "service_boat.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "heli", "file": "heli.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "balloon", "file": "balloon.svg", "orientation": "alwaysup", "colorMode": "colorable", "scale": 1.2},
+    {"name": "undefined", "file": "undefined.svg", "orientation": "alwaysup", "colorMode": "fixed", "scale": 1.2},
+    {"name": "car", "file": "car.svg", "orientation": "orientable", "colorMode": "colorable", "scale": 1.2},
+    {"name": "map_pin", "file": "map_pin.svg", "orientation": "alwaysup", "colorMode": "colorable", "scale": 1.2},
+    {"name": "crosshair", "file": "crosshair.svg", "orientation": "alwaysup", "colorMode": "colorable", "scale": 1.2}
+  ]
+}

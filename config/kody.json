@@ -47,16 +47,16 @@
     }
   ],
   "mapView": {
-    "longitude": -1.4014564665873763,
-    "latitude": 51.049899436167216,
-    "zoom": 8.400000000000034,
+    "longitude": -7.998424516383238,
+    "latitude": 53.71224758994019,
+    "zoom": 4.400000000000032,
     "layers": {
       "satelliteImagery": true,
       "terrain": false,
       "vectorMap": false,
       "grid": true,
       "gridCrosshair": true,
-      "satelliteOpacity": 2,
+      "satelliteOpacity": 6,
       "terrainOpacity": 5,
       "vectorOpacity": 1,
       "gridOpacity": 2,

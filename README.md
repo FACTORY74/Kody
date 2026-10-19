@@ -3,6 +3,9 @@
 Kody is an offline-capable mapping product with independently deployable
 vector-map, satellite-map, Shapes, Tracks, and ADS-B services.
 
+For the supplied starter imagery, terrain, and Vector data, follow
+[Getting started with starter map data](./GETTING_STARTED.md).
+
 See [the workspace architecture](./ARCHITECTURE.md) for the ownership
 boundaries and run each component from its local runbook:
 

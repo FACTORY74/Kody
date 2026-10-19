@@ -1,0 +1,14 @@
+{
+  "centre": {
+    "longitude": -0.9950510414996643,
+    "latitude": 50.81290881352566
+  },
+  "radiusKilometres": 100,
+  "upstreamRefreshSeconds": 10,
+  "extrapolate": true,
+  "localRefreshSeconds": 1,
+  "trackLengthSeconds": 240,
+  "trackFade": true,
+  "drawBoundary": true,
+  "displayColor": "#7895c4"
+}

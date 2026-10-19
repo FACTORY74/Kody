@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kody map</title>
+    <link rel="stylesheet" href="/styles.css?v=20261019a">
+  </head>
+  <body class="map-page">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Kody map home">
+        <span class="brand-mark" aria-hidden="true">K</span>
+        <span>
+          <strong>Kody</strong>
+          <small>GEODATA</small>
+        </span>
+      </a>
+      <div class="location-readout">
+        <span class="readout-label">Viewport crosshair</span>
+        <span id="coordinates" aria-live="polite">0.00°, 0.00°</span>
+      </div>
+      <div class="location-readout">
+        <span class="readout-label">Grid Size</span>
+        <span id="grid-size" aria-live="polite">--</span>
+      </div>
+      <nav><a class="topbar-action" href="/config.html">Service control <span aria-hidden="true">↗</span></a></nav>
+    </header>
+    <main id="map-container">
+      <canvas id="map" aria-label="Draggable world map"></canvas>
+      <aside id="side-panel" aria-label="Map layers">
+        <div id="panel-resize-handle" aria-label="Resize layers panel" role="separator" aria-orientation="vertical"></div>
+        <div class="panel-content">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Display controls</p>
+              <h2>Layers</h2>
+            </div>
+            <span class="live-indicator"><i aria-hidden="true"></i> Live</span>
+          </div>
+          <section class="layer-group" aria-label="Map layers">
+            <p class="group-label">Map</p>
+            <div id="map-service-list"></div>
+            <div class="map-layer-row">
+              <label><input id="grid-layer" type="checkbox" checked> Lat/Lon Grid</label>
+              <div class="opacity-control" aria-label="Grid opacity">
+                <button type="button" data-opacity-layer="grid" data-opacity-change="-1" aria-label="Decrease grid opacity">−</button>
+                <output id="grid-opacity">10</output>
+                <button type="button" data-opacity-layer="grid" data-opacity-change="1" aria-label="Increase grid opacity">+</button>
+              </div>
+              <button id="configure-grid" class="configure-service" type="button" aria-label="Configure Lat/Lon Grid">⚙</button>
+            </div>
+          </section>
+          <section class="layer-group" aria-labelledby="data-sources-heading">
+            <p class="group-label" id="data-sources-heading">Data</p>
+            <div id="data-source-list"></div>
+          </section>
+          <section class="layer-group" aria-labelledby="live-sources-heading">
+            <p class="group-label" id="live-sources-heading">Live</p>
+            <div id="live-source-list"></div>
+          </section>
+          <section class="layer-group" aria-labelledby="symbol-sources-heading">
+            <p class="group-label" id="symbol-sources-heading">Symbols</p>
+            <div id="symbol-source-list"></div>
+          </section>
+        </div>
+      </aside>
+      <div class="map-controls" aria-label="Map zoom controls">
+        <div class="zoom-buttons">
+          <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+          <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+        </div>
+        <div class="performance-readouts">
+          <output id="zoom-level"><small>Zoom</small> 1</output>
+          <output id="ups-level" aria-live="polite"><small>UPS</small> --</output>
+        </div>
+      </div>
+      <p id="map-status" class="map-status" aria-live="polite"></p>
+      <p id="map-attribution" class="map-attribution"></p>
+      <div id="map-context-menu" class="map-context-menu" role="menu" hidden></div>
+    </main>
+    <dialog id="service-config-dialog" aria-labelledby="service-config-title">
+      <form id="service-config-form" method="dialog">
+        <header class="dialog-heading">
+          <p class="eyebrow">Service settings</p>
+          <h2 id="service-config-title">Configure service</h2>
+        </header>
+        <div id="service-config-fields"></div>
+        <p id="service-config-status" aria-live="polite"></p>
+        <div id="service-config-progress" hidden aria-live="polite">
+          <div><span id="service-config-progress-label">Preparing action</span><output id="service-config-progress-value">0%</output></div>
+          <div class="service-progress-track"><i id="service-config-progress-bar"></i></div>
+        </div>
+        <div id="service-config-actions"></div>
+        <div class="dialog-actions">
+          <button type="button" id="service-config-cancel">Cancel</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/map.js?v=20261019c"></script>
+  </body>
+</html>

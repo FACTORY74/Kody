@@ -1,0 +1,1 @@
+"""Central Kody product application."""

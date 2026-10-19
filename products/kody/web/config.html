@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kody services</title>
+    <link rel="stylesheet" href="/styles.css?v=20261019c">
+  </head>
+  <body class="config-page">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Kody map home">
+        <span class="brand-mark" aria-hidden="true">K</span>
+        <span>
+          <strong>Kody</strong>
+          <small>GEODATA</small>
+        </span>
+      </a>
+      <div class="page-identity">
+        <span class="readout-label">System administration</span>
+        <h1>Service control</h1>
+      </div>
+      <nav><a class="topbar-action" href="/">Return to map <span aria-hidden="true">↗</span></a></nav>
+    </header>
+    <main>
+      <section class="config-intro">
+        <p class="eyebrow">Connected platform</p>
+        <h2>Service connections</h2>
+        <p>Attach map and overlay services to this workspace. Changes are saved by the configuration service in <code>config/kody.json</code>.</p>
+      </section>
+      <form id="data-directory-form" class="data-library-card">
+        <div class="data-library-copy">
+          <p class="eyebrow">Storage location</p>
+          <h3>Data library</h3>
+          <p>Stores downloaded sources, generated map libraries, terrain, and imagery outside the codebase.</p>
+        </div>
+        <label for="data-directory">Data folder path</label>
+        <div class="data-directory-controls">
+          <input id="data-directory" name="data-directory" required spellcheck="false">
+          <button class="save-data-location" type="submit">Save location</button>
+        </div>
+        <p class="data-library-note">Restart Kody services after changing this location.</p>
+      </form>
+      <form id="services-form">
+        <div id="service-list"></div>
+        <div class="form-actions">
+          <button id="add-service" class="secondary-action" type="button"><span aria-hidden="true">+</span> Add service</button>
+          <button class="primary-action" type="submit">Save changes</button>
+        </div>
+      </form>
+      <p id="form-status" aria-live="polite"></p>
+    </main>
+    <template id="service-template">
+      <section class="service" aria-label="Service connection">
+        <p class="service-card-title">Service connection</p>
+        <label>Identifier <input name="id" required pattern="[A-Za-z0-9_\-]+" maxlength="64"></label>
+        <label>Type <select name="type"><option value="vecmap">Vector map</option><option value="satmap">Satellite map</option><option value="geojson">GeoJSON</option><option value="shapes">Shapes</option><option value="adsb">ADS-B</option><option value="ais">AIS vessels</option><option value="symbols">Symbols</option></select></label>
+        <label>URL <input name="url" required type="url" placeholder="https://example.com"></label>
+        <button class="remove-service" type="button">Remove</button>
+      </section>
+    </template>
+    <script type="module" src="/config.js?v=20261017c"></script>
+  </body>
+</html>

@@ -1,0 +1,1 @@
+"""Kody AIS vessel microservice."""

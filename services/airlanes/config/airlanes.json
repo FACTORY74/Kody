@@ -1,0 +1,7 @@
+{
+  "refreshHours": 24,
+  "notamRefreshHours": 10,
+  "showAtcSectors": false,
+  "showControlledAirspace": true,
+  "showNotams": false
+}

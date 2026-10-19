@@ -1,0 +1,183 @@
+{
+  "services": [
+    {
+      "id": "local-vecmap",
+      "type": "vecmap",
+      "url": "http://127.0.0.1:8004/"
+    },
+    {
+      "id": "local-satmap",
+      "type": "satmap",
+      "url": "http://127.0.0.1:8006/"
+    },
+    {
+      "id": "local-terrain",
+      "type": "terrain",
+      "url": "http://127.0.0.1:8010/"
+    },
+    {
+      "id": "local-shapes",
+      "type": "shapes",
+      "url": "http://127.0.0.1:8002/"
+    },
+    {
+      "id": "local-track",
+      "type": "geojson",
+      "url": "http://127.0.0.1:8003/"
+    },
+    {
+      "id": "local-adsb",
+      "type": "adsb",
+      "url": "http://127.0.0.1:8005/"
+    },
+    {
+      "id": "local-ais",
+      "type": "ais",
+      "url": "http://127.0.0.1:8008/"
+    },
+    {
+      "id": "local-airlanes",
+      "type": "airlanes",
+      "url": "http://127.0.0.1:8009/"
+    },
+    {
+      "id": "local-symbols",
+      "type": "symbols",
+      "url": "http://127.0.0.1:8007/"
+    }
+  ],
+  "mapView": {
+    "longitude": -3.85209199827176,
+    "latitude": 53.244721610427476,
+    "zoom": 12.800000000000018,
+    "layers": {
+      "satelliteImagery": true,
+      "terrain": true,
+      "vectorMap": false,
+      "grid": true,
+      "gridCrosshair": true,
+      "satelliteOpacity": 4,
+      "terrainOpacity": 5,
+      "vectorOpacity": 2,
+      "gridOpacity": 2,
+      "dataSources": {
+        "local-shapes": false,
+        "local-track": false,
+        "local-adsb": false,
+        "local-ais": false,
+        "local-airlanes": true,
+        "local-symbols": true
+      },
+      "dataSourceOpacity": {
+        "local-shapes": 10,
+        "local-track": 10,
+        "local-adsb": 10,
+        "local-ais": 7,
+        "local-airlanes": 2
+      }
+    }
+  },
+  "dataDirectory": "data",
+  "runtime": {
+    "host": "127.0.0.1",
+    "logRetentionMinutes": 30,
+    "services": [
+      {
+        "id": "kody-web",
+        "displayName": "Kody web application",
+        "module": "kody_app.app:app",
+        "workingDirectory": "products/kody",
+        "port": 8000,
+        "enabled": true
+      },
+      {
+        "id": "kody-config",
+        "displayName": "Kody configuration service",
+        "module": "kody_app.config_service:app",
+        "workingDirectory": "products/kody",
+        "port": 8001,
+        "enabled": true
+      },
+      {
+        "id": "shapes",
+        "displayName": "Shapes service",
+        "module": "kody_shapes.shapes_service:app",
+        "workingDirectory": "services/shapes",
+        "port": 8002,
+        "enabled": true
+      },
+      {
+        "id": "tracks",
+        "displayName": "Tracks service",
+        "module": "kody_tracks.track_service:app",
+        "workingDirectory": "services/tracks",
+        "port": 8003,
+        "enabled": true
+      },
+      {
+        "id": "vecmap",
+        "displayName": "Vector map service",
+        "module": "kody_vecmap.server:app",
+        "workingDirectory": "services/vecmap",
+        "port": 8004,
+        "enabled": true
+      },
+      {
+        "id": "adsb",
+        "displayName": "ADS-B service",
+        "module": "kody_adsb.adsb_service:app",
+        "workingDirectory": "services/adsb",
+        "port": 8005,
+        "enabled": true
+      },
+      {
+        "id": "satmap",
+        "displayName": "Satellite map service",
+        "module": "kody_satmap.server:app",
+        "workingDirectory": "services/satmap",
+        "port": 8006,
+        "enabled": true
+      },
+      {
+        "id": "symbols",
+        "displayName": "Symbols service",
+        "module": "kody_symbols.symbol_service:app",
+        "workingDirectory": "services/symbols",
+        "port": 8007,
+        "enabled": true
+      },
+      {
+        "id": "ais",
+        "displayName": "AIS vessel service",
+        "module": "kody_ais.ais_service:app",
+        "workingDirectory": "services/ais",
+        "port": 8008,
+        "enabled": true
+      },
+      {
+        "id": "airlanes",
+        "displayName": "AirLanes service",
+        "module": "kody_airlanes.airlanes_service:app",
+        "workingDirectory": "services/airlanes",
+        "port": 8009,
+        "enabled": true
+      },
+      {
+        "id": "terrain",
+        "displayName": "Terrain service",
+        "module": "kody_terrain.server:app",
+        "workingDirectory": "services/terrain",
+        "port": 8010,
+        "enabled": true
+      },
+      {
+        "id": "osmtiles",
+        "displayName": "Static OSM tile service",
+        "module": "kody_osmtiles.server:app",
+        "workingDirectory": "services/osmtiles",
+        "port": 8011,
+        "enabled": true
+      }
+    ]
+  }
+}

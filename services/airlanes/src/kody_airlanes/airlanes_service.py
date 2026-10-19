@@ -45,6 +45,13 @@ CATEGORY_COLORS = {
 }
 
 
+def initialize_data_directory() -> None:
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
+initialize_data_directory()
+
+
 class AirLanesConfiguration(BaseModel):
     refresh_hours: int = Field(default=24, alias="refreshHours", ge=1, le=168)
     notam_refresh_hours: int = Field(default=1, alias="notamRefreshHours", ge=1, le=24)

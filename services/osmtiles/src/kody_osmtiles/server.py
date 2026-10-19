@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from threading import Lock
 
@@ -13,10 +14,19 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
-IMPORTS_DIRECTORY = ROOT_DIRECTORY / "imports"
-TILES_DIRECTORY = ROOT_DIRECTORY / "tiles"
+DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
+IMPORTS_DIRECTORY = DATA_ROOT / "osmtiles" / "imports"
+TILES_DIRECTORY = DATA_ROOT / "osmtiles" / "tiles"
 CONFIG_FILE = ROOT_DIRECTORY / "config" / "osmtiles.json"
 STYLE_FILE = ROOT_DIRECTORY / "config" / "kody-style.json"
+
+
+def initialize_data_directory() -> None:
+    IMPORTS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    TILES_DIRECTORY.mkdir(parents=True, exist_ok=True)
+
+
+initialize_data_directory()
 
 
 class TileConfiguration(BaseModel):

@@ -15,16 +15,30 @@ from kody_terrain.server import (
     downsample_terrain_tile,
     get_manifest,
     get_palette,
+    import_source,
     import_terrain,
     parse_arc_ascii,
     raster_tile_bytes,
     render_tile,
     native_tile_zoom,
     terrain_elevation,
+    terrain_tile_image,
+    terrain_packages,
 )
 
 
 class TerrainTests(unittest.TestCase):
+    def test_import_source_accepts_an_absolute_terrain_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "external.asc"
+            source.write_text(
+                "ncols 1\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n10\n",
+                encoding="utf-8",
+            )
+            with patch("kody_terrain.server.IMPORTS_DIRECTORY", root / "imports"):
+                self.assertEqual(import_source(str(source)), source.resolve())
+
     def test_parser_supports_center_header_and_nodata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.asc"
@@ -138,6 +152,65 @@ class TerrainTests(unittest.TestCase):
         with Image.open(BytesIO(tile)) as image:
             self.assertEqual(image.getpixel((0, 0)), (20, 40, 60, 255))
             self.assertEqual(image.getpixel((10, 10)), (200, 120, 40, 255))
+
+    def test_higher_display_zoom_is_derived_from_the_best_available_package_tile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package_directory = root / "package"
+            tile_path = package_directory / "tiles" / "0" / "0"
+            tile_path.mkdir(parents=True)
+            Image.new("RGBA", (256, 256), (20, 40, 60, 255)).save(tile_path / "0.png")
+            packages = [{"directory": package_directory, "nativeResolutionMetres": 100}]
+
+            with patch("kody_terrain.server.terrain_packages", return_value=packages):
+                tile = raster_tile_bytes(1, 1, 0)
+
+        self.assertIsNotNone(tile)
+        with Image.open(BytesIO(tile)) as image:
+            self.assertEqual(image.getpixel((128, 128)), (20, 40, 60, 255))
+
+    def test_parent_derived_tile_preserves_binary_no_data_alpha(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tile_path = root / "tiles" / "0" / "0"
+            tile_path.mkdir(parents=True)
+            source = Image.new("RGBA", (256, 256))
+            for x in range(120, 136):
+                for y in range(256):
+                    source.putpixel((x, y), (91, 143, 67, 255))
+            source.save(tile_path / "0.png")
+            source.close()
+
+            child = terrain_tile_image(root, 1, 0, 0)
+
+        self.assertIsNotNone(child)
+        try:
+            self.assertEqual({alpha for *_, alpha in child.getdata()}, {0, 255})
+        finally:
+            child.close()
+
+    def test_higher_resolution_package_overrides_a_coarse_parent_derived_tile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coarse_directory = root / "coarse"
+            detail_directory = root / "detail"
+            coarse_path = coarse_directory / "tiles" / "0" / "0"
+            detail_path = detail_directory / "tiles" / "1" / "1"
+            coarse_path.mkdir(parents=True)
+            detail_path.mkdir(parents=True)
+            Image.new("RGBA", (256, 256), (20, 40, 60, 255)).save(coarse_path / "0.png")
+            Image.new("RGBA", (256, 256), (200, 120, 40, 255)).save(detail_path / "0.png")
+            packages = [
+                {"directory": coarse_directory, "nativeResolutionMetres": 500},
+                {"directory": detail_directory, "nativeResolutionMetres": 50},
+            ]
+
+            with patch("kody_terrain.server.terrain_packages", return_value=packages):
+                tile = raster_tile_bytes(1, 1, 0)
+
+        self.assertIsNotNone(tile)
+        with Image.open(BytesIO(tile)) as image:
+            self.assertEqual(image.getpixel((128, 128)), (200, 120, 40, 255))
 
     def test_elevation_lookup_uses_the_highest_resolution_covering_package(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

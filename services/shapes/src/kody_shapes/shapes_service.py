@@ -19,6 +19,7 @@ SHAPES_FILE = DATA_ROOT / "shapes" / "shapes.geojson"
 CONFIG_FILE = ROOT_DIRECTORY / "config" / "shapes.json"
 COLOUR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$")
 DRAWABLE_GEOMETRIES = {"Point", "LineString", "MultiLineString", "Polygon", "MultiPolygon"}
+EMPTY_COLLECTION = {"type": "FeatureCollection", "features": []}
 
 
 class ShapesConfiguration(BaseModel):
@@ -76,7 +77,12 @@ class ShapesStore:
 
     def _load(self) -> dict[str, object]:
         if not self.path.is_file():
-            raise RuntimeError(f"shapes file is missing: {self.path}")
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(
+                json.dumps(EMPTY_COLLECTION, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            return EMPTY_COLLECTION
         collection = json.loads(self.path.read_text(encoding="utf-8"))
         if collection.get("type") != "FeatureCollection" or not isinstance(
             collection.get("features"), list

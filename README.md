@@ -6,7 +6,7 @@ vector-map, satellite-map, Shapes, Tracks, and ADS-B services.
 See [the workspace architecture](./ARCHITECTURE.md) for the ownership
 boundaries and run each component from its local runbook:
 
-- [`products/kody`](./products/kody/README.md) — central browser product and configuration
+- [`kody`](./kody/README.md) — central browser UI and configuration service
 - [`services/vecmap`](./services/vecmap/README.md) — offline vector map API, data, and package tooling
 - [`services/satmap`](./services/satmap/README.md) — offline satellite imagery API and tiles
 - [`services/shapes`](./services/shapes/README.md) — optional static Shapes GeoJSON service

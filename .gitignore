@@ -2,3 +2,6 @@
 /logs
 *.pyc
 /temp_import
+/data_starter/airlanes
+/data_starter/satmap
+/data_starter/terrain

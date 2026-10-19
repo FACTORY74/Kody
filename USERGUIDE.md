@@ -24,6 +24,9 @@ Runtime options, including which services start, are in
 [`config/kody.json`](./config/kody.json). Each
 service writes a rolling log to `logs\<service-id>\service.log`; the default
 retention is approximately 30 minutes.
+The `dataDirectory` setting selects the shared service-data folder. Services
+create their own empty storage areas there when they start, so a new folder is
+ready to use without pre-creating service-specific directories.
 Only one launcher instance may run at a time. If Kody is already running,
 stop it with `Ctrl+C` in its launcher window before running
 `start_kody.py` again.
@@ -32,16 +35,28 @@ Once started, use **Service control** to manage connections. On the map, use
 the dark **Layers** panel to toggle base map, reference, and attached data
 sources; the compact cog control opens an attached service's own settings
 dialog. Vector imports merge into one native on-disk tile hierarchy at
-`services\vecmap\maps\tiles\<zoom>\<x>\<y>.geojson.gz`; the map reads the
-requested tile directly rather than searching among import folders. Its **Show
+`<dataDirectory>\vecmap\maps\tiles\<zoom>\<x>\<y>.geojson.gz`; the map reads
+the requested tile directly rather than searching among import folders. Its **Show
 major roads**, **Show urban areas**, **Show woodland**, and **Show placenames**
 checkboxes control those imported Vector map layers independently. Placenames
 include named cities, towns, villages, and hamlets at progressively closer
 zoom levels.
 Place regional `.osm.pbf`, `.gpkg`, or `.gpkg.zip` files in the Vector
-`imports` folder and use **Import all Vector sources** to rebuild the native
-tile store. Keep `land-polygons-split-4326.zip` there as supporting land-fill
-data; it is not imported as a map layer.
+`<dataDirectory>\vecmap\imports` folder and use **Import all Vector sources**
+to rebuild the native tile store. Keep `land-polygons-split-4326.zip` there as
+supporting land-fill data; it is not imported as a map layer.
+The shared `<dataDirectory>\imports` folder can also contain GeoJSON starter
+maps. Import all Vector sources loads these datasets into the same GeoPackage
+library, using the `osm-land` layer unless the GeoJSON feature specifies a
+different `layer`.
+
+Terrain imports accept an `.asc`, `.grd`, `.tif`, or `.tiff` filename directly
+inside `<dataDirectory>\terrain\imports`. A fully qualified path to an
+existing file of one of those types is also supported when the terrain source
+must remain elsewhere on the machine. Imported terrain packages are stored in
+`<dataDirectory>\terrain\packages`. The Terrain service mosaics overlapping
+packages for each display tile, using the highest-resolution available
+elevation patch at every location.
 
 The **Lat/Lon Grid** uses square Web Mercator cells so horizontal and vertical
 lines represent the same projected ground distance. It automatically selects

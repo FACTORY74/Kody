@@ -47,25 +47,25 @@
     }
   ],
   "mapView": {
-    "longitude": -3.85209199827176,
-    "latitude": 53.244721610427476,
-    "zoom": 12.800000000000018,
+    "longitude": -1.4014564665873763,
+    "latitude": 51.049899436167216,
+    "zoom": 8.400000000000034,
     "layers": {
       "satelliteImagery": true,
-      "terrain": true,
+      "terrain": false,
       "vectorMap": false,
       "grid": true,
       "gridCrosshair": true,
-      "satelliteOpacity": 4,
+      "satelliteOpacity": 2,
       "terrainOpacity": 5,
-      "vectorOpacity": 2,
+      "vectorOpacity": 1,
       "gridOpacity": 2,
       "dataSources": {
         "local-shapes": false,
         "local-track": false,
         "local-adsb": false,
         "local-ais": false,
-        "local-airlanes": true,
+        "local-airlanes": false,
         "local-symbols": true
       },
       "dataSourceOpacity": {
@@ -77,7 +77,7 @@
       }
     }
   },
-  "dataDirectory": "data",
+  "dataDirectory": "data_starter",
   "runtime": {
     "host": "127.0.0.1",
     "logRetentionMinutes": 30,
@@ -85,16 +85,16 @@
       {
         "id": "kody-web",
         "displayName": "Kody web application",
-        "module": "kody_app.app:app",
-        "workingDirectory": "products/kody",
+        "module": "app:app",
+        "workingDirectory": "kody",
         "port": 8000,
         "enabled": true
       },
       {
         "id": "kody-config",
         "displayName": "Kody configuration service",
-        "module": "kody_app.config_service:app",
-        "workingDirectory": "products/kody",
+        "module": "config_service:app",
+        "workingDirectory": "kody",
         "port": 8001,
         "enabled": true
       },

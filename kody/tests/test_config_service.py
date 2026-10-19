@@ -1,6 +1,6 @@
 import unittest
 
-from kody_app.config_service import (
+from config_service import (
     MapView,
     RuntimeConfiguration,
     ServiceConfiguration,
@@ -118,8 +118,8 @@ class MapViewTests(unittest.TestCase):
                     {
                         "id": "kody-web",
                         "displayName": "Kody web application",
-                        "module": "kody_app.app:app",
-                        "workingDirectory": "products/kody",
+                        "module": "app:app",
+                        "workingDirectory": "kody",
                         "port": 8000,
                     },
                     {

@@ -201,8 +201,8 @@ function renderMapServiceControls(layers) {
 }
 
 const layers = {
-  imagery: { isVisible: () => imageryLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.satellite, drawImageryLayer) },
   vector: { isVisible: () => vectorLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.vector, drawCountryLayer) },
+  imagery: { isVisible: () => imageryLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.satellite, drawImageryLayer) },
   terrain: { isVisible: () => terrainLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.terrain, drawTerrainLayer) },
   shapes: { isVisible: () => shapes.length > 0 || contextActionFeatures.length > 0, draw: drawShapesLayer },
   grid: { isVisible: () => gridLayer.checked, draw: () => drawWithOpacity(layerOpacity.grid, drawGridLayer) },
@@ -395,6 +395,18 @@ function drawTile(target, { bitmap, zoom, x, y }) {
   target.drawImage(bitmap, left - 0.5, top - 0.5, tileScale + 1, tileScale + 1);
 }
 
+function drawTerrainTile(target, { bitmap, zoom, x, y }) {
+  const tileScale = scale() / 2 ** zoom;
+  const left = (x / 2 ** zoom - camera.x) * scale() + canvas.clientWidth / 2;
+  const top = (y / 2 ** zoom - camera.y) * scale() + canvas.clientHeight / 2;
+  target.save();
+  target.beginPath();
+  target.rect(left, top, tileScale, tileScale);
+  target.clip();
+  target.drawImage(bitmap, left, top, tileScale, tileScale);
+  target.restore();
+}
+
 function drawWithOpacity(value, drawLayer) {
   context.save();
   context.globalAlpha = value / 10;
@@ -458,11 +470,11 @@ function drawTerrainLayer(target) {
   const baseZoom = Math.max(0, Math.min(18, Math.floor(camera.zoom)));
   const detailZoom = Math.min(18, Math.ceil(camera.zoom));
   for (const tile of nearestCachedTiles(baseZoom, terrainTileCache, terrainTileKey)) {
-    drawTile(target, tile);
+    drawTerrainTile(target, tile);
   }
   if (detailZoom > baseZoom) {
     for (const tile of exactCachedTiles(detailZoom, terrainTileCache, terrainTileKey)) {
-      drawTile(target, tile);
+      drawTerrainTile(target, tile);
     }
   }
 }
@@ -1113,6 +1125,9 @@ async function waitForServiceAction(service, action) {
       throw new Error(result.message || "service action failed");
     }
     if (!active) {
+      if (service.type === "terrain") {
+        await refreshTerrainRevision();
+      }
       return;
     }
   }
@@ -1365,7 +1380,7 @@ function coordinateDecimalPlaces() {
 }
 
 async function refreshViewportElevation() {
-  if (!terrainLayer.checked || !mapServices.has("terrain")) {
+  if (!terrainLayer?.checked || !mapServices.has("terrain")) {
     viewportElevation = null;
     return;
   }
@@ -1563,7 +1578,7 @@ function renderMap(timestamp) {
 }
 
 function tileKey({ zoom, x, y }) {
-  return `${vectorMapServiceUrl}/vector/${imageryLayer.checked}/${zoom}/${x}/${y}`;
+  return `${vectorMapServiceUrl}/vector/false/${zoom}/${x}/${y}`;
 }
 
 function rasterTileKey({ zoom, x, y }) {
@@ -2021,7 +2036,7 @@ function requestVisibleTiles() {
         type: "request-tiles",
         serviceUrl: vectorMapServiceUrl,
         tiles: prioritizeTiles(tiles),
-        transparentBase: imageryLayer.checked,
+        transparentBase: false,
         generation: mapStateVersion,
       });
     }
@@ -2143,6 +2158,10 @@ async function loadConfiguration(restoreMapView = true) {
   scheduleViewportPublish();
   renderOverlaySourceControls(mapView?.layers?.dataSources, mapView?.layers?.dataSourceOpacity);
   renderSymbolSourceControls(mapView?.layers?.dataSources);
+  if (imageryLayer?.checked) {
+    await refreshRasterRevision();
+    refreshMap();
+  }
   try {
     await refreshSymbols();
   } catch (error) {
@@ -2229,6 +2248,7 @@ tileWorker.addEventListener("message", (event) => {
     requestVisibleTiles();
   } else if (type === "tile-cancelled") {
     requestedTileKeys.delete(key);
+    requestVisibleTiles();
   } else if (type === "error") {
     requestedTileKeys.delete(key);
     status.textContent = `Unable to load map tile: ${message}`;

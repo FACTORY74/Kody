@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
-ROOT_DIRECTORY = Path(__file__).resolve().parents[4]
+ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT_DIRECTORY / "config" / "kody.json"
 
 

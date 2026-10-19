@@ -4,7 +4,7 @@ Kody is organized as independently runnable source trees. The central product
 does not import service code or own service data.
 
 ```text
-products/kody/       Central browser UI and configuration service
+kody/                Central browser UI and configuration service
 services/vecmap/     Offline vector map API, map packages, and vector data
 services/satmap/     Offline satellite imagery API and raster tile data
 services/shapes/     Static named-colour GeoJSON Shapes API and source data

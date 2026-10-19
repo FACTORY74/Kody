@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from math import ceil
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Callable
@@ -33,8 +34,17 @@ ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
 DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
 MAPS_DIRECTORY = DATA_ROOT / "vecmap" / "maps"
 IMPORTS_DIRECTORY = DATA_ROOT / "vecmap" / "imports"
+SHARED_IMPORTS_DIRECTORY = DATA_ROOT / "imports"
 CONFIG_FILE = ROOT_DIRECTORY / "config" / "vecmap.json"
 ACTION_STATE_FILE = MAPS_DIRECTORY / "action-state.json"
+
+
+def initialize_data_directory() -> None:
+    IMPORTS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    MAPS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+
+
+initialize_data_directory()
 
 
 class VectorConfiguration(BaseModel):
@@ -169,22 +179,27 @@ def import_geofabrik_file() -> str:
         not filename
         or not source.is_file()
         or not is_importable_vector_source(source)
-        or (configured_source.is_absolute() and source.suffix.lower() != ".pbf")
+        or (
+            configured_source.is_absolute()
+            and source.suffix.lower() not in {".pbf", ".geojson"}
+        )
         or (
             not configured_source.is_absolute()
             and source.parent != IMPORTS_DIRECTORY.resolve()
         )
     ):
         raise ValueError(
-            "sourceFilename must name a .gpkg, .gpkg.zip, .pbf, or OSM land-polygon "
-            "Shapefile ZIP in vector imports, or an existing absolute .osm.pbf path"
+            "sourceFilename must name a .geojson, .gpkg, .gpkg.zip, .pbf, or OSM "
+            "land-polygon Shapefile ZIP in vector imports, or an existing absolute "
+            ".osm.pbf or .geojson path"
         )
     return import_vector_source(source)
 
 
 def is_vector_source(source: Path) -> bool:
-    return source.suffix.lower() in {".pbf", ".gpkg"} or source.name.lower().endswith(
-        ".gpkg.zip"
+    return (
+        source.suffix.lower() in {".geojson", ".pbf", ".gpkg"}
+        or source.name.lower().endswith(".gpkg.zip")
     )
 
 
@@ -223,6 +238,56 @@ def importable_vector_sources(directory: Path) -> list[Path]:
     )
 
 
+def all_importable_vector_sources() -> list[Path]:
+    sources: dict[Path, Path] = {}
+    for directory in (IMPORTS_DIRECTORY, SHARED_IMPORTS_DIRECTORY):
+        for source in importable_vector_sources(directory):
+            sources[source.resolve()] = source
+    return sorted(
+        sources.values(),
+        key=lambda source: (not is_land_polygon_source(source), source.name.lower()),
+    )
+
+
+def geojson_features(source: Path) -> list[dict[str, object]]:
+    try:
+        collection = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"GeoJSON source is unreadable: {source}") from error
+    if collection.get("type") != "FeatureCollection" or not isinstance(
+        collection.get("features"), list
+    ):
+        raise ValueError(f"GeoJSON source must be a FeatureCollection: {source}")
+
+    features: list[dict[str, object]] = []
+    for index, feature in enumerate(collection["features"]):
+        if not isinstance(feature, dict):
+            raise ValueError(f"GeoJSON feature {index} must be an object")
+        properties = feature.get("properties")
+        geometry = feature.get("geometry")
+        if not isinstance(properties, dict) or not isinstance(geometry, dict):
+            raise ValueError(f"GeoJSON feature {index} requires properties and geometry")
+        min_zoom = properties.get("minZoom", properties.get("MIN_ZOOM", 0))
+        if (
+            not isinstance(min_zoom, (int, float))
+            or isinstance(min_zoom, bool)
+            or not 0 <= min_zoom <= 18
+        ):
+            raise ValueError(f"GeoJSON feature {index} has an invalid minZoom")
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    **properties,
+                    "layer": properties.get("layer", "osm-land"),
+                    "minZoom": ceil(min_zoom),
+                },
+                "geometry": geometry,
+            }
+        )
+    return features
+
+
 def import_land_polygon_source(source: Path) -> str:
     if source.resolve() != LAND_POLYGONS_FILE.resolve():
         LAND_POLYGONS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -251,6 +316,16 @@ def import_vector_source(
     if is_land_polygon_source(source):
         report("Registering supporting OSM land polygons.", 90)
         return import_land_polygon_source(source)
+    if source.suffix.lower() == ".geojson":
+        report("Loading GeoJSON features.", 25)
+        features = geojson_features(source)
+        report("Writing GeoPackage feature library.", 75)
+        count = NativeTileStore(MAPS_DIRECTORY).replace_source(
+            f"geojson-{source.resolve()}",
+            features,
+        )
+        report("Finalizing native Vector tiles.", 99)
+        return f"Merged {count} GeoJSON features from {source.name} into the native vector tile store."
     (install_osm_pbf if source.suffix.lower() == ".pbf" else install_geofabrik_gpkg)(
         arguments
     )
@@ -259,11 +334,11 @@ def import_vector_source(
 
 
 def import_all_vector_sources() -> str:
-    sources = importable_vector_sources(IMPORTS_DIRECTORY)
+    sources = all_importable_vector_sources()
     if not sources:
         raise ValueError(
-            "no .osm.pbf, .gpkg, .gpkg.zip, or OSM land-polygon Shapefile ZIP "
-            "sources were found in imports"
+            "no .geojson, .osm.pbf, .gpkg, .gpkg.zip, or OSM land-polygon Shapefile "
+            "ZIP sources were found in vector or shared imports"
         )
     for index, source in enumerate(sources, start=1):
         source_start = round((index - 1) / len(sources) * 100)

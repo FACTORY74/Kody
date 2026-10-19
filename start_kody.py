@@ -201,6 +201,8 @@ def start_service(service: RuntimeService, host: str, data_directory: Path, rete
 
     environment = os.environ.copy()
     source_directory = service.working_directory / "src"
+    if not source_directory.is_dir():
+        source_directory = service.working_directory / "src_app"
     environment["PYTHONPATH"] = str(source_directory) + os.pathsep + environment.get("PYTHONPATH", "")
     environment["KODY_DATA_DIRECTORY"] = str(data_directory)
     process = subprocess.Popen(

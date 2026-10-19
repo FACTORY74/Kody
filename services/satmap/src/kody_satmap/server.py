@@ -24,6 +24,13 @@ WEB_MERCATOR_HALF_WORLD = 20037508.342789244
 EARTH_RADIUS_METRES = 6378137
 
 
+def initialize_data_directory() -> None:
+    SATELLITE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+
+
+initialize_data_directory()
+
+
 class SatelliteConfiguration(BaseModel):
     source_filename: str = Field(default="", alias="sourceFilename")
     rebuild_pyramid_with_import: bool = Field(default=True, alias="rebuildPyramidWithImport")

@@ -8,6 +8,7 @@ import unittest
 import zipfile
 from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -32,12 +33,55 @@ from kody_vecmap.server import (
     VectorPatchService,
     filter_vector_features,
     get_manifest,
+    import_vector_source,
     importable_vector_sources,
 )
 from kody_vecmap.map_packages import NativeTileStore
 
 
 class MapManagerCoverageTests(unittest.TestCase):
+    def test_imports_geojson_features_into_the_native_geopackage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "countries.geojson"
+            source.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {"NAME": "Example", "MIN_ZOOM": 4.7},
+                                "geometry": {
+                                    "type": "Polygon",
+                                    "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]],
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            maps_directory = root / "maps"
+
+            with patch("kody_vecmap.server.MAPS_DIRECTORY", maps_directory):
+                result = import_vector_source(source)
+
+            store = NativeTileStore(maps_directory)
+            self.assertIn("Merged 1 GeoJSON features", result)
+            self.assertEqual(store.feature_count(), 1)
+            connection = sqlite3.connect(store.path)
+            try:
+                properties = json.loads(
+                    connection.execute(
+                        "SELECT properties_json FROM kody_vector_features"
+                    ).fetchone()[0]
+                )
+            finally:
+                connection.close()
+            self.assertEqual(properties["layer"], "osm-land")
+            self.assertEqual(properties["minZoom"], 5)
+
     def test_osm_scan_status_reports_streamed_item_counts(self) -> None:
         self.assertEqual(
             osm_scan_status_message(12_345, 12_000, 345, 17),

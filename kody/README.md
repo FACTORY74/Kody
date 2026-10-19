@@ -4,20 +4,20 @@ This tree owns the browser UI, service configuration, and persisted user map
 view. It is independent of every map-data or overlay implementation.
 
 ```powershell
-Set-Location products\kody
+Set-Location kody
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 $env:PYTHONPATH = "$PWD\src"
-python -m uvicorn kody_app.app:app --host 127.0.0.1 --port 8000
+python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
 In another PowerShell window, start the configuration service:
 
 ```powershell
-Set-Location products\kody
+Set-Location kody
 $env:PYTHONPATH = "$PWD\src"
-python -m uvicorn kody_app.config_service:app --host 127.0.0.1 --port 8001
+python -m uvicorn config_service:app --host 127.0.0.1 --port 8001
 ```
 
 To start this product and every enabled Kody microservice together, use

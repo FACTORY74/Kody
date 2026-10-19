@@ -29,13 +29,13 @@ SourceProjection = Literal["auto", "geographic", "web-mercator", "world-mercator
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
 DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
 IMPORTS_DIRECTORY = DATA_ROOT / "terrain" / "imports"
-TERRAIN_DIRECTORY = DATA_ROOT / "terrain" / "terrain"
+TERRAIN_DIRECTORY = DATA_ROOT / "terrain"
 CONFIGURATION_SERVICE_URL = "http://127.0.0.1:8001/api/context/viewport"
 MAX_MERCATOR_LATITUDE = 85.05112878
 WEB_MERCATOR_HALF_WORLD = 20037508.342789244
 MAX_TERRAIN_IMAGE_PIXELS = 500_000_000
 MAX_LIVE_LOOKUP_SOURCE_BYTES = 128 * 1024 * 1024
-RASTER_RENDERING_REVISION = b"terrain-raster-v2-discrete-source-coverage"
+RASTER_RENDERING_REVISION = b"terrain-raster-v3-nearest-no-data-coverage"
 NUMERIC_TERRAIN_TILE_SIZE = 256
 EARTH_RADIUS_METRES = 6_371_008.8
 IMAGE_OPEN_LOCK = Lock()
@@ -54,6 +54,14 @@ def packages_directory() -> Path:
 
 def package_manifest_path(package_directory: Path) -> Path:
     return package_directory / "manifest.json"
+
+
+def initialize_data_directory() -> None:
+    IMPORTS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    packages_directory().mkdir(parents=True, exist_ok=True)
+
+
+initialize_data_directory()
 
 
 @dataclass(frozen=True)
@@ -253,9 +261,23 @@ def import_source(filename: str) -> Path:
     if not filename:
         raise ValueError("sourceFilename is required; place an .asc or .grd file in the terrain imports directory")
     IMPORTS_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    source = (IMPORTS_DIRECTORY / filename).resolve()
-    if source.parent != IMPORTS_DIRECTORY.resolve() or source.suffix.lower() not in {".asc", ".grd", ".tif", ".tiff"}:
-        raise ValueError("sourceFilename must name an ArcASCII or GeoTIFF file directly in the terrain imports directory")
+    configured_source = Path(filename).expanduser()
+    source = (
+        configured_source.resolve()
+        if configured_source.is_absolute()
+        else (IMPORTS_DIRECTORY / configured_source).resolve()
+    )
+    if (
+        source.suffix.lower() not in {".asc", ".grd", ".tif", ".tiff"}
+        or (
+            not configured_source.is_absolute()
+            and source.parent != IMPORTS_DIRECTORY.resolve()
+        )
+    ):
+        raise ValueError(
+            "sourceFilename must name an ArcASCII or GeoTIFF file directly in the "
+            "terrain imports directory, or an existing absolute path"
+        )
     if not source.is_file():
         raise FileNotFoundError(f"terrain source is missing: {source}")
     return source
@@ -704,8 +726,8 @@ def fetch_viewport() -> dict[str, float]:
 
 
 def terrain_packages() -> list[dict[str, object]]:
-    directory = packages_directory()
     packages: list[dict[str, object]] = []
+    directory = packages_directory()
     for manifest_path in directory.glob("*/manifest.json") if directory.is_dir() else []:
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -715,32 +737,6 @@ def terrain_packages() -> list[dict[str, object]]:
             packages.append(manifest)
         except (OSError, ValueError, json.JSONDecodeError) as error:
             raise RuntimeError(f"invalid terrain package manifest {manifest_path}: {error}") from error
-    legacy_tiles = TERRAIN_DIRECTORY / "tiles"
-    legacy_source = TERRAIN_DIRECTORY / "source.json"
-    if legacy_tiles.is_dir() and legacy_source.is_file():
-        try:
-            grid_data = json.loads(legacy_source.read_text(encoding="utf-8"))
-            grid = ElevationGrid(
-                int(grid_data["ncols"]),
-                int(grid_data["nrows"]),
-                float(grid_data["west"]),
-                float(grid_data["south"]),
-                float(grid_data["cellsize"]),
-                None,
-                (),
-                grid_data["projection"],
-            )
-            west, south, east, north = geographic_bounds(grid)
-            packages.append({
-                "id": "legacy",
-                "sourceFilename": "legacy terrain import",
-                "bounds": {"west": west, "south": south, "east": east, "north": north},
-                "nativeResolutionMetres": grid.cellsize if grid.projection != "geographic" else grid.cellsize * 111320,
-                "grid": grid_data,
-                "directory": TERRAIN_DIRECTORY,
-            })
-        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
-            raise RuntimeError(f"invalid legacy terrain metadata {legacy_source}: {error}") from error
     return sorted(packages, key=lambda package: float(package["nativeResolutionMetres"]), reverse=True)
 
 
@@ -963,19 +959,42 @@ def create_los_rosette(
     }
 
 
+def terrain_tile_image(directory: Path, zoom: int, x: int, y: int) -> Image.Image | None:
+    path = directory / "tiles" / str(zoom) / str(x) / f"{y}.png"
+    if path.is_file():
+        with Image.open(path) as source:
+            return source.convert("RGBA")
+    if zoom == 0:
+        return None
+    parent = terrain_tile_image(directory, zoom - 1, x // 2, y // 2)
+    if parent is None:
+        return None
+    child_x = x % 2
+    child_y = y % 2
+    child = parent.crop(
+        (
+            child_x * 128,
+            child_y * 128,
+            (child_x + 1) * 128,
+            (child_y + 1) * 128,
+        )
+    ).resize((256, 256), Image.Resampling.NEAREST)
+    parent.close()
+    return child
+
+
 def raster_tile_bytes(zoom: int, x: int, y: int) -> bytes | None:
     composite: Image.Image | None = None
     for package in terrain_packages():
-        path = Path(package["directory"]) / "tiles" / str(zoom) / str(x) / f"{y}.png"
-        if not path.is_file():
+        detail = terrain_tile_image(Path(package["directory"]), zoom, x, y)
+        if detail is None:
             continue
-        with Image.open(path) as tile:
-            if composite is None:
-                composite = Image.new("RGBA", (256, 256))
-            detail = tile.convert("RGBA")
-            coverage = detail.getchannel("A").point(lambda alpha: 255 if alpha else 0)
-            detail.putalpha(255)
-            composite.paste(detail, mask=coverage)
+        if composite is None:
+            composite = Image.new("RGBA", (256, 256))
+        coverage = detail.getchannel("A").point(lambda alpha: 255 if alpha else 0)
+        detail.putalpha(255)
+        composite.paste(detail, mask=coverage)
+        detail.close()
     if composite is None:
         return None
     from io import BytesIO
@@ -1003,9 +1022,6 @@ def get_raster_revision() -> dict[str, str]:
         manifest_path.read_bytes()
         for manifest_path in sorted(packages_directory().glob("*/manifest.json"))
     ] if packages_directory().is_dir() else []
-    legacy_marker = TERRAIN_DIRECTORY / ".revision"
-    if legacy_marker.is_file():
-        manifests.append(legacy_marker.read_bytes())
     revision_inputs = [RASTER_RENDERING_REVISION, *manifests]
     return {"revision": hashlib.sha256(b"\0".join(revision_inputs)).hexdigest() if manifests else ""}
 

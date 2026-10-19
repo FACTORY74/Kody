@@ -34,7 +34,6 @@ from .math import Bounds, MapMath
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
 DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
 MAPS_DIRECTORY = DATA_ROOT / "vecmap" / "maps"
-SATELLITE_DIRECTORY = DATA_ROOT / "satmap" / "satellite"
 LAND_POLYGONS_FILE = DATA_ROOT / "vecmap" / "imports" / "land-polygons-split-4326.zip"
 LAND_POLYGONS_URL = "https://osmdata.openstreetmap.de/download/land-polygons-split-4326.zip"
 WEB_MERCATOR_HALF_WORLD = 20037508.342789244
@@ -1201,7 +1200,7 @@ def build_parser() -> argparse.ArgumentParser:
         "install-world-raster", help="Slice a square Web Mercator world bitmap into local XYZ tiles."
     )
     raster_parser.add_argument("--source", type=Path, required=True)
-    raster_parser.add_argument("--output", type=Path, default=SATELLITE_DIRECTORY)
+    raster_parser.add_argument("--output", type=Path, required=True)
     raster_parser.add_argument("--max-zoom", type=int)
     raster_parser.add_argument("--replace", action="store_true")
     raster_parser.set_defaults(handler=install_world_raster)
@@ -1214,7 +1213,7 @@ def build_parser() -> argparse.ArgumentParser:
     georeferenced_raster_parser.add_argument("--projection", type=Path, required=True)
     georeferenced_raster_parser.add_argument("--min-zoom", type=int)
     georeferenced_raster_parser.add_argument("--max-zoom", type=int)
-    georeferenced_raster_parser.add_argument("--output", type=Path, default=SATELLITE_DIRECTORY)
+    georeferenced_raster_parser.add_argument("--output", type=Path, required=True)
     georeferenced_raster_parser.add_argument("--replace", action="store_true")
     georeferenced_raster_parser.set_defaults(handler=install_georeferenced_raster)
     return parser

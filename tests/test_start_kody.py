@@ -7,6 +7,7 @@ from unittest.mock import patch
 from start_kody import (
     ConfigurationError,
     LauncherLock,
+    ROOT_DIRECTORY,
     create_log_handler,
     load_runtime_configuration,
 )
@@ -29,8 +30,8 @@ class RuntimeConfigurationTests(unittest.TestCase):
                     {
                         "id": "kody-web",
                         "displayName": "Kody web application",
-                        "module": "kody_app.app:app",
-                        "workingDirectory": "products/kody",
+                        "module": "app:app",
+                        "workingDirectory": "kody",
                         "port": 8000,
                         "enabled": True,
                     },
@@ -38,7 +39,7 @@ class RuntimeConfigurationTests(unittest.TestCase):
                         "id": "disabled",
                         "displayName": "Disabled service",
                         "module": "example.app:app",
-                        "workingDirectory": "products/kody",
+                        "workingDirectory": "kody",
                         "port": 8100,
                         "enabled": False,
                     },
@@ -46,9 +47,10 @@ class RuntimeConfigurationTests(unittest.TestCase):
             }
         )
 
-        host, retention_minutes, services = load_runtime_configuration(path)
+        host, data_directory, retention_minutes, services = load_runtime_configuration(path)
 
         self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(data_directory, ROOT_DIRECTORY / "data")
         self.assertEqual(retention_minutes, 30)
         self.assertEqual([(service.id, service.port) for service in services], [("kody-web", 8000)])
 
@@ -62,14 +64,14 @@ class RuntimeConfigurationTests(unittest.TestCase):
                         "id": "first",
                         "displayName": "First",
                         "module": "first.app:app",
-                        "workingDirectory": "products/kody",
+                        "workingDirectory": "kody",
                         "port": 8000,
                     },
                     {
                         "id": "second",
                         "displayName": "Second",
                         "module": "second.app:app",
-                        "workingDirectory": "products/kody",
+                        "workingDirectory": "kody",
                         "port": 8000,
                     },
                 ],

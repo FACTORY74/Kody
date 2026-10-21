@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 import sqlite3
 import tempfile
 from threading import Event
@@ -378,6 +379,23 @@ class NativeTileStoreTests(unittest.TestCase):
             self.assertEqual(payload[8:12], b"WEBP")
             self.assertLess(len(payload), 20_000)
             self.assertTrue(cache.tile_path(0, 0, 0).is_file())
+
+    def test_raster_revision_ignores_geopackage_timestamp_but_tracks_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = NativeTileStore(Path(directory))
+            feature = {
+                "properties": {"category": "physical", "layer": "ne-land"},
+                "geometry": {"type": "Point", "coordinates": [0, 0]},
+            }
+            store.replace_source("natural-earth", [feature])
+            styles = load_vector_theme().styles
+            revision = cache_revision(store, {}, styles)
+
+            os.utime(store.path, None)
+
+            self.assertEqual(revision, cache_revision(store, {}, styles))
+            store.replace_source("natural-earth", [feature])
+            self.assertNotEqual(revision, cache_revision(store, {}, styles))
 
     def test_raster_tile_paints_tuple_coordinates_from_shapely(self) -> None:
         styles = load_vector_theme().styles

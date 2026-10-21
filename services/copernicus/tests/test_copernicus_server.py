@@ -5,20 +5,39 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from PIL import Image, ImageDraw
+import requests
 
 from kody_copernicus.server import (
     ConfigurationStore,
     CopernicusConfiguration,
     Viewport,
     copernicus_request,
+    copernicus_request_dimensions,
+    copernicus_tile_sections,
     download_current_viewport,
     import_georeferenced_png,
+    process_response_bytes,
     raster_tile_bytes,
+    web_mercator_latitude,
+    web_mercator_longitude,
     viewport_tiles,
 )
 
 
 class SatelliteTileTests(unittest.TestCase):
+    def assert_pixel_color_near(
+        self, actual: float | tuple[int, ...] | None, expected: tuple[int, ...]
+    ) -> None:
+        if not isinstance(actual, tuple):
+            self.fail(f"expected an RGB or RGBA pixel, got {actual!r}")
+        self.assertIn(len(actual), (3, 4))
+        for actual_channel, expected_channel in zip(actual[:3], expected[:3]):
+            self.assertLessEqual(abs(actual_channel - expected_channel), 2)
+        if len(actual) == 4:
+            self.assertEqual(actual[3], expected[3])
+        elif expected[3] != 255:
+            self.fail("transparent pixel was flattened to RGB")
+
     def test_current_viewport_uses_quad_tiles_at_the_browser_tile_zoom(self) -> None:
         zoom, tiles = viewport_tiles(
             Viewport(west=-1, south=-1, east=1, north=1, zoom=3.9)
@@ -27,24 +46,96 @@ class SatelliteTileTests(unittest.TestCase):
         self.assertEqual(zoom, 3)
         self.assertEqual(tiles, [(3, 3), (4, 3), (3, 4), (4, 4)])
 
+    def test_singapore_region_selects_covering_zoom_six_tiles(self) -> None:
+        zoom, tiles = viewport_tiles(
+            Viewport(
+                west=92.66530366587688,
+                south=-5.116540556006811,
+                east=114.36306755194505,
+                north=6.469410035921003,
+                zoom=6.400000000000034,
+            )
+        )
+
+        self.assertEqual(zoom, 6)
+        self.assertEqual(
+            tiles,
+            [
+                (48, 30), (49, 30), (50, 30), (51, 30), (52, 30),
+                (48, 31), (49, 31), (50, 31), (51, 31), (52, 31),
+                (48, 32), (49, 32), (50, 32), (51, 32), (52, 32),
+            ],
+        )
+        (left, bottom, right, top), destination = copernicus_tile_sections(6, 49, 31)[0]
+        self.assertEqual(destination, (0, 0, 256, 256))
+        self.assertAlmostEqual(web_mercator_longitude(left), 95.625)
+        self.assertAlmostEqual(web_mercator_longitude(right), 101.25)
+        self.assertAlmostEqual(web_mercator_latitude(bottom), 0)
+        self.assertAlmostEqual(web_mercator_latitude(top), 5.61598582)
+
     def test_process_request_uses_web_mercator_tile_bounds_and_latest_mosaic(self) -> None:
-        request = copernicus_request(2, 1, 2)
+        request = copernicus_request((-1_000, -2_000, 1_000, 2_000), 128, 64)
 
         self.assertEqual(
             request["input"]["bounds"]["properties"]["crs"],
             "http://www.opengis.net/def/crs/EPSG/0/3857",
         )
-        self.assertEqual(request["output"]["width"], 256)
+        self.assertEqual(request["output"]["width"], 128)
+        self.assertEqual(request["output"]["height"], 64)
         self.assertEqual(request["input"]["data"][0]["dataFilter"]["mosaickingOrder"], "mostRecent")
 
-    def test_configuration_response_redacts_and_preserves_client_secret(self) -> None:
-        store = ConfigurationStore()
-        initial = CopernicusConfiguration(clientId="client", clientSecret="secret")
-        store.update(initial, None)
+    def test_large_area_request_uses_collection_resolution(self) -> None:
+        dimensions = copernicus_request_dimensions(
+            (-5_009_377.085697312, 8_659_174.417649025, -4_174_480.90474776, 10_018_754.171394626),
+            (0, 0, 85, 139),
+        )
 
-        self.assertEqual(store.response()["clientSecret"], "")
-        store.update(CopernicusConfiguration(clientId="client", clientSecret=""), store.revision())
-        self.assertEqual(store.configuration.client_secret, "secret")
+        self.assertEqual(dimensions, (522, 850))
+
+    def test_process_api_error_includes_request_context(self) -> None:
+        response = MagicMock(spec=requests.Response)
+        response.text = '{"error":{"message":"invalid time range"}}'
+        response.raise_for_status.side_effect = requests.HTTPError("400 Client Error")
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"128x64px EPSG:3857 bbox \(-1000, -2000, 1000, 2000\).*invalid time range",
+        ):
+            process_response_bytes(response, (-1_000, -2_000, 1_000, 2_000), 128, 64)
+
+    def test_world_tile_is_split_into_requests_no_larger_than_ten_degrees(self) -> None:
+        sections = copernicus_tile_sections(0, 0, 0)
+
+        self.assertGreater(len(sections), 1)
+        for (left, bottom, right, top), (pixel_left, pixel_top, pixel_right, pixel_bottom) in sections:
+            self.assertLessEqual(web_mercator_longitude(right) - web_mercator_longitude(left), 10.000001)
+            self.assertLessEqual(web_mercator_latitude(top) - web_mercator_latitude(bottom), 10.000001)
+            self.assertLess(pixel_left, pixel_right)
+            self.assertLess(pixel_top, pixel_bottom)
+
+    def test_section_destination_rows_follow_projected_grid(self) -> None:
+        sections = copernicus_tile_sections(0, 0, 0)
+        first_row_bottom = sections[0][1][3]
+        row_count = len({destination[1] for _, destination in sections})
+
+        self.assertEqual(first_row_bottom, round(256 / row_count))
+
+    def test_configuration_response_redacts_and_preserves_client_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "copernicus.json"
+            store = ConfigurationStore(path)
+            initial = CopernicusConfiguration(clientId="client", clientSecret="secret")
+            store.update(initial, None)
+
+            self.assertEqual(store.response()["clientSecret"], "")
+            self.assertTrue(store.response()["clientSecretSaved"])
+            reloaded_store = ConfigurationStore(path)
+            self.assertEqual(reloaded_store.configuration.client_secret, "secret")
+            reloaded_store.update(
+                CopernicusConfiguration(clientId="client", clientSecret=""),
+                reloaded_store.revision(),
+            )
+            self.assertEqual(reloaded_store.configuration.client_secret, "secret")
 
     def test_download_stores_the_process_api_tile_as_a_quad_tile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -57,7 +148,11 @@ class SatelliteTileTests(unittest.TestCase):
             process_response.content = image_bytes.getvalue()
             session = MagicMock()
             session.post.side_effect = [token_response, process_response]
-            configuration = CopernicusConfiguration(clientId="client", clientSecret="secret")
+            configuration = CopernicusConfiguration(
+                clientId="client",
+                clientSecret="secret",
+                rebuildPyramidWithDownload=False,
+            )
 
             with (
                 patch("kody_copernicus.server.COPERNICUS_DIRECTORY", root),
@@ -65,12 +160,16 @@ class SatelliteTileTests(unittest.TestCase):
                     "kody_copernicus.server.viewport_from_configuration_service",
                     return_value=Viewport(west=-1, south=-1, east=1, north=1, zoom=0),
                 ),
+                patch("kody_copernicus.server.viewport_tiles", return_value=(7, [(1, 1)])),
                 patch("kody_copernicus.server.requests.Session", return_value=session),
             ):
                 message = download_current_viewport(configuration)
 
-            self.assertEqual(message, "Downloaded 1 Copernicus Global Mosaic tiles at zoom 0.")
-            self.assertTrue((root / "0" / "0" / "0.png").is_file())
+            self.assertEqual(message, "Downloaded 1 Copernicus Global Mosaic tiles at zoom 7 using 1 Copernicus requests.")
+            tile_path = root / "7" / "1" / "1.webp"
+            self.assertTrue(tile_path.is_file())
+            with Image.open(tile_path) as tile:
+                self.assertEqual(tile.format, "WEBP")
             self.assertEqual(session.post.call_count, 2)
 
     def test_missing_child_tile_is_cropped_from_parent(self) -> None:
@@ -80,13 +179,24 @@ class SatelliteTileTests(unittest.TestCase):
             parent_path.mkdir(parents=True)
             image = Image.new("RGB", (256, 256), "black")
             ImageDraw.Draw(image).rectangle((128, 0, 255, 127), fill="red")
-            image.save(parent_path / "0.png")
+            image.save(parent_path / "0.webp", format="WEBP")
 
             tile = raster_tile_bytes(root, 1, 1, 0)
 
             self.assertIsNotNone(tile)
             with Image.open(BytesIO(tile)) as generated:
-                self.assertEqual(generated.getpixel((128, 128)), (255, 0, 0, 255))
+                self.assert_pixel_color_near(
+                    generated.getpixel((128, 128)), (255, 0, 0, 255)
+                )
+
+    def test_png_cache_tile_is_not_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tile_path = root / "0" / "0"
+            tile_path.mkdir(parents=True)
+            Image.new("RGB", (256, 256), "red").save(tile_path / "0.png")
+
+            self.assertIsNone(raster_tile_bytes(root, 0, 0, 0))
 
     def test_transparent_child_tile_is_composited_over_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -95,17 +205,21 @@ class SatelliteTileTests(unittest.TestCase):
             child_path = root / "1" / "1"
             parent_path.mkdir(parents=True)
             child_path.mkdir(parents=True)
-            Image.new("RGBA", (256, 256), "red").save(parent_path / "0.png")
+            Image.new("RGBA", (256, 256), "red").save(parent_path / "0.webp", format="WEBP")
             child = Image.new("RGBA", (256, 256))
             ImageDraw.Draw(child).rectangle((128, 0, 255, 255), fill="blue")
-            child.save(child_path / "0.png")
+            child.save(child_path / "0.webp", format="WEBP")
 
             tile = raster_tile_bytes(root, 1, 1, 0)
 
             self.assertIsNotNone(tile)
             with Image.open(BytesIO(tile)) as generated:
-                self.assertEqual(generated.getpixel((64, 128)), (255, 0, 0, 255))
-                self.assertEqual(generated.getpixel((192, 128)), (0, 0, 255, 255))
+                self.assert_pixel_color_near(
+                    generated.getpixel((64, 128)), (255, 0, 0, 255)
+                )
+                self.assert_pixel_color_near(
+                    generated.getpixel((192, 128)), (0, 0, 255, 255)
+                )
 
     def test_georeferenced_png_is_added_to_the_satellite_library(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -125,7 +239,7 @@ class SatelliteTileTests(unittest.TestCase):
                 result = import_georeferenced_png(str(source))
 
             self.assertIn("Imported 1 satellite tiles", result)
-            self.assertTrue((output / "0" / "0" / "0.png").is_file())
+            self.assertTrue((output / "0" / "0" / "0.webp").is_file())
 
     def test_georeferenced_png_generates_visible_lower_zoom_ancestors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -148,8 +262,12 @@ class SatelliteTileTests(unittest.TestCase):
             self.assertIn("Updated 1 impacted lower-zoom tiles", result)
             self.assertIsNotNone(ancestor)
             with Image.open(BytesIO(ancestor)) as image:
-                self.assertEqual(image.getpixel((192, 64)), (0, 128, 0, 255))
-                self.assertEqual(image.getpixel((64, 64)), (0, 0, 0, 0))
+                self.assert_pixel_color_near(
+                    image.getpixel((192, 64)), (0, 128, 0, 255)
+                )
+                self.assert_pixel_color_near(
+                    image.getpixel((64, 64)), (0, 0, 0, 0)
+                )
 
     def test_georeferenced_world_mercator_png_is_supported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -169,7 +287,7 @@ class SatelliteTileTests(unittest.TestCase):
                 result = import_georeferenced_png(str(source))
 
             self.assertIn("Imported 1 satellite tiles", result)
-            self.assertTrue((output / "0" / "0" / "0.png").is_file())
+            self.assertTrue((output / "0" / "0" / "0.webp").is_file())
 
     def test_georeferenced_png_can_skip_impacted_overview_tile_rebuild(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -189,8 +307,8 @@ class SatelliteTileTests(unittest.TestCase):
                 result = import_georeferenced_png(str(source), rebuild_pyramid=False)
 
             self.assertNotIn("Updated", result)
-            self.assertTrue((output / "1" / "1" / "0.png").is_file())
-            self.assertFalse((output / "0" / "0" / "0.png").exists())
+            self.assertTrue((output / "1" / "1" / "0.webp").is_file())
+            self.assertFalse((output / "0" / "0" / "0.webp").exists())
 
 
 if __name__ == "__main__":

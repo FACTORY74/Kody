@@ -29,10 +29,7 @@ def cache_revision(
 ) -> str:
     source = {
         "renderer": RENDERER_REVISION,
-        "database": (
-            store.path.stat().st_mtime_ns if store.path.is_file() else 0,
-            store.path.stat().st_size if store.path.is_file() else 0,
-        ),
+        "database": store.data_revision(),
         "configuration": configuration,
         "styles": {
             name: style.model_dump(by_alias=True)

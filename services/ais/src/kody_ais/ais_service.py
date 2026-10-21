@@ -275,7 +275,7 @@ class AisStore:
                 features.append({
                     "type": "Feature",
                     "properties": {**properties, "name": f"{vessel.name} trail", "kind": "track-trail", "fadeTrail": configuration.track_fade, "durationSeconds": configuration.track_length_seconds},
-                    "geometry": {"type": "LineString", "coordinates": [point for _, point in trail]},
+                    "geometry": {"type": "LineString", "coordinates": trail},
                 })
             features.append({"type": "Feature", "properties": properties, "geometry": {"type": "Point", "coordinates": point}})
         if configuration.draw_boundary:

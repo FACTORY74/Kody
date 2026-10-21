@@ -27,3 +27,5 @@ Register of functional areas to develop
     GeoJSON circle / rect / wedge / polygon shapes
 
 - Shipping lanes
+
+- ESA Copernicus Elevation Download

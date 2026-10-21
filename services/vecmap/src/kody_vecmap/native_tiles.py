@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 import struct
+from uuid import uuid4
 from contextlib import closing
 from collections.abc import Iterable
 from pathlib import Path
 
 from shapely import make_valid, wkb
+from shapely.errors import GEOSException
 from shapely.geometry import box, mapping, shape
 
 VECTOR_LIBRARY_FILE = "vector-library.gpkg"
@@ -20,6 +23,7 @@ OVERVIEW_TOLERANCE = 0.3515625
 BASE_OVERVIEW_TOLERANCE = 0.03
 WORLD_OVERVIEW_MAXIMUM_ZOOM = 1
 WORLD_OVERVIEW_TOLERANCE = 5.0
+logger = logging.getLogger(__name__)
 
 
 class NativeTileStore:
@@ -86,6 +90,12 @@ class NativeTileStore:
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS rtree_kody_vector_features
             USING rtree(id, min_x, max_x, min_y, max_y);
+            CREATE TABLE IF NOT EXISTS kody_vector_library_state (
+                key TEXT NOT NULL PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO kody_vector_library_state (key, value)
+            VALUES ('data_revision', 'initial');
                 """
             )
             connection.execute(
@@ -186,7 +196,19 @@ class NativeTileStore:
                     OVERVIEW_TOLERANCE / (2**requested_detail_zoom),
                     preserve_topology=True,
                 )
-            clipped = geometry.intersection(tile_geometry)
+            if not geometry.is_valid:
+                geometry = make_valid(geometry)
+            try:
+                clipped = geometry.intersection(tile_geometry)
+            except GEOSException:
+                logger.warning(
+                    "Skipping an unclippable Natural Earth feature for tile %s/%s/%s",
+                    zoom,
+                    x,
+                    y,
+                    exc_info=True,
+                )
+                continue
             if not clipped.is_empty:
                 features.append(
                     {
@@ -224,9 +246,33 @@ class NativeTileStore:
                 for (previous_source_id,) in source_ids:
                     self._delete_source(connection, previous_source_id)
                 count = self._write_features(connection, source_id, features)
+                connection.execute(
+                    """
+                    UPDATE kody_vector_library_state
+                    SET value = ?
+                    WHERE key = 'data_revision'
+                    """,
+                    (uuid4().hex,),
+                )
         finally:
             connection.close()
         return count
+
+    def data_revision(self) -> str:
+        if not self.path.is_file():
+            return "missing"
+        with closing(sqlite3.connect(self.path)) as connection:
+            try:
+                row = connection.execute(
+                    """
+                    SELECT value
+                    FROM kody_vector_library_state
+                    WHERE key = 'data_revision'
+                    """
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return "legacy"
+        return str(row[0]) if row is not None else "initial"
 
     @staticmethod
     def _delete_source(connection: sqlite3.Connection, source_id: str) -> None:

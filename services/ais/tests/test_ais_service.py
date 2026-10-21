@@ -44,7 +44,11 @@ class AisServiceTests(unittest.TestCase):
         position = next(feature for feature in response["features"] if feature["geometry"]["type"] == "Point")
         self.assertEqual(position["properties"]["symbol"], "ship")
         self.assertEqual(position["properties"]["bearingDegrees"], 90)
-        self.assertTrue(any(feature["properties"]["kind"] == "track-trail" for feature in response["features"]))
+        trail = next(feature for feature in response["features"] if feature["properties"]["kind"] == "track-trail")
+        self.assertEqual(
+            trail["geometry"]["coordinates"],
+            [[-1.2, 50.6], [-1.19, 50.61]],
+        )
         boundary = next(feature for feature in response["features"] if feature["properties"]["kind"] == "ais-boundary")
         self.assertFalse(boundary["properties"]["label"])
         self.assertEqual(

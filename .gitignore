@@ -7,6 +7,8 @@
 /data_starter/terrain
 /data_starter/vecmap/maps
 /data_starter/vecmap/imports
+/config/copernicus.json
 /services/vecmap/data/vecmap/maps
 *.gpkg
 /data_starter/vecmap/maps
+/data_starter/copernicus/tiles

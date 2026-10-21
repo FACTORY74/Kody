@@ -53,6 +53,8 @@ let terrainServiceUrl = window.location.origin;
 let configuredMapServices = [];
 let configuredServices = [];
 let serviceReconciliationInProgress = false;
+let pendingServiceIds = null;
+let pendingServiceChecks = 0;
 let configurationLoaded = false;
 let dragging = false;
 let lastPointer = null;
@@ -143,7 +145,23 @@ async function reconcileRegisteredServices() {
     const liveIds = new Set(liveServices.map((service) => service.id));
     const activeIds = activeServiceIds();
     if (liveIds.size !== activeIds.size || [...liveIds].some((id) => !activeIds.has(id))) {
+      const currentIds = [...liveIds].sort();
+      if (pendingServiceIds?.every((id, index) => id === currentIds[index])
+        && pendingServiceIds.length === currentIds.length) {
+        pendingServiceChecks += 1;
+      } else {
+        pendingServiceIds = currentIds;
+        pendingServiceChecks = 1;
+      }
+      if (pendingServiceChecks < 3) {
+        return;
+      }
+      pendingServiceIds = null;
+      pendingServiceChecks = 0;
       await loadConfiguration(false);
+    } else {
+      pendingServiceIds = null;
+      pendingServiceChecks = 0;
     }
   } finally {
     serviceReconciliationInProgress = false;
@@ -670,10 +688,19 @@ function rgbaColor(color, opacity) {
 }
 
 function drawFadingTrail(coordinates, color, bounds) {
-  for (let index = 1; index < coordinates.length; index += 1) {
+  if (!Array.isArray(coordinates)) {
+    return;
+  }
+  const points = coordinates.filter((point) => (
+    Array.isArray(point)
+    && point.length >= 2
+    && Number.isFinite(point[0])
+    && Number.isFinite(point[1])
+  ));
+  for (let index = 1; index < points.length; index += 1) {
     const clipped = clipLineSegment(
-      screenPoint(...coordinates[index - 1]),
-      screenPoint(...coordinates[index]),
+      screenPoint(...points[index - 1]),
+      screenPoint(...points[index]),
       bounds,
     );
     if (!clipped) {
@@ -684,7 +711,7 @@ function drawFadingTrail(coordinates, color, bounds) {
     context.lineTo(clipped.end.x, clipped.end.y);
     context.strokeStyle = rgbaColor(
       color,
-      (index - 0.5 + (clipped.startRatio + clipped.endRatio) / 2) / (coordinates.length - 1),
+      (index - 0.5 + (clipped.startRatio + clipped.endRatio) / 2) / (points.length - 1),
     );
     context.stroke();
   }
@@ -1045,10 +1072,14 @@ function configurationInput(field, value) {
   } else {
     const input = document.createElement("input");
     input.type = field.type === "boolean" ? "checkbox" : field.type;
+    if (field.type === "password") {
+      input.autocomplete = "new-password";
+    }
     input.checked = field.type === "boolean" && Boolean(value);
     if (field.type !== "boolean") {
       input.value = value ?? "";
       input.required = field.required !== false;
+      input.placeholder = field.placeholder ?? "";
     }
     input.min = field.minimum ?? "";
     input.max = field.maximum ?? field.maximumLength ?? "";
@@ -1158,6 +1189,9 @@ async function saveServiceConfiguration() {
     clearVectorTileCache();
     await refreshVectorTileRevision();
     refreshMap();
+  } else if (service.type === "copernicus") {
+    await refreshCopernicusRevision();
+    refreshMap();
   }
 }
 
@@ -1266,7 +1300,19 @@ async function configureService(service) {
   setServiceConfigurationDialogMode();
   configurationSession = { service, manifest, revision: configuration.revision };
   serviceConfigTitle.textContent = `Configure ${manifest.displayName}`;
-  const fields = manifest.configuration.fields.map((field) => configurationInput(field, configuration[field.key]));
+  const fields = manifest.configuration.fields.map((field) => {
+    if (field.secretStoredKey && configuration[field.secretStoredKey]) {
+      return configurationInput(
+        {
+          ...field,
+          label: `${field.label} (saved locally)`,
+          placeholder: "******** (enter a replacement to change it)",
+        },
+        configuration[field.key],
+      );
+    }
+    return configurationInput(field, configuration[field.key]);
+  });
   if (fields.length === 0) {
     const emptyState = document.createElement("p");
     emptyState.className = "empty-config-state";
@@ -1830,22 +1876,6 @@ async function refreshRasterRevision() {
     return;
   }
 
-  async function refreshCopernicusRevision() {
-    if (!mapServices.has("copernicus") || !copernicusLayer.checked) {
-      return;
-    }
-    const response = await fetch(`${copernicusServiceUrl}/api/raster/revision`);
-    if (!response.ok) {
-      throw new Error(`Copernicus service returned ${response.status} for raster revision`);
-    }
-    const { revision } = await response.json();
-    if (copernicusRevision !== null && copernicusRevision !== revision) {
-      clearCopernicusTileCache();
-      requestVisibleTiles();
-    }
-    copernicusRevision = revision;
-  }
-
   const response = await fetch(`${satelliteMapServiceUrl}/api/raster/revision`);
   if (!response.ok) {
     throw new Error(`satellite map service returned ${response.status} for raster revision`);
@@ -1856,6 +1886,22 @@ async function refreshRasterRevision() {
     requestVisibleTiles();
   }
   rasterRevision = revision;
+}
+
+async function refreshCopernicusRevision() {
+  if (!mapServices.has("copernicus") || !copernicusLayer?.checked) {
+    return;
+  }
+  const response = await fetch(`${copernicusServiceUrl}/api/raster/revision`);
+  if (!response.ok) {
+    throw new Error(`Copernicus service returned ${response.status} for raster revision`);
+  }
+  const { revision } = await response.json();
+  if (copernicusRevision !== null && copernicusRevision !== revision) {
+    clearCopernicusTileCache();
+    requestVisibleTiles();
+  }
+  copernicusRevision = revision;
 }
 
 async function refreshVectorTileRevision() {
@@ -2198,19 +2244,18 @@ function missingRasterTiles(zoom) {
     if (requestedRasterTileKeys.has(key)) {
       return false;
     }
-
-    function missingCopernicusTiles(zoom) {
-      return visibleTiles(zoom).filter((tile) => {
-        const key = copernicusTileKey(tile);
-        if (requestedCopernicusTileKeys.has(key)) {
-          return false;
-        }
-        requestedCopernicusTileKeys.add(key);
-        return true;
-      });
-    }
-
     requestedRasterTileKeys.add(key);
+    return true;
+  });
+}
+
+function missingCopernicusTiles(zoom) {
+  return visibleTiles(zoom).filter((tile) => {
+    const key = copernicusTileKey(tile);
+    if (requestedCopernicusTileKeys.has(key)) {
+      return false;
+    }
+    requestedCopernicusTileKeys.add(key);
     return true;
   });
 }
@@ -2346,20 +2391,38 @@ async function loadConfiguration(restoreMapView = true) {
       overlayCollections.delete(key);
     }
   }
-  if (vectorService || satelliteService || copernicusService || terrainService) {
-    vectorMapServiceUrl = vectorService?.url.replace(/\/$/, "") || window.location.origin;
-    satelliteMapServiceUrl = satelliteService?.url.replace(/\/$/, "") || window.location.origin;
-    copernicusServiceUrl = copernicusService?.url.replace(/\/$/, "") || window.location.origin;
-    terrainServiceUrl = terrainService?.url.replace(/\/$/, "") || window.location.origin;
-    clearVectorTileCache();
-    clearRasterTileCache();
-    clearCopernicusTileCache();
-    clearTerrainTileCache();
-    vectorTileRevision = null;
-    rasterRevision = null;
-    copernicusRevision = null;
-    terrainRevision = null;
-    terrainPalette = null;
+  if (vectorService) {
+    const nextVectorMapServiceUrl = vectorService.url.replace(/\/$/, "");
+    if (vectorMapServiceUrl !== nextVectorMapServiceUrl) {
+      clearVectorTileCache();
+      vectorTileRevision = null;
+    }
+    vectorMapServiceUrl = nextVectorMapServiceUrl;
+  }
+  if (satelliteService) {
+    const nextSatelliteMapServiceUrl = satelliteService.url.replace(/\/$/, "");
+    if (satelliteMapServiceUrl !== nextSatelliteMapServiceUrl) {
+      clearRasterTileCache();
+      rasterRevision = null;
+    }
+    satelliteMapServiceUrl = nextSatelliteMapServiceUrl;
+  }
+  if (copernicusService) {
+    const nextCopernicusServiceUrl = copernicusService.url.replace(/\/$/, "");
+    if (copernicusServiceUrl !== nextCopernicusServiceUrl) {
+      clearCopernicusTileCache();
+      copernicusRevision = null;
+    }
+    copernicusServiceUrl = nextCopernicusServiceUrl;
+  }
+  if (terrainService) {
+    const nextTerrainServiceUrl = terrainService.url.replace(/\/$/, "");
+    if (terrainServiceUrl !== nextTerrainServiceUrl) {
+      clearTerrainTileCache();
+      terrainRevision = null;
+      terrainPalette = null;
+    }
+    terrainServiceUrl = nextTerrainServiceUrl;
   }
   if (terrainService) {
     await refreshTerrainPalette();
@@ -2624,6 +2687,11 @@ window.setInterval(() => {
 window.setInterval(() => {
   refreshRasterRevision().catch((error) => {
     status.textContent = `Unable to refresh satellite imagery: ${error.message}`;
+  });
+}, 5000);
+window.setInterval(() => {
+  refreshCopernicusRevision().catch((error) => {
+    status.textContent = `Unable to refresh Copernicus imagery: ${error.message}`;
   });
 }, 5000);
 window.setInterval(() => {

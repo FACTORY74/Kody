@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from functools import lru_cache
+import hashlib
 from io import BytesIO
 from math import atan, ceil, cos, exp, floor, log, log2, pi, sin, sinh, tan
 from pathlib import Path
@@ -22,8 +23,10 @@ from pydantic import BaseModel, Field
 import requests
 
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
+REPOSITORY_DIRECTORY = Path(__file__).resolve().parents[4]
 DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
 COPERNICUS_DIRECTORY = DATA_ROOT / "copernicus" / "tiles"
+CONFIG_FILE = REPOSITORY_DIRECTORY / "config" / "copernicus.json"
 WEB_MERCATOR_HALF_WORLD = 20037508.342789244
 EARTH_RADIUS_METRES = 6378137
 CONFIGURATION_SERVICE_URL = os.environ.get(
@@ -35,12 +38,18 @@ COPERNICUS_TOKEN_URL = (
 COPERNICUS_PROCESS_URL = "https://sh.dataspace.copernicus.eu/api/v1/process"
 GLOBAL_MOSAIC_COLLECTION = "byoc-5460de54-082e-473a-b6ea-d5cbe3c17cca"
 MAXIMUM_UNCONFIRMED_DOWNLOAD_TILES = 64
+MAXIMUM_PROCESS_REQUEST_DEGREES = 10
+MAXIMUM_PROCESS_PIXEL_SIZE_METRES = 1_600
+MAXIMUM_PROCESS_OUTPUT_PIXELS = 2_500
+LOCAL_TILE_EXTENSION = ".webp"
+LOCAL_TILE_FORMAT = "WEBP"
+LOCAL_TILE_SAVE_OPTIONS = {"quality": 90, "method": 6}
 TRUE_COLOR_EVALSCRIPT = """//VERSION=3
 function setup() {
-    return {
-        input: ["B02", "B03", "B04"],
-        output: { bands: 3 }
-    };
+return {
+    input: ["B02", "B03", "B04"],
+    output: { bands: 3 }
+};
 }
 
 function evaluatePixel(sample) {
@@ -59,19 +68,46 @@ initialize_data_directory()
 class CopernicusConfiguration(BaseModel):
     client_id: str = Field(default="", alias="clientId", max_length=256)
     client_secret: str = Field(default="", alias="clientSecret", max_length=1024)
+    rebuild_pyramid_with_download: bool = Field(
+        default=True, alias="rebuildPyramidWithDownload"
+    )
 
 
 class ConfigurationStore:
-    def __init__(self) -> None:
-        self.configuration = CopernicusConfiguration()
+    def __init__(self, path: Path = CONFIG_FILE) -> None:
+        self.path = path
         self.lock = RLock()
+        self.configuration = self._read()
+
+    def _read(self) -> CopernicusConfiguration:
+        try:
+            return CopernicusConfiguration.model_validate_json(
+                self.path.read_text(encoding="utf-8")
+            )
+        except FileNotFoundError:
+            return CopernicusConfiguration()
+        except ValueError as error:
+            raise RuntimeError(
+                f"Copernicus configuration is invalid: {self.path}"
+            ) from error
+
+    def _write(self, configuration: CopernicusConfiguration) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.path.with_suffix(".tmp")
+        temporary_path.write_text(
+            configuration.model_dump_json(indent=2, by_alias=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(self.path)
 
     def revision(self) -> str:
-        return str(hash(self.configuration.model_dump_json(by_alias=True)))
+        encoded = self.configuration.model_dump_json(by_alias=True)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def response(self) -> dict[str, object]:
         with self.lock:
             configuration = self.configuration.model_dump(by_alias=True)
+            configuration["clientSecretSaved"] = bool(configuration["clientSecret"])
             configuration["clientSecret"] = ""
             return {"revision": self.revision(), **configuration}
 
@@ -85,6 +121,7 @@ class ConfigurationStore:
                 configuration = configuration.model_copy(
                     update={"client_secret": self.configuration.client_secret}
                 )
+            self._write(configuration)
             self.configuration = configuration
             return self.response()
 
@@ -188,15 +225,98 @@ def viewport_tiles(viewport: Viewport) -> tuple[int, list[tuple[int, int]]]:
     return zoom, [(x, y) for y in range(north, south + 1) for x in range(west, east + 1)]
 
 
-def copernicus_request(tile_zoom: int, x: int, y: int) -> dict[str, Any]:
+def web_mercator_longitude(x: float) -> float:
+    return x / WEB_MERCATOR_HALF_WORLD * 180
+
+
+def web_mercator_latitude(y: float) -> float:
+    return atan(sinh(y / WEB_MERCATOR_HALF_WORLD * pi)) * 180 / pi
+
+
+def longitude_web_mercator(longitude: float) -> float:
+    return longitude / 180 * WEB_MERCATOR_HALF_WORLD
+
+
+def latitude_web_mercator(latitude: float) -> float:
+    return log(tan(pi / 4 + latitude * pi / 360)) / pi * WEB_MERCATOR_HALF_WORLD
+
+
+def copernicus_tile_sections(
+    tile_zoom: int, x: int, y: int
+) -> list[tuple[tuple[float, float, float, float], tuple[int, int, int, int]]]:
     tile_span = 2 * WEB_MERCATOR_HALF_WORLD / 2**tile_zoom
     left = -WEB_MERCATOR_HALF_WORLD + x * tile_span
     top = WEB_MERCATOR_HALF_WORLD - y * tile_span
+    right = left + tile_span
+    bottom = top - tile_span
+    west = web_mercator_longitude(left)
+    east = web_mercator_longitude(right)
+    north = web_mercator_latitude(top)
+    south = web_mercator_latitude(bottom)
+    maximum_projected_span = (
+        MAXIMUM_PROCESS_PIXEL_SIZE_METRES * MAXIMUM_PROCESS_OUTPUT_PIXELS
+    )
+    columns = max(
+        1,
+        ceil((east - west) / MAXIMUM_PROCESS_REQUEST_DEGREES),
+        ceil(tile_span / maximum_projected_span),
+    )
+    rows = max(
+        1,
+        ceil((north - south) / MAXIMUM_PROCESS_REQUEST_DEGREES),
+        ceil(tile_span / maximum_projected_span),
+    )
+    while any(
+        web_mercator_latitude(top - tile_span * row / rows)
+        - web_mercator_latitude(top - tile_span * (row + 1) / rows)
+        > MAXIMUM_PROCESS_REQUEST_DEGREES
+        for row in range(rows)
+    ):
+        rows += 1
+    sections = []
+    for row in range(rows):
+        section_top = top - tile_span * row / rows
+        section_bottom = top - tile_span * (row + 1) / rows
+        for column in range(columns):
+            section_left = left + tile_span * column / columns
+            section_right = left + tile_span * (column + 1) / columns
+            sections.append((
+                (
+                    section_left,
+                    section_bottom,
+                    section_right,
+                    section_top,
+                ),
+                (
+                    round(column * 256 / columns),
+                    round(row * 256 / rows),
+                    round((column + 1) * 256 / columns),
+                    round((row + 1) * 256 / rows),
+                ),
+            ))
+    return sections
+
+
+def copernicus_request_dimensions(
+    bounds: tuple[float, float, float, float],
+    destination: tuple[int, int, int, int],
+) -> tuple[int, int]:
+    left, bottom, right, top = bounds
+    destination_left, destination_top, destination_right, destination_bottom = destination
+    return (
+        max(destination_right - destination_left, ceil((right - left) / MAXIMUM_PROCESS_PIXEL_SIZE_METRES)),
+        max(destination_bottom - destination_top, ceil((top - bottom) / MAXIMUM_PROCESS_PIXEL_SIZE_METRES)),
+    )
+
+
+def copernicus_request(
+    bounds: tuple[float, float, float, float], width: int, height: int
+) -> dict[str, Any]:
     now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     return {
         "input": {
             "bounds": {
-                "bbox": [left, top - tile_span, left + tile_span, top],
+                "bbox": list(bounds),
                 "properties": {"crs": "http://www.opengis.net/def/crs/EPSG/0/3857"},
             },
             "data": [{
@@ -208,12 +328,71 @@ def copernicus_request(tile_zoom: int, x: int, y: int) -> dict[str, Any]:
             }],
         },
         "output": {
-            "width": 256,
-            "height": 256,
+            "width": width,
+            "height": height,
             "responses": [{"identifier": "default", "format": {"type": "image/png"}}],
         },
         "evalscript": TRUE_COLOR_EVALSCRIPT,
     }
+
+
+def process_response_bytes(
+    response: requests.Response,
+    bounds: tuple[float, float, float, float],
+    width: int,
+    height: int,
+) -> bytes:
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as error:
+        detail = response.text.strip().replace("\n", " ")
+        if len(detail) > 1_000:
+            detail = f"{detail[:1_000]}..."
+        raise RuntimeError(
+            "Copernicus Process API rejected "
+            f"{width}x{height}px EPSG:3857 bbox {bounds}: {detail or error}"
+        ) from error
+    return response.content
+
+
+def download_copernicus_tile(
+    session: requests.Session,
+    headers: dict[str, str],
+    tile_zoom: int,
+    x: int,
+    y: int,
+) -> int:
+    image = Image.new("RGB", (256, 256))
+    sections = copernicus_tile_sections(tile_zoom, x, y)
+    try:
+        for bounds, destination_bounds in sections:
+            left, top, right, bottom = destination_bounds
+            request_width, request_height = copernicus_request_dimensions(
+                bounds, destination_bounds
+            )
+            response = session.post(
+                COPERNICUS_PROCESS_URL,
+                json=copernicus_request(bounds, request_width, request_height),
+                headers=headers,
+                timeout=120,
+            )
+            with Image.open(
+                BytesIO(process_response_bytes(response, bounds, request_width, request_height))
+            ) as section:
+                image.paste(
+                    section.convert("RGB").resize(
+                        (right - left, bottom - top), Image.Resampling.LANCZOS
+                    ),
+                    (left, top),
+                )
+        destination = (
+            COPERNICUS_DIRECTORY / str(tile_zoom) / str(x) / f"{y}{LOCAL_TILE_EXTENSION}"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        image.save(destination, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
+    finally:
+        image.close()
+    return len(sections)
 
 
 def download_current_viewport(configuration: CopernicusConfiguration) -> str:
@@ -221,6 +400,7 @@ def download_current_viewport(configuration: CopernicusConfiguration) -> str:
         raise ValueError("Copernicus client ID and client secret are required")
     viewport = viewport_from_configuration_service()
     zoom, tiles = viewport_tiles(viewport)
+    request_count = sum(len(copernicus_tile_sections(zoom, x, y)) for x, y in tiles)
     session = requests.Session()
     token_response = session.post(
         COPERNICUS_TOKEN_URL,
@@ -236,23 +416,24 @@ def download_current_viewport(configuration: CopernicusConfiguration) -> str:
     if not isinstance(access_token, str) or not access_token:
         raise RuntimeError("Copernicus token response did not include an access token")
     headers = {"Authorization": f"Bearer {access_token}"}
+    completed_requests = 0
     for index, (x, y) in enumerate(tiles, start=1):
-        import_state.update(f"Downloading tile {index} of {len(tiles)} at zoom {zoom}.")
-        response = session.post(
-            COPERNICUS_PROCESS_URL,
-            json=copernicus_request(zoom, x, y),
-            headers=headers,
-            timeout=120,
+        import_state.update(
+            f"Downloading map tile {index} of {len(tiles)} "
+            f"({completed_requests + 1} of {request_count} Copernicus requests)."
         )
-        response.raise_for_status()
-        destination = COPERNICUS_DIRECTORY / str(zoom) / str(x) / f"{y}.png"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with Image.open(BytesIO(response.content)) as image:
-            image.convert("RGB").save(destination)
+        completed_requests += download_copernicus_tile(session, headers, zoom, x, y)
     marker = COPERNICUS_DIRECTORY / ".revision"
     marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
     cached_raster_tile_bytes.cache_clear()
-    return f"Downloaded {len(tiles)} Copernicus Global Mosaic tiles at zoom {zoom}."
+    message = (
+        f"Downloaded {len(tiles)} Copernicus Global Mosaic tiles at zoom {zoom} "
+        f"using {request_count} Copernicus requests."
+    )
+    if configuration.rebuild_pyramid_with_download:
+        overview_tiles = compose_parent_tiles(COPERNICUS_DIRECTORY, zoom, set(tiles))
+        message += f" Updated {overview_tiles} parent overview tiles."
+    return message
 
 
 def associated_file(source: Path, extensions: tuple[str, ...]) -> Path:
@@ -300,22 +481,27 @@ def compose_parent_level(
     parent_zoom = child_zoom - 1
     parent_tiles = {(x // 2, y // 2) for x, y in child_tiles}
     for parent_x, parent_y in parent_tiles:
-            destination = directory / str(parent_zoom) / str(parent_x) / f"{parent_y}.png"
-            if destination.is_file():
-                with Image.open(destination) as existing:
+            destination = (
+                directory / str(parent_zoom) / str(parent_x) / f"{parent_y}{LOCAL_TILE_EXTENSION}"
+            )
+            existing_path = raster_tile_path(directory, parent_zoom, parent_x, parent_y)
+            if existing_path is not None:
+                with Image.open(existing_path) as existing:
                     parent = existing.convert("RGBA")
             else:
                 parent = Image.new("RGBA", (256, 256))
             for child_x, child_y in child_tiles:
                 if child_x // 2 != parent_x or child_y // 2 != parent_y:
                     continue
-                child_path = directory / str(child_zoom) / str(child_x) / f"{child_y}.png"
+                child_path = raster_tile_path(directory, child_zoom, child_x, child_y)
+                if child_path is None:
+                    continue
                 with Image.open(child_path) as source:
                     child = source.convert("RGBA").resize((128, 128), Image.Resampling.LANCZOS)
                 parent.alpha_composite(child, ((child_x % 2) * 128, (child_y % 2) * 128))
                 child.close()
             destination.parent.mkdir(parents=True, exist_ok=True)
-            parent.save(destination)
+            parent.save(destination, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
             parent.close()
     return parent_tiles
 
@@ -339,7 +525,7 @@ def tile_coordinates(directory: Path, zoom: int) -> set[tuple[int, int]]:
         return set()
     coordinates = set()
     for path in zoom_directory.glob("*/*"):
-        if not path.is_file() or path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+        if not path.is_file() or path.suffix.lower() != LOCAL_TILE_EXTENSION:
             continue
         try:
             coordinates.add((int(path.parent.name), int(path.stem)))
@@ -426,7 +612,9 @@ def import_georeferenced_png(filename: str, rebuild_pyramid: bool = True) -> str
         for x in range(minimum_x, maximum_x + 1):
             tile_left = -WEB_MERCATOR_HALF_WORLD + x * tile_span
             tile_top = WEB_MERCATOR_HALF_WORLD - y * tile_span
-            destination = COPERNICUS_DIRECTORY / str(native_zoom) / str(x) / f"{y}.png"
+            destination = (
+                COPERNICUS_DIRECTORY / str(native_zoom) / str(x) / f"{y}{LOCAL_TILE_EXTENSION}"
+            )
             destination.parent.mkdir(parents=True, exist_ok=True)
             if source_projection == "world-mercator":
                 def source_pixel(target_x: float, target_y: float) -> tuple[float, float]:
@@ -461,7 +649,7 @@ def import_georeferenced_png(filename: str, rebuild_pyramid: bool = True) -> str
                 patch.close()
             else:
                 tile = patch
-            tile.save(destination)
+            tile.save(destination, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
             tile.close()
             native_tiles.add((x, y))
             written_tiles += 1
@@ -481,11 +669,8 @@ def import_georeferenced_png(filename: str, rebuild_pyramid: bool = True) -> str
 
 
 def raster_tile_path(directory: Path, zoom: int, x: int, y: int) -> Path | None:
-    for extension in (".png", ".jpg", ".jpeg", ".webp"):
-        path = directory / str(zoom) / str(x) / f"{y}{extension}"
-        if path.is_file():
-            return path
-    return None
+    path = directory / str(zoom) / str(x) / f"{y}{LOCAL_TILE_EXTENSION}"
+    return path if path.is_file() else None
 
 
 def child_tile_from_parent(parent: Image.Image, x: int, y: int) -> Image.Image:
@@ -532,7 +717,7 @@ def raster_tile_bytes(directory: Path, zoom: int, x: int, y: int) -> bytes | Non
     if tile is None:
         return None
     output = BytesIO()
-    tile.save(output, format="PNG")
+    tile.save(output, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
     tile.close()
     return output.getvalue()
 
@@ -565,7 +750,7 @@ def get_raster_tile(zoom: int, x: int, y: int) -> Response:
         raise HTTPException(status_code=422, detail="invalid raster tile coordinates")
     tile = cached_raster_tile_bytes(zoom, x, y)
     if tile is not None:
-        return Response(content=tile, media_type="image/png")
+        return Response(content=tile, media_type="image/webp")
     raise HTTPException(status_code=404, detail="local raster tile is unavailable")
 
 
@@ -588,8 +773,14 @@ def get_manifest() -> dict[str, object]:
                 {
                     "key": "clientSecret",
                     "label": "Copernicus client secret",
-                    "type": "string",
-                    "required": True,
+                    "type": "password",
+                    "required": False,
+                    "secretStoredKey": "clientSecretSaved",
+                },
+                {
+                    "key": "rebuildPyramidWithDownload",
+                    "label": "Rebuild tile pyramid after download",
+                    "type": "boolean",
                 },
             ],
             "actions": [
@@ -598,6 +789,12 @@ def get_manifest() -> dict[str, object]:
                     "path": "/api/actions/download-current-viewport",
                     "statusPath": "/api/actions/download-current-viewport",
                     "confirmationPath": "/api/actions/assess-current-viewport",
+                    "method": "POST",
+                },
+                {
+                    "label": "Rebuild Copernicus tile pyramid",
+                    "path": "/api/actions/build-overview-tiles",
+                    "statusPath": "/api/actions/build-overview-tiles",
                     "method": "POST",
                 },
                 {
@@ -627,16 +824,18 @@ def update_configuration(
 @app.get("/api/actions/assess-current-viewport")
 def assess_current_viewport() -> dict[str, object]:
     zoom, tiles = viewport_tiles(viewport_from_configuration_service())
-    count = len(tiles)
+    request_count = sum(len(copernicus_tile_sections(zoom, x, y)) for x, y in tiles)
     return {
-        "tileCount": count,
+        "tileCount": len(tiles),
+        "requestCount": request_count,
         "zoom": zoom,
-        "requiresConfirmation": count > MAXIMUM_UNCONFIRMED_DOWNLOAD_TILES,
+        "requiresConfirmation": request_count > MAXIMUM_UNCONFIRMED_DOWNLOAD_TILES,
         "message": (
-            f"The current viewport needs {count} Copernicus Global Mosaic tiles at zoom {zoom}. "
+            f"The current viewport needs {len(tiles)} local map tiles from "
+            f"{request_count} Copernicus requests at zoom {zoom}. "
             + (
                 "Continue with this download?"
-                if count > MAXIMUM_UNCONFIRMED_DOWNLOAD_TILES
+                if request_count > MAXIMUM_UNCONFIRMED_DOWNLOAD_TILES
                 else "Download now?"
             )
         ),
@@ -649,7 +848,10 @@ def download_current_viewport_action(background_tasks: BackgroundTasks) -> dict[
     if not configuration.client_id or not configuration.client_secret:
         raise HTTPException(status_code=422, detail="Copernicus client ID and client secret are required")
     zoom, tiles = viewport_tiles(viewport_from_configuration_service())
-    import_state.start(f"Downloading {len(tiles)} Copernicus Global Mosaic tiles at zoom {zoom}.")
+    request_count = sum(len(copernicus_tile_sections(zoom, x, y)) for x, y in tiles)
+    import_state.start(
+        f"Downloading {len(tiles)} map tiles with {request_count} Copernicus requests at zoom {zoom}."
+    )
 
     def process() -> None:
         try:
@@ -658,7 +860,11 @@ def download_current_viewport_action(background_tasks: BackgroundTasks) -> dict[
             import_state.fail(error)
 
     background_tasks.add_task(process)
-    return {"message": f"Downloading {len(tiles)} Copernicus Global Mosaic tiles at zoom {zoom}."}
+    return {
+        "message": (
+            f"Downloading {len(tiles)} map tiles with {request_count} Copernicus requests at zoom {zoom}."
+        )
+    }
 
 
 @app.get("/api/actions/download-current-viewport")
@@ -668,7 +874,7 @@ def get_download_status() -> dict[str, str]:
 
 @app.post("/api/actions/build-overview-tiles", status_code=202)
 def build_overview_tiles(background_tasks: BackgroundTasks) -> dict[str, str]:
-    import_state.start("Rebuilding lower-zoom satellite pyramid.")
+    import_state.start("Rebuilding lower-zoom Copernicus tile pyramid.")
 
     def process() -> None:
         try:
@@ -676,12 +882,17 @@ def build_overview_tiles(background_tasks: BackgroundTasks) -> dict[str, str]:
             marker = COPERNICUS_DIRECTORY / ".revision"
             marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
             cached_raster_tile_bytes.cache_clear()
-            import_state.complete(f"Built {count} lower-zoom Copernicus overview tiles.")
+            import_state.complete(f"Built {count} Copernicus parent overview tiles.")
         except Exception as error:
             import_state.fail(error)
 
     background_tasks.add_task(process)
-    return {"message": "Building lower-zoom satellite overview tiles."}
+    return {"message": "Rebuilding the Copernicus tile pyramid."}
+
+
+@app.get("/api/actions/build-overview-tiles")
+def get_build_overview_tiles_status() -> dict[str, str]:
+    return import_state.response()
 
 
 @app.post("/api/actions/clear-local-data")

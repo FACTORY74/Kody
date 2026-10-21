@@ -12,6 +12,7 @@ const status = document.querySelector("#map-status");
 const attribution = document.querySelector("#map-attribution");
 let vectorLayer;
 let imageryLayer;
+let copernicusLayer;
 let terrainLayer;
 const mapServiceList = document.querySelector("#map-service-list");
 const dataSourceList = document.querySelector("#data-source-list");
@@ -38,13 +39,16 @@ const configurationServiceUrl = "http://127.0.0.1:8001";
 const camera = { x: 0.5, y: 0.5, zoom: 1.4 };
 const tileCache = new Map();
 const rasterTileCache = new Map();
+const copernicusTileCache = new Map();
 const terrainTileCache = new Map();
 const requestedTileKeys = new Set();
 const requestedRasterTileKeys = new Set();
+const requestedCopernicusTileKeys = new Set();
 const requestedTerrainTileKeys = new Set();
 const tileWorker = new Worker("/tile-worker.js?v=20261020d");
 let vectorMapServiceUrl = window.location.origin;
 let satelliteMapServiceUrl = window.location.origin;
+let copernicusServiceUrl = window.location.origin;
 let terrainServiceUrl = window.location.origin;
 let configuredMapServices = [];
 let configuredServices = [];
@@ -64,6 +68,7 @@ let vectorTileZooms = [0];
 let savedMapStateVersion = 0;
 let mapViewSaveInProgress = false;
 let rasterRevision = null;
+let copernicusRevision = null;
 let terrainRevision = null;
 let terrainPalette = null;
 let viewportElevation = null;
@@ -85,7 +90,7 @@ let viewportPublishTimer = null;
 let viewportElevationTimer = null;
 let viewportElevationRequest = 0;
 const mapServices = new Map();
-const layerOpacity = { satellite: 10, terrain: 8, vector: 10, grid: 10 };
+const layerOpacity = { satellite: 10, copernicus: 10, terrain: 8, vector: 10, grid: 10 };
 let gridCrosshair = false;
 const airLanesCacheCanvas = document.createElement("canvas");
 const airLanesCacheContext = airLanesCacheCanvas.getContext("2d");
@@ -149,6 +154,7 @@ function mapLayerDetails(type, layers) {
   return {
     vecmap: { control: "vectorLayer", visible: layers?.vectorMap ?? true, opacity: "vector" },
     satmap: { control: "imageryLayer", visible: layers?.satelliteImagery ?? false, opacity: "satellite" },
+    copernicus: { control: "copernicusLayer", visible: layers?.copernicus ?? false, opacity: "copernicus" },
     terrain: { control: "terrainLayer", visible: layers?.terrain ?? false, opacity: "terrain" },
   }[type];
 }
@@ -171,6 +177,8 @@ function renderMapServiceControls(layers) {
       refreshMap();
       if (service.type === "satmap") {
         refreshRasterRevision().catch((error) => { status.textContent = `Unable to refresh satellite imagery: ${error.message}`; });
+      } else if (service.type === "copernicus") {
+        refreshCopernicusRevision().catch((error) => { status.textContent = `Unable to refresh Copernicus imagery: ${error.message}`; });
       } else if (service.type === "terrain") {
         refreshTerrainRevision().catch((error) => { status.textContent = `Unable to refresh terrain: ${error.message}`; });
       }
@@ -205,6 +213,7 @@ function renderMapServiceControls(layers) {
     mapServiceList.append(row);
     if (details.control === "vectorLayer") vectorLayer = checkbox;
     if (details.control === "imageryLayer") imageryLayer = checkbox;
+    if (details.control === "copernicusLayer") copernicusLayer = checkbox;
     if (details.control === "terrainLayer") terrainLayer = checkbox;
   }
 }
@@ -212,6 +221,7 @@ function renderMapServiceControls(layers) {
 const layers = {
   vector: { isVisible: () => vectorLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.vector, drawCountryLayer) },
   imagery: { isVisible: () => imageryLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.satellite, drawImageryLayer) },
+  copernicus: { isVisible: () => copernicusLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.copernicus, drawCopernicusLayer) },
   terrain: { isVisible: () => terrainLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.terrain, drawTerrainLayer) },
   shapes: { isVisible: () => shapes.length > 0 || contextActionFeatures.length > 0, draw: drawShapesLayer },
   grid: { isVisible: () => gridLayer.checked, draw: () => drawWithOpacity(layerOpacity.grid, drawGridLayer) },
@@ -474,6 +484,19 @@ function drawImageryLayer(target) {
 
   if (detailZoom > baseZoom) {
     for (const tile of exactCachedTiles(detailZoom, rasterTileCache, rasterTileKey)) {
+      drawTile(target, tile);
+    }
+  }
+}
+
+function drawCopernicusLayer(target) {
+  const baseZoom = Math.max(0, Math.min(18, Math.floor(camera.zoom)));
+  const detailZoom = Math.min(18, Math.ceil(camera.zoom));
+  for (const tile of nearestCachedTiles(baseZoom, copernicusTileCache, copernicusTileKey)) {
+    drawTile(target, tile);
+  }
+  if (detailZoom > baseZoom) {
+    for (const tile of exactCachedTiles(detailZoom, copernicusTileCache, copernicusTileKey)) {
       drawTile(target, tile);
     }
   }
@@ -1268,6 +1291,16 @@ async function configureService(service) {
           ) {
             return;
           }
+          if (typeof action.confirmationPath === "string") {
+            const assessmentResponse = await fetch(`${service.url}${action.confirmationPath}`);
+            if (!assessmentResponse.ok) {
+              throw new Error(`service assessment returned ${assessmentResponse.status}`);
+            }
+            const assessment = await assessmentResponse.json();
+            if (assessment.requiresConfirmation && !window.confirm(assessment.message)) {
+              return;
+            }
+          }
           button.disabled = true;
           serviceConfigProgress.hidden = false;
           serviceConfigProgressLabel.textContent = "Submitting action...";
@@ -1700,6 +1733,10 @@ function rasterTileKey({ zoom, x, y }) {
   return `${satelliteMapServiceUrl}/raster/${zoom}/${x}/${y}`;
 }
 
+function copernicusTileKey({ zoom, x, y }) {
+  return `${copernicusServiceUrl}/raster/${zoom}/${x}/${y}`;
+}
+
 function terrainTileKey({ zoom, x, y }) {
   return `${terrainServiceUrl}/raster/${zoom}/${x}/${y}`;
 }
@@ -1769,6 +1806,12 @@ function clearRasterTileCache() {
   requestedRasterTileKeys.clear();
 }
 
+function clearCopernicusTileCache() {
+  copernicusTileCache.forEach((bitmap) => bitmap.close());
+  copernicusTileCache.clear();
+  requestedCopernicusTileKeys.clear();
+}
+
 function clearVectorTileCache() {
   vectorTileGeneration += 1;
   tileCache.forEach((tile) => tile.bitmap.close());
@@ -1785,6 +1828,22 @@ function clearTerrainTileCache() {
 async function refreshRasterRevision() {
   if (!mapServices.has("satmap") || !imageryLayer.checked) {
     return;
+  }
+
+  async function refreshCopernicusRevision() {
+    if (!mapServices.has("copernicus") || !copernicusLayer.checked) {
+      return;
+    }
+    const response = await fetch(`${copernicusServiceUrl}/api/raster/revision`);
+    if (!response.ok) {
+      throw new Error(`Copernicus service returned ${response.status} for raster revision`);
+    }
+    const { revision } = await response.json();
+    if (copernicusRevision !== null && copernicusRevision !== revision) {
+      clearCopernicusTileCache();
+      requestVisibleTiles();
+    }
+    copernicusRevision = revision;
   }
 
   const response = await fetch(`${satelliteMapServiceUrl}/api/raster/revision`);
@@ -2140,6 +2199,17 @@ function missingRasterTiles(zoom) {
       return false;
     }
 
+    function missingCopernicusTiles(zoom) {
+      return visibleTiles(zoom).filter((tile) => {
+        const key = copernicusTileKey(tile);
+        if (requestedCopernicusTileKeys.has(key)) {
+          return false;
+        }
+        requestedCopernicusTileKeys.add(key);
+        return true;
+      });
+    }
+
     requestedRasterTileKeys.add(key);
     return true;
   });
@@ -2189,6 +2259,22 @@ function requestVisibleTiles() {
         tileWorker.postMessage({ type: "request-raster-tiles", serviceUrl: satelliteMapServiceUrl, tiles: rasterTiles });
       }
     }
+    if (mapServices.has("copernicus") && copernicusLayer.checked) {
+      let copernicusTiles = missingCopernicusTiles(baseZoom);
+      const copernicusBaseTilesReady = baseTiles.every(
+        (tile) => copernicusTileCache.has(copernicusTileKey(tile)),
+      );
+      if (copernicusBaseTilesReady && updatesPerSecond >= 50 && detailZoom > baseZoom) {
+        copernicusTiles = copernicusTiles.concat(missingCopernicusTiles(detailZoom));
+      }
+      if (copernicusTiles.length > 0) {
+        tileWorker.postMessage({
+          type: "request-raster-tiles",
+          serviceUrl: copernicusServiceUrl,
+          tiles: copernicusTiles,
+        });
+      }
+    }
     if (mapServices.has("terrain") && terrainLayer.checked) {
       let terrainTiles = missingTerrainTiles(baseZoom);
       const terrainBaseTilesReady = baseTiles.every((tile) => terrainTileCache.has(terrainTileKey(tile)));
@@ -2230,13 +2316,14 @@ async function loadConfiguration(restoreMapView = true) {
   }
   const configuration = await servicesResponse.json();
   configuredServices = configuration.services;
-  configuredMapServices = configuration.services.filter((service) => ["vecmap", "satmap", "terrain"].includes(service.type));
+  configuredMapServices = configuration.services.filter((service) => ["vecmap", "satmap", "copernicus", "terrain"].includes(service.type));
   const runningServices = await registeredRunningServices(configuration.services);
   const vectorService = runningServices.find((item) => item.type === "vecmap");
   const satelliteService = runningServices.find((item) => item.type === "satmap");
+  const copernicusService = runningServices.find((item) => item.type === "copernicus");
   const terrainService = runningServices.find((item) => item.type === "terrain");
   mapServices.clear();
-  [vectorService, satelliteService, terrainService].filter(Boolean).forEach((service) => {
+  [vectorService, satelliteService, copernicusService, terrainService].filter(Boolean).forEach((service) => {
     mapServices.set(service.type, service);
   });
   symbolServices = runningServices
@@ -2259,15 +2346,18 @@ async function loadConfiguration(restoreMapView = true) {
       overlayCollections.delete(key);
     }
   }
-  if (vectorService || satelliteService || terrainService) {
+  if (vectorService || satelliteService || copernicusService || terrainService) {
     vectorMapServiceUrl = vectorService?.url.replace(/\/$/, "") || window.location.origin;
     satelliteMapServiceUrl = satelliteService?.url.replace(/\/$/, "") || window.location.origin;
+    copernicusServiceUrl = copernicusService?.url.replace(/\/$/, "") || window.location.origin;
     terrainServiceUrl = terrainService?.url.replace(/\/$/, "") || window.location.origin;
     clearVectorTileCache();
     clearRasterTileCache();
+    clearCopernicusTileCache();
     clearTerrainTileCache();
     vectorTileRevision = null;
     rasterRevision = null;
+    copernicusRevision = null;
     terrainRevision = null;
     terrainPalette = null;
   }
@@ -2289,6 +2379,7 @@ async function loadConfiguration(restoreMapView = true) {
     gridLayer.checked = mapView.layers?.grid ?? true;
     gridCrosshair = mapView.layers?.gridCrosshair ?? false;
     layerOpacity.satellite = mapView.layers?.satelliteOpacity ?? 10;
+    layerOpacity.copernicus = mapView.layers?.copernicusOpacity ?? 10;
     layerOpacity.terrain = mapView.layers?.terrainOpacity ?? 8;
     layerOpacity.vector = mapView.layers?.vectorOpacity ?? 10;
     layerOpacity.grid = mapView.layers?.gridOpacity ?? 10;
@@ -2305,6 +2396,10 @@ async function loadConfiguration(restoreMapView = true) {
   renderSymbolSourceControls(mapView?.layers?.dataSources);
   if (imageryLayer?.checked) {
     await refreshRasterRevision();
+    refreshMap();
+  }
+  if (copernicusLayer?.checked) {
+    await refreshCopernicusRevision();
     refreshMap();
   }
   try {
@@ -2333,6 +2428,7 @@ async function saveMapView() {
         zoom: camera.zoom,
         layers: {
           satelliteImagery: imageryLayer.checked,
+          copernicus: copernicusLayer.checked,
           terrain: terrainLayer.checked,
           dataSources: overlayLayerSelections(),
           dataSourceOpacity: overlaySourceOpacities(),
@@ -2340,6 +2436,7 @@ async function saveMapView() {
           grid: gridLayer.checked,
           gridCrosshair,
           satelliteOpacity: layerOpacity.satellite,
+          copernicusOpacity: layerOpacity.copernicus,
           terrainOpacity: layerOpacity.terrain,
           vectorOpacity: layerOpacity.vector,
           gridOpacity: layerOpacity.grid,
@@ -2368,6 +2465,7 @@ function saveMapViewOnExit() {
     zoom: camera.zoom,
     layers: {
       satelliteImagery: imageryLayer.checked,
+      copernicus: copernicusLayer.checked,
       terrain: terrainLayer.checked,
       dataSources: overlayLayerSelections(),
       dataSourceOpacity: overlaySourceOpacities(),
@@ -2375,6 +2473,7 @@ function saveMapViewOnExit() {
       grid: gridLayer.checked,
       gridCrosshair,
       satelliteOpacity: layerOpacity.satellite,
+      copernicusOpacity: layerOpacity.copernicus,
       terrainOpacity: layerOpacity.terrain,
       vectorOpacity: layerOpacity.vector,
       gridOpacity: layerOpacity.grid,
@@ -2407,6 +2506,8 @@ tileWorker.addEventListener("message", (event) => {
   } else if (type === "raster-tile") {
     if (key.startsWith(`${terrainServiceUrl}/`)) {
       terrainTileCache.set(key, bitmap);
+    } else if (key.startsWith(`${copernicusServiceUrl}/`)) {
+      copernicusTileCache.set(key, bitmap);
     } else {
       rasterTileCache.set(key, bitmap);
     }
@@ -2415,6 +2516,9 @@ tileWorker.addEventListener("message", (event) => {
     if (key.startsWith(`${terrainServiceUrl}/`)) {
       requestedTerrainTileKeys.delete(key);
       status.textContent = `Unable to load terrain tile: ${message}`;
+    } else if (key.startsWith(`${copernicusServiceUrl}/`)) {
+      requestedCopernicusTileKeys.delete(key);
+      status.textContent = `Unable to load Copernicus tile: ${message}`;
     } else {
       requestedRasterTileKeys.delete(key);
       status.textContent = `Unable to load satellite tile: ${message}`;

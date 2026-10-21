@@ -9,15 +9,19 @@ For the supplied starter imagery, terrain, and Vector data, follow
 See [the workspace architecture](./ARCHITECTURE.md) for the ownership
 boundaries and run each component from its local runbook:
 
+![Kody progress screenshot](./progress/2026-10-21%20-%20001.png)
+
+
 - [`kody`](./kody/README.md) — central browser UI and configuration service
 - [`services/vecmap`](./services/vecmap/README.md) — offline vector map API, data, and package tooling
 - [`services/satmap`](./services/satmap/README.md) — offline satellite imagery API and tiles
+- [`services/copernicus`](./services/copernicus/README.md) — on-demand Copernicus Global Mosaic imagery API and tiles
 - [`services/shapes`](./services/shapes/README.md) — optional static Shapes GeoJSON service
 - [`services/tracks`](./services/tracks/README.md) — optional live Tracks GeoJSON service
 
 The central product starts on port 8000, configuration on 8001, Shapes on
-8002, Tracks on 8003, Vector map on 8004, ADS-B on 8005, and Satellite map on
-8006.
+8002, Tracks on 8003, Vector map on 8004, ADS-B on 8005, Satellite map on
+8006, and Copernicus Global Mosaic on 8011.
 
 ## Start everything
 

@@ -13,6 +13,7 @@ class MapViewTests(unittest.TestCase):
     def test_map_view_defaults_and_accepts_persisted_layer_selection(self) -> None:
         defaults = MapView.model_validate({"longitude": 0, "latitude": 0, "zoom": 1})
         self.assertFalse(defaults.layers.satellite_imagery)
+        self.assertFalse(defaults.layers.copernicus)
         self.assertFalse(defaults.layers.terrain)
         self.assertTrue(defaults.layers.vector_map)
         self.assertTrue(defaults.layers.grid)
@@ -25,11 +26,13 @@ class MapViewTests(unittest.TestCase):
                 "zoom": 1,
                 "layers": {
                     "satelliteImagery": True,
+                    "copernicus": True,
                     "terrain": True,
                     "vectorMap": False,
                     "grid": False,
                     "gridCrosshair": True,
                     "satelliteOpacity": 5,
+                    "copernicusOpacity": 7,
                     "terrainOpacity": 6,
                     "dataSources": {"local-adsb": False},
                     "dataSourceOpacity": {"local-shapes": 4, "local-adsb": 8},
@@ -38,11 +41,13 @@ class MapViewTests(unittest.TestCase):
         )
 
         self.assertTrue(saved.layers.satellite_imagery)
+        self.assertTrue(saved.layers.copernicus)
         self.assertTrue(saved.layers.terrain)
         self.assertFalse(saved.layers.vector_map)
         self.assertFalse(saved.layers.grid)
         self.assertTrue(saved.layers.grid_crosshair)
         self.assertEqual(saved.layers.satellite_opacity, 5)
+        self.assertEqual(saved.layers.copernicus_opacity, 7)
         self.assertEqual(saved.layers.terrain_opacity, 6)
         self.assertFalse(saved.layers.data_sources["local-adsb"])
         self.assertEqual(saved.layers.data_source_opacity, {"local-shapes": 4, "local-adsb": 8})
@@ -108,6 +113,17 @@ class MapViewTests(unittest.TestCase):
         )
 
         self.assertEqual([service.type for service in configuration.services], ["vecmap", "satmap"])
+
+    def test_accepts_copernicus_map_service(self) -> None:
+        configuration = ServiceConfiguration.model_validate(
+            {
+                "services": [
+                    {"id": "local-copernicus", "type": "copernicus", "url": "http://127.0.0.1:8011/"}
+                ]
+            }
+        )
+
+        self.assertEqual(configuration.services[0].type, "copernicus")
 
     def test_runtime_configuration_lists_all_services_with_bounded_log_retention(self) -> None:
         runtime = RuntimeConfiguration.model_validate(

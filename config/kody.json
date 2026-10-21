@@ -11,6 +11,11 @@
       "url": "http://127.0.0.1:8006/"
     },
     {
+      "id": "local-copernicus",
+      "type": "copernicus",
+      "url": "http://127.0.0.1:8011/"
+    },
+    {
       "id": "local-terrain",
       "type": "terrain",
       "url": "http://127.0.0.1:8010/"
@@ -47,18 +52,18 @@
     }
   ],
   "mapView": {
-    "longitude": -1.2745812143520538,
-    "latitude": 51.256283511473185,
-    "zoom": 8.200000000000003,
+    "longitude": -3.0855332718361126,
+    "latitude": 51.57257930865446,
+    "zoom": 7.000000000000001,
     "layers": {
       "satelliteImagery": false,
       "terrain": false,
       "vectorMap": true,
       "grid": true,
       "gridCrosshair": true,
-      "satelliteOpacity": 4,
+      "satelliteOpacity": 5,
       "terrainOpacity": 5,
-      "vectorOpacity": 4,
+      "vectorOpacity": 6,
       "gridOpacity": 2,
       "dataSources": {
         "local-shapes": false,
@@ -73,7 +78,7 @@
         "local-track": 10,
         "local-adsb": 10,
         "local-ais": 7,
-        "local-airlanes": 2
+        "local-airlanes": 10
       }
     }
   },
@@ -144,6 +149,14 @@
         "module": "kody_symbols.symbol_service:app",
         "workingDirectory": "services/symbols",
         "port": 8007,
+        "enabled": true
+      },
+      {
+        "id": "copernicus",
+        "displayName": "Copernicus Global Mosaic service",
+        "module": "kody_copernicus.server:app",
+        "workingDirectory": "services/copernicus",
+        "port": 8011,
         "enabled": true
       },
       {

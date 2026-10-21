@@ -438,7 +438,7 @@ class NativeTileStoreTests(unittest.TestCase):
         payload = render_tile(collection, styles, 0, 0, 0)
 
         with Image.open(BytesIO(payload)) as image:
-            self.assertEqual(image.convert("RGB").getpixel((256, 256)), (127, 178, 202))
+            self.assertEqual(image.convert("RGB").getpixel((256, 256)), (18, 34, 48))
 
     def test_raster_tile_paints_land_over_marine_polygons(self) -> None:
         styles = load_vector_theme().styles

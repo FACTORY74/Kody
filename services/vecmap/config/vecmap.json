@@ -6,7 +6,7 @@
   "showNaturalEarthPhysical": true,
   "showNaturalEarthCoastline": false,
   "showNaturalEarthHydrography": true,
-  "showNaturalEarthMarine": true,
+  "showNaturalEarthMarine": false,
   "showNaturalEarthBathymetry": true,
   "showNaturalEarthIce": true,
   "showNaturalEarthGeography": true,

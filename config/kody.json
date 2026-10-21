@@ -47,23 +47,23 @@
     }
   ],
   "mapView": {
-    "longitude": -1.4574088264492957,
-    "latitude": 50.99425956462701,
-    "zoom": 8.400000000000004,
+    "longitude": -1.2745812143520538,
+    "latitude": 51.256283511473185,
+    "zoom": 8.200000000000003,
     "layers": {
       "satelliteImagery": false,
       "terrain": false,
       "vectorMap": true,
       "grid": true,
       "gridCrosshair": true,
-      "satelliteOpacity": 10,
+      "satelliteOpacity": 4,
       "terrainOpacity": 5,
-      "vectorOpacity": 2,
+      "vectorOpacity": 4,
       "gridOpacity": 2,
       "dataSources": {
         "local-shapes": false,
         "local-track": false,
-        "local-adsb": true,
+        "local-adsb": false,
         "local-ais": false,
         "local-airlanes": false,
         "local-symbols": true

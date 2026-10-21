@@ -3,6 +3,7 @@ import unittest
 from kody_ais.ais_service import (
     AisConfiguration,
     AisStore,
+    OpenSeaFeedClient,
     ais_symbol,
     get_manifest,
     subscription_boundary,
@@ -19,6 +20,15 @@ class AisServiceTests(unittest.TestCase):
         self.assertEqual(store.vessels, {})
         self.assertEqual(store.ship_types, {})
         self.assertEqual(store.trails, {})
+
+    def test_feed_client_is_inactive_until_explicitly_enabled(self) -> None:
+        client = OpenSeaFeedClient(AisStore())
+
+        self.assertFalse(client.active_event.is_set())
+        client.set_active(True)
+        self.assertTrue(client.active_event.is_set())
+        client.set_active(False)
+        self.assertFalse(client.active_event.is_set())
 
     def test_builds_ship_position_trail_and_boundary(self) -> None:
         clock = [1_000.0]

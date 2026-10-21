@@ -19,7 +19,7 @@
     "ne-ice": {"zIndex": 4, "fill": "rgb(232, 246, 250)", "stroke": "rgb(185, 215, 225)", "lineWidth": 0.5},
     "ne-lake": {"zIndex": 5, "fill": "rgb(170, 211, 223)", "stroke": "rgb(135, 191, 209)", "lineWidth": 0.5},
     "ne-playa": {"zIndex": 5, "fill": "rgb(236, 224, 190)"},
-    "ne-marine": {"zIndex": 5, "fill": "rgb(185, 219, 230)", "stroke": "rgb(135, 191, 209)", "lineWidth": 0.5},
+    "ne-marine": {"zIndex": 2, "fill": "rgb(185, 219, 230)", "stroke": "rgb(135, 191, 209)", "lineWidth": 0.5},
     "ne-reef": {"zIndex": 6, "fill": "rgb(169, 218, 191)", "stroke": "rgb(112, 182, 159)", "lineWidth": 0.6},
     "ne-river": {"zIndex": 7, "stroke": "rgb(116, 183, 204)", "lineWidth": 0.8},
     "ne-coastline": {"zIndex": 8, "stroke": "rgb(92, 154, 121)", "lineWidth": 1.1},

@@ -890,6 +890,34 @@ function enabledOverlayServices() {
   return overlayServices.filter((service) => service.enabled);
 }
 
+function isLiveOverlayService(service) {
+  return service.type === "adsb" || service.type === "ais";
+}
+
+async function setLiveOverlayActivity(service) {
+  if (!isLiveOverlayService(service)) {
+    return;
+  }
+  const response = await fetch(`${service.url}/api/activity`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ active: service.enabled }),
+  });
+  if (!response.ok) {
+    throw new Error(`activity update returned ${response.status}`);
+  }
+}
+
+async function synchronizeLiveOverlayActivity() {
+  const results = await Promise.allSettled(
+    overlayServices.filter(isLiveOverlayService).map(setLiveOverlayActivity),
+  );
+  const failures = results.filter((result) => result.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(failures.map((failure) => failure.reason.message).join("; "));
+  }
+}
+
 function rebuildOverlayFeatures() {
   const collections = enabledOverlayServices()
     .map((service) => ({ service, collection: overlayCollections.get(overlayKey(service)) }))
@@ -1291,11 +1319,16 @@ function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) 
       overlayRevision = null;
       rebuildOverlayFeatures();
       saveLayerSelection();
-      if (service.enabled) {
+      setLiveOverlayActivity(service).then(() => {
+        if (!service.enabled) {
+          return;
+        }
         refreshShapes().catch((error) => {
           status.textContent = `Unable to refresh ${overlayDisplayName(service)}: ${error.message}`;
         });
-      }
+      }).catch((error) => {
+        status.textContent = `Unable to update ${overlayDisplayName(service)} activity: ${error.message}`;
+      });
     });
     const opacity = document.createElement("div");
     opacity.className = "opacity-control";
@@ -2268,6 +2301,7 @@ async function loadConfiguration(restoreMapView = true) {
   updateOpacityControls();
   scheduleViewportPublish();
   renderOverlaySourceControls(mapView?.layers?.dataSources, mapView?.layers?.dataSourceOpacity);
+  await synchronizeLiveOverlayActivity();
   renderSymbolSourceControls(mapView?.layers?.dataSources);
   if (imageryLayer?.checked) {
     await refreshRasterRevision();

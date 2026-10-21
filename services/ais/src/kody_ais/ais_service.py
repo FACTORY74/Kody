@@ -94,6 +94,10 @@ class AisConfiguration(BaseModel):
     display_color: str = Field(default="#00bcd4", alias="displayColor", pattern=r"^#[0-9a-fA-F]{6}$")
 
 
+class LiveActivity(BaseModel):
+    active: bool
+
+
 class ConfigurationStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -289,7 +293,20 @@ class OpenSeaFeedClient:
     def __init__(self, store: AisStore) -> None:
         self.store = store
         self.stop_event = Event()
+        self.active_event = Event()
+        self.connection_lock = Lock()
+        self.connection: Any | None = None
         self.thread: Thread | None = None
+
+    def set_active(self, active: bool) -> None:
+        if active:
+            self.active_event.set()
+            return
+        self.active_event.clear()
+        with self.connection_lock:
+            connection = self.connection
+        if connection is not None:
+            connection.close()
 
     def start(self) -> None:
         if self.thread is None:
@@ -304,24 +321,42 @@ class OpenSeaFeedClient:
             return
         generation = -1
         while not self.stop_event.is_set():
+            self.active_event.wait()
+            if self.stop_event.is_set():
+                break
+            connection: Any | None = None
             try:
                 with self.store.lock:
                     configuration = self.store.configuration
                     generation = self.store.generation
                 connection = websocket.create_connection(STREAM_URL, timeout=5)
+                with self.connection_lock:
+                    self.connection = connection
+                if not self.active_event.is_set():
+                    continue
                 connection.send(json.dumps({"BoundingBoxes": [subscription_bounds(configuration)]}))
-                while not self.stop_event.is_set() and generation == self.store.generation:
+                while (
+                    not self.stop_event.is_set()
+                    and self.active_event.is_set()
+                    and generation == self.store.generation
+                ):
                     payload = connection.recv()
                     if isinstance(payload, bytes):
                         payload = payload.decode("utf-8")
                     self.store.ingest(json.loads(payload))
-                connection.close()
             except Exception as error:
+                if not self.active_event.is_set():
+                    continue
                 with self.store.lock:
                     self.store.last_error = str(error)
                     delay = self.store.configuration.reconnect_seconds
                 LOGGER.warning("OpenSeaFeed connection failed; retrying in %s seconds: %s", delay, error)
                 self.stop_event.wait(delay)
+            finally:
+                if connection is not None:
+                    connection.close()
+                with self.connection_lock:
+                    self.connection = None
 
 
 configuration_store = ConfigurationStore(CONFIG_FILE)
@@ -378,6 +413,12 @@ def update_configuration(configuration: AisConfiguration, if_match: str | None =
     updated = configuration_store.update(configuration, if_match)
     ais_store.apply_configuration(updated)
     return configuration_store.response()
+
+
+@app.post("/api/activity")
+def update_activity(activity: LiveActivity) -> dict[str, bool]:
+    ais_client.set_active(activity.active)
+    return {"active": activity.active}
 
 
 @app.post("/api/actions/set-origin")

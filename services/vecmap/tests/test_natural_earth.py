@@ -17,7 +17,12 @@ from PIL import Image
 from shapely.geometry import LineString, Polygon, mapping
 
 from kody_vecmap.native_tiles import NativeTileStore
-from kody_vecmap.raster_tiles import NaturalEarthRasterCache, cache_revision, render_tile
+from kody_vecmap.raster_tiles import (
+    NaturalEarthRasterCache,
+    _label_key,
+    cache_revision,
+    render_tile,
+)
 from kody_vecmap.server import (
     ConfigurationStore,
     download_natural_earth_archive,
@@ -205,6 +210,7 @@ class NaturalEarthImportTests(unittest.TestCase):
             "ne_10m_rivers_lake_centerlines": ("hydrography", "ne-river"),
             "ne_10m_bathymetry_A_10000": ("bathymetry", "ne-bathymetry-10000"),
             "ne_10m_admin_0_countries": ("administrative", "ne-admin0"),
+            "ne_10m_admin_2_label_points": ("administrative", "ne-admin2"),
             "ne_10m_populated_places": ("places", "ne-place"),
             "ne_10m_roads": ("transport", "ne-road"),
             "ne_10m_urban_areas": ("places", "ne-urban"),
@@ -231,6 +237,13 @@ class NaturalEarthImportTests(unittest.TestCase):
                 {"properties": {"category": "physical", "layer": "ne-land"}},
                 {"properties": {"category": "transport", "layer": "ne-road"}},
                 {"properties": {"category": "places", "layer": "ne-place"}},
+                {
+                    "properties": {
+                        "category": "places",
+                        "layer": "ne-place",
+                        "sourceLayer": "ne_10m_admin_2_label_points",
+                    }
+                },
             ],
         }
 
@@ -260,6 +273,11 @@ class NaturalEarthImportTests(unittest.TestCase):
 
 
 class NativeTileStoreTests(unittest.TestCase):
+    def test_label_key_normalizes_duplicate_place_names(self) -> None:
+        self.assertEqual(_label_key({"name": "  Atlanta  "}), "atlanta")
+        self.assertEqual(_label_key({"name": "ATLANTA"}), "atlanta")
+        self.assertIsNone(_label_key({"name": "  "}))
+
     def test_queries_spatial_index_and_simplifies_for_display_scale(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             maps_directory = Path(directory)
@@ -421,6 +439,72 @@ class NativeTileStoreTests(unittest.TestCase):
 
         with Image.open(BytesIO(payload)) as image:
             self.assertEqual(image.convert("RGB").getpixel((256, 256)), (127, 178, 202))
+
+    def test_raster_tile_paints_land_over_marine_polygons(self) -> None:
+        styles = load_vector_theme().styles
+        world = {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    (-180, -85),
+                    (180, -85),
+                    (180, 85),
+                    (-180, 85),
+                    (-180, -85),
+                ]
+            ],
+        }
+        collection = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"layer": "ne-land"},
+                    "geometry": world,
+                },
+                {
+                    "type": "Feature",
+                    "properties": {"layer": "ne-marine"},
+                    "geometry": world,
+                },
+            ],
+        }
+
+        payload = render_tile(collection, styles, 0, 0, 0)
+
+        with Image.open(BytesIO(payload)) as image:
+            self.assertEqual(image.convert("RGB").getpixel((256, 256)), (242, 239, 233))
+
+    def test_raster_tile_fills_uncovered_coastal_seams_with_land(self) -> None:
+        styles = load_vector_theme().styles
+        collection = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"layer": "ne-land"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                (-180, -85),
+                                (0, -85),
+                                (0, 85),
+                                (-180, 85),
+                                (-180, -85),
+                            ]
+                        ],
+                    },
+                }
+            ],
+        }
+
+        payload = render_tile(collection, styles, 0, 0, 0)
+
+        with Image.open(BytesIO(payload)) as image:
+            rendered = image.convert("RGB")
+            self.assertEqual(rendered.getpixel((262, 256)), (242, 239, 233))
+            self.assertEqual(rendered.getpixel((280, 256)), (32, 32, 32))
 
     def test_raster_cache_renders_a_cold_tile_once_and_reuses_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

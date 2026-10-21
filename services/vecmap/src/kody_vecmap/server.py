@@ -533,6 +533,8 @@ def natural_earth_category(source_layer: str) -> tuple[str, int]:
         return "geography", 6
     if "urban_areas" in name:
         return "places", 6
+    if "admin_" in name and "label_points" in name:
+        return "administrative", 3
     if (
         "populated_places" in name
         or "label_points" in name
@@ -590,6 +592,14 @@ def natural_earth_display_layer(source_layer: str, category: str) -> str:
         return "ne-graticule"
     if "urban_areas" in name:
         return "ne-urban"
+    if category == "administrative":
+        if "admin_0" in name:
+            return "ne-admin0"
+        if "admin_1" in name:
+            return "ne-admin1"
+        if "admin_2" in name:
+            return "ne-admin2"
+        return "ne-admin"
     if "label_points" in name or "populated_places" in name or "land_ocean_label" in name:
         return "ne-place"
     if "airports" in name or "ports" in name:
@@ -604,14 +614,6 @@ def natural_earth_display_layer(source_layer: str, category: str) -> str:
         return "ne-protected"
     if "disputed" in name or "antarctic_claim" in name:
         return "ne-disputed"
-    if category == "administrative":
-        if "admin_0" in name:
-            return "ne-admin0"
-        if "admin_1" in name:
-            return "ne-admin1"
-        if "admin_2" in name:
-            return "ne-admin2"
-        return "ne-admin"
     if "coastline" in name or ("seams" in name and category == "coastline"):
         return "ne-coastline"
     if "river" in name:
@@ -762,7 +764,15 @@ def filter_vector_features(
             for feature in features
             if not isinstance(feature, dict)
             or not isinstance(feature.get("properties"), dict)
-            or getattr(
+            or (
+                "admin_" not in str(
+                    feature["properties"].get("sourceLayer", "")
+                ).casefold()
+                or "label_points" not in str(
+                    feature["properties"].get("sourceLayer", "")
+                ).casefold()
+            )
+            and getattr(
                 configuration,
                 "show_natural_earth_"
                 + str(feature["properties"].get("category", "")),

@@ -11,14 +11,15 @@ import os
 from pathlib import Path
 from threading import Lock, get_ident
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from .math import MapMath
 from .native_tiles import NativeTileStore
 from .vector_theme import VectorStyle
 
 MAXIMUM_ZOOM = 12
 TILE_PIXELS = 512
-RENDERER_REVISION = 6
+RENDERER_REVISION = 10
+COASTAL_SEAM_RADIUS_PIXELS = 16
 
 
 def cache_revision(
@@ -183,6 +184,14 @@ def _feature_style(
     return (style, depth) if style else None
 
 
+def _label_key(properties: dict[str, object]) -> str | None:
+    name = properties.get("name")
+    if not isinstance(name, str):
+        return None
+    normalized = " ".join(name.split()).casefold()
+    return normalized or None
+
+
 def render_tile(
     collection: dict[str, object],
     styles: dict[str, VectorStyle],
@@ -209,28 +218,53 @@ def render_tile(
     draw = ImageDraw.Draw(image)
     features.sort(key=lambda item: (item[1].z_index, item[2]))
     font = ImageFont.load_default()
+    land_mask = Image.new("L", (TILE_PIXELS, TILE_PIXELS))
+    land_draw = ImageDraw.Draw(land_mask)
+    land_style: VectorStyle | None = None
+    label_features: list[tuple[dict[str, object], VectorStyle]] = []
+    rendered_label_keys: set[str] = set()
     for feature, style, _ in features:
         properties = feature["properties"]
         geometry = feature["geometry"]
         _draw_geometry(draw, geometry, style, zoom, x, y)
+        if properties.get("layer") == "ne-land":
+            _draw_geometry(land_draw, geometry, style, zoom, x, y)
+            land_style = style
         if (
             style.label
-            and isinstance(properties.get("name"), str)
             and geometry.get("type") == "Point"
         ):
-            coordinates = geometry["coordinates"]
-            point = _tile_point(float(coordinates[0]), float(coordinates[1]), zoom, x, y)
-            offset_x = (style.label_offset_x or 0) * 2
-            offset_y = (style.label_offset_y or 0) * 2
-            draw.text(
-                (point[0] + offset_x, point[1] + offset_y),
-                properties["name"],
-                font=font,
-                fill=style.label_fill or style.fill or "black",
-                stroke_width=round((style.label_stroke_width or 0) * 2),
-                stroke_fill=style.label_stroke,
-                anchor="lm",
-            )
+            label_features.append((feature, style))
+    if land_style and land_style.fill:
+        background = Image.new("RGBA", (1, 1), water.fill if water and water.fill else "#202020").getpixel((0, 0))
+        land_fill = Image.new("RGBA", (1, 1), land_style.fill).getpixel((0, 0))
+        seam_mask = land_mask.filter(ImageFilter.MaxFilter(COASTAL_SEAM_RADIUS_PIXELS * 2 + 1))
+        pixels = image.load()
+        seam_pixels = seam_mask.load()
+        for pixel_y in range(TILE_PIXELS):
+            for pixel_x in range(TILE_PIXELS):
+                if seam_pixels[pixel_x, pixel_y] and pixels[pixel_x, pixel_y] == background:
+                    pixels[pixel_x, pixel_y] = land_fill
+    for feature, style in label_features:
+        properties = feature["properties"]
+        label_key = _label_key(properties)
+        if label_key is None or label_key in rendered_label_keys:
+            continue
+        rendered_label_keys.add(label_key)
+        geometry = feature["geometry"]
+        coordinates = geometry["coordinates"]
+        point = _tile_point(float(coordinates[0]), float(coordinates[1]), zoom, x, y)
+        offset_x = (style.label_offset_x or 0) * 2
+        offset_y = (style.label_offset_y or 0) * 2
+        draw.text(
+            (point[0] + offset_x, point[1] + offset_y),
+            str(properties["name"]),
+            font=font,
+            fill=style.label_fill or style.fill or "black",
+            stroke_width=round((style.label_stroke_width or 0) * 2),
+            stroke_fill=style.label_stroke,
+            anchor="lm",
+        )
     payload = BytesIO()
     image.save(payload, format="WEBP", lossless=True, method=6)
     return payload.getvalue()

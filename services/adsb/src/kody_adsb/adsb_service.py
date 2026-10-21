@@ -44,6 +44,10 @@ class Position(BaseModel):
     latitude: float = Field(ge=-85, le=85)
 
 
+class LiveActivity(BaseModel):
+    active: bool
+
+
 class ViewportContext(BaseModel):
     west: float = Field(ge=-180, le=180)
     south: float = Field(ge=-85, le=85)
@@ -278,6 +282,7 @@ class AdsbStore:
         clock: Callable[[], float] = time.time,
         configuration: AdsbConfiguration | None = None,
         viewport_reader: Callable[[], ViewportContext | None] | None = None,
+        active: bool = True,
     ) -> None:
         self.fetcher = fetcher
         self.clock = clock
@@ -296,6 +301,7 @@ class AdsbStore:
         self.last_error: str | None = None
         self.next_refresh = 0.0
         self.failure_count = 0
+        self.active = active
 
     def apply_configuration(self, configuration: AdsbConfiguration) -> None:
         with self.lock:
@@ -329,6 +335,12 @@ class AdsbStore:
             self.last_error = None
             self.failure_count = 0
             self.next_refresh = self.clock() + self.configuration.upstream_refresh_seconds
+
+    def set_active(self, active: bool) -> None:
+        with self.lock:
+            self.active = active
+            if active:
+                self.next_refresh = 0.0
 
     def _feature_properties(self, aircraft: dict[str, Any], aircraft_id: str) -> dict[str, object]:
         callsign = str(aircraft.get("flight") or "").strip()
@@ -406,6 +418,8 @@ class AdsbStore:
 
     def refresh_if_due(self) -> None:
         with self.lock:
+            if not self.active:
+                return
             sampled_at = self.clock()
             if sampled_at < self.next_refresh:
                 return
@@ -523,6 +537,7 @@ class AdsbStore:
                     "upstreamUrl": self.url,
                     "lastSuccess": self.last_success,
                     "lastError": self.last_error,
+                    "active": self.active,
                     "viewportFiltered": viewport is not None,
                 },
             }
@@ -536,6 +551,7 @@ configuration_store = ConfigurationStore(CONFIG_FILE)
 adsb_store = AdsbStore(
     configuration=configuration_store.configuration,
     viewport_reader=fetch_viewport,
+    active=False,
 )
 app = FastAPI(title="Kody ADS-B Service", version="0.1.0")
 app.add_middleware(
@@ -642,6 +658,12 @@ def update_configuration(
     updated = configuration_store.update(configuration, if_match)
     adsb_store.apply_configuration(updated)
     return configuration_store.response()
+
+
+@app.post("/api/activity")
+def update_activity(activity: LiveActivity) -> dict[str, bool]:
+    adsb_store.set_active(activity.active)
+    return {"active": activity.active}
 
 
 @app.post("/api/actions/set-origin")

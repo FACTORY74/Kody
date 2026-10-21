@@ -27,6 +27,20 @@ class AdsbStoreTests(unittest.TestCase):
         self.assertEqual(store.tracks, {})
         self.assertEqual(store.last_seen, {})
 
+    def test_inactive_store_does_not_request_aircraft_until_reactivated(self) -> None:
+        requests: list[str] = []
+        store = AdsbStore(
+            fetcher=lambda url: (requests.append(url), [])[1],
+            active=False,
+        )
+
+        store.response()
+        self.assertEqual(requests, [])
+
+        store.set_active(True)
+        store.response()
+        self.assertEqual(len(requests), 1)
+
     def test_provider_unit_conversions_preserve_kody_kilometres(self) -> None:
         self.assertAlmostEqual(kilometres_to_nautical_miles(25), 13.4989200864)
         self.assertAlmostEqual(nautical_miles_to_kilometres(13.4989200864), 25)

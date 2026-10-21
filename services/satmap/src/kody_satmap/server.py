@@ -8,6 +8,7 @@ from io import BytesIO
 from math import atan, ceil, exp, floor, log, log2, pi, sin, sinh, tan
 from pathlib import Path
 import os
+import shutil
 from threading import Lock, RLock
 from typing import Literal
 
@@ -84,6 +85,11 @@ class ImportState:
     def response(self) -> dict[str, str]:
         with self.lock:
             return {"status": self.status, "message": self.message}
+
+    def assert_idle(self) -> None:
+        with self.lock:
+            if self.status == "processing":
+                raise HTTPException(status_code=409, detail="satellite image processing is already running")
 
 
 def associated_file(source: Path, extensions: tuple[str, ...]) -> Path:
@@ -427,6 +433,11 @@ def get_manifest() -> dict[str, object]:
                 "path": "/api/actions/build-overview-tiles",
                 "statusPath": "/api/actions/process-image",
                 "method": "POST",
+            }, {
+                "label": "Clear local data",
+                "path": "/api/actions/clear-local-data",
+                "method": "POST",
+                "confirmationMessage": "Clear all local Satellite map data? This cannot be undone.",
             }],
         },
     }
@@ -486,3 +497,12 @@ def build_overview_tiles(background_tasks: BackgroundTasks) -> dict[str, str]:
 
     background_tasks.add_task(process)
     return {"message": "Building lower-zoom satellite overview tiles."}
+
+
+@app.post("/api/actions/clear-local-data")
+def clear_local_data() -> dict[str, str]:
+    import_state.assert_idle()
+    shutil.rmtree(SATELLITE_DIRECTORY, ignore_errors=True)
+    initialize_data_directory()
+    cached_raster_tile_bytes.cache_clear()
+    return {"message": "Cleared local Satellite map data."}

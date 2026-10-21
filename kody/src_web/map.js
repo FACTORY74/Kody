@@ -42,13 +42,14 @@ const terrainTileCache = new Map();
 const requestedTileKeys = new Set();
 const requestedRasterTileKeys = new Set();
 const requestedTerrainTileKeys = new Set();
-const tileWorker = new Worker("/tile-worker.js?v=20261018d");
+const tileWorker = new Worker("/tile-worker.js?v=20261020b");
 let vectorMapServiceUrl = window.location.origin;
 let satelliteMapServiceUrl = window.location.origin;
 let terrainServiceUrl = window.location.origin;
 let configuredMapServices = [];
 let configuredServices = [];
 let serviceReconciliationInProgress = false;
+let configurationLoaded = false;
 let dragging = false;
 let lastPointer = null;
 let tileRequestFrame = null;
@@ -57,6 +58,7 @@ let updatesPerSecond = 0;
 let lastUpsDisplayUpdate = 0;
 let resizingPanel = false;
 let mapStateVersion = 0;
+let vectorTileGeneration = 0;
 let savedMapStateVersion = 0;
 let mapViewSaveInProgress = false;
 let rasterRevision = null;
@@ -120,11 +122,15 @@ function activeServiceIds() {
 }
 
 async function reconcileRegisteredServices() {
-  if (serviceReconciliationInProgress || configuredServices.length === 0) {
+  if (serviceReconciliationInProgress) {
     return;
   }
   serviceReconciliationInProgress = true;
   try {
+    if (!configurationLoaded) {
+      await loadConfiguration();
+      return;
+    }
     const liveServices = await registeredRunningServices(configuredServices);
     const liveIds = new Set(liveServices.map((service) => service.id));
     const activeIds = activeServiceIds();
@@ -333,17 +339,21 @@ function drawTerrainPalette() {
   const height = 14;
   const left = (canvas.clientWidth - width) / 2;
   const top = canvas.clientHeight - 42;
-  const gradient = context.createLinearGradient(left, top, left + width, top);
   const firstHeight = terrainPalette.stops[0].heightMetres;
   const lastHeight = terrainPalette.stops.at(-1).heightMetres;
-  for (const stop of terrainPalette.stops) {
-    gradient.addColorStop((stop.heightMetres - firstHeight) / (lastHeight - firstHeight), stop.colour);
-  }
   context.save();
   context.fillStyle = "rgb(5 18 29 / 82%)";
   context.fillRect(left - 8, top - 20, width + 16, height + 30);
-  context.fillStyle = gradient;
-  context.fillRect(left, top, width, height);
+  for (let index = 0; index < terrainPalette.stops.length; index += 1) {
+    const stop = terrainPalette.stops[index];
+    const nextStop = terrainPalette.stops[index + 1];
+    const start = (stop.heightMetres - firstHeight) / (lastHeight - firstHeight);
+    const end = nextStop
+      ? (nextStop.heightMetres - firstHeight) / (lastHeight - firstHeight)
+      : 1;
+    context.fillStyle = stop.colour;
+    context.fillRect(left + width * start, top, width * (end - start), height);
+  }
   context.strokeStyle = "rgb(225 245 255 / 72%)";
   context.strokeRect(left, top, width, height);
   context.fillStyle = "#e4f3fb";
@@ -643,24 +653,13 @@ function drawFadingTrail(coordinates, color, bounds) {
     if (!clipped) {
       continue;
     }
-    const gradient = context.createLinearGradient(
-      clipped.start.x,
-      clipped.start.y,
-      clipped.end.x,
-      clipped.end.y,
-    );
-    gradient.addColorStop(
-      0,
-      rgbaColor(color, (index - 1 + clipped.startRatio) / (coordinates.length - 1)),
-    );
-    gradient.addColorStop(
-      1,
-      rgbaColor(color, (index - 1 + clipped.endRatio) / (coordinates.length - 1)),
-    );
     context.beginPath();
     context.moveTo(clipped.start.x, clipped.start.y);
     context.lineTo(clipped.end.x, clipped.end.y);
-    context.strokeStyle = gradient;
+    context.strokeStyle = rgbaColor(
+      color,
+      (index - 0.5 + (clipped.startRatio + clipped.endRatio) / 2) / (coordinates.length - 1),
+    );
     context.stroke();
   }
 }
@@ -969,6 +968,9 @@ function changeLayerOpacity(layer, change) {
 function configurationInput(field, value) {
   const container = document.createElement("label");
   container.className = "service-config-field";
+  if (field.type === "boolean") {
+    container.classList.add("service-config-toggle");
+  }
   container.append(field.label);
   if (field.type === "position") {
     const positionFields = document.createElement("div");
@@ -1168,10 +1170,18 @@ async function configureService(service) {
     ...(manifest.configuration.actions || []).map((action) => {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "primary-action";
+      button.className = typeof action.confirmationMessage === "string"
+        ? "danger-action"
+        : "primary-action";
       button.textContent = action.label;
       button.addEventListener("click", async () => {
         try {
+          if (
+            typeof action.confirmationMessage === "string"
+            && !window.confirm(action.confirmationMessage)
+          ) {
+            return;
+          }
           button.disabled = true;
           serviceConfigProgress.hidden = false;
           serviceConfigProgressLabel.textContent = "Submitting action...";
@@ -1185,6 +1195,10 @@ async function configureService(service) {
           const result = await response.json();
           serviceConfigStatus.textContent = result.message || `${action.label} started.`;
           await waitForServiceAction(service, action);
+          if (service.type === "vecmap") {
+            clearVectorTileCache();
+            refreshMap();
+          }
         } catch (error) {
           serviceConfigProgress.hidden = true;
           serviceConfigStatus.textContent = `Unable to ${action.label.toLowerCase()}: ${error.message}`;
@@ -1657,6 +1671,7 @@ function clearRasterTileCache() {
 }
 
 function clearVectorTileCache() {
+  vectorTileGeneration += 1;
   tileCache.forEach((tile) => tile.bitmap.close());
   tileCache.clear();
   requestedTileKeys.clear();
@@ -2042,7 +2057,7 @@ function requestVisibleTiles() {
         serviceUrl: vectorMapServiceUrl,
         tiles: prioritizeTiles(tiles),
         transparentBase: false,
-        generation: mapStateVersion,
+        generation: vectorTileGeneration,
       });
     }
     if (mapServices.has("satmap") && imageryLayer.checked) {
@@ -2158,6 +2173,7 @@ async function loadConfiguration(restoreMapView = true) {
     layerOpacity.vector = mapView.layers?.vectorOpacity ?? 10;
     layerOpacity.grid = mapView.layers?.gridOpacity ?? 10;
   }
+  configurationLoaded = true;
   renderMapServiceControls(mapView?.layers);
   updateOpacityControls();
   scheduleViewportPublish();
@@ -2177,7 +2193,7 @@ async function loadConfiguration(restoreMapView = true) {
 }
 
 async function saveMapView() {
-  if (mapViewSaveInProgress || savedMapStateVersion === mapStateVersion) {
+  if (!configurationLoaded || mapViewSaveInProgress || savedMapStateVersion === mapStateVersion) {
     return;
   }
   mapViewSaveInProgress = true;
@@ -2218,7 +2234,7 @@ async function saveMapView() {
 }
 
 function saveMapViewOnExit() {
-  if (savedMapStateVersion === mapStateVersion) {
+  if (!configurationLoaded || savedMapStateVersion === mapStateVersion) {
     return;
   }
   const center = MapMath.worldToLonLat(camera.x, camera.y);
@@ -2263,6 +2279,7 @@ tileWorker.addEventListener("message", (event) => {
     } else {
       rasterTileCache.set(key, bitmap);
     }
+    requestVisibleTiles();
   } else if (type === "raster-error") {
     if (key.startsWith(`${terrainServiceUrl}/`)) {
       requestedTerrainTileKeys.delete(key);

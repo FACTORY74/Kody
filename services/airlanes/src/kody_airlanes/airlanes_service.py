@@ -462,6 +462,13 @@ class AirspaceStore:
                 "source": {"provider": "NATS Digital Datasets", "fetchedAt": self.fetched_at, "lastError": self.last_error},
             }
 
+    def clear(self) -> None:
+        with self.lock:
+            self.cache_file.unlink(missing_ok=True)
+            self.collection = {"type": "FeatureCollection", "features": []}
+            self.fetched_at = None
+            self.last_error = None
+
 
 class NotamStore:
     def __init__(self, cache_file: Path, fetch: Callable[[str], bytes] = download) -> None:
@@ -505,6 +512,13 @@ class NotamStore:
                 },
             }
 
+    def clear(self) -> None:
+        with self.lock:
+            self.cache_file.unlink(missing_ok=True)
+            self.collection = {"type": "FeatureCollection", "features": []}
+            self.fetched_at = None
+            self.last_error = None
+
 
 configuration_store = ConfigurationStore(CONFIG_FILE)
 airspace_store = AirspaceStore(CACHE_FILE)
@@ -512,7 +526,7 @@ notam_store = NotamStore(NOTAM_CACHE_FILE)
 stop_event = Event()
 notam_poll_event = Event()
 app = FastAPI(title="Kody AirLanes Service", version="0.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"], allow_methods=["GET", "PUT"], allow_headers=["Content-Type", "If-Match"])
+app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"], allow_methods=["GET", "PUT", "POST"], allow_headers=["Content-Type", "If-Match"])
 
 
 def poll_airspace() -> None:
@@ -567,6 +581,12 @@ def get_manifest() -> dict[str, object]:
                 {"key": "refreshHours", "label": "NATS poll interval (hours)", "type": "number", "minimum": 1, "maximum": 168, "step": 1},
                 {"key": "notamRefreshHours", "label": "NATS PIB poll interval (hours)", "type": "number", "minimum": 1, "maximum": 24, "step": 1},
             ],
+            "actions": [{
+                "label": "Clear local data",
+                "path": "/api/actions/clear-local-data",
+                "method": "POST",
+                "confirmationMessage": "Clear all local AirLanes data? This cannot be undone.",
+            }],
         },
     }
 
@@ -581,6 +601,13 @@ def update_configuration(configuration: AirLanesConfiguration, if_match: str | N
     configuration_store.update(configuration, if_match)
     notam_poll_event.set()
     return configuration_store.response()
+
+
+@app.post("/api/actions/clear-local-data")
+def clear_local_data() -> dict[str, str]:
+    airspace_store.clear()
+    notam_store.clear()
+    return {"message": "Cleared local AirLanes data."}
 
 
 @app.get("/api/geojson")

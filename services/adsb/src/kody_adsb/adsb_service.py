@@ -320,6 +320,16 @@ class AdsbStore:
                 self.last_seen.clear()
                 self.features = []
 
+    def clear(self) -> None:
+        with self.lock:
+            self.tracks.clear()
+            self.last_seen.clear()
+            self.features = []
+            self.last_success = None
+            self.last_error = None
+            self.failure_count = 0
+            self.next_refresh = self.clock() + self.configuration.upstream_refresh_seconds
+
     def _feature_properties(self, aircraft: dict[str, Any], aircraft_id: str) -> dict[str, object]:
         callsign = str(aircraft.get("flight") or "").strip()
         registration = str(aircraft.get("r") or "").strip()
@@ -601,6 +611,12 @@ def get_manifest() -> dict[str, object]:
                     "type": "color",
                 },
             ],
+            "actions": [{
+                "label": "Clear local data",
+                "path": "/api/actions/clear-local-data",
+                "method": "POST",
+                "confirmationMessage": "Clear all local ADS-B live flights data? This cannot be undone.",
+            }],
         },
         "contextMenuActions": [
             {
@@ -634,6 +650,12 @@ def set_origin(position: Position) -> dict[str, object]:
     updated = configuration_store.update(configuration, None)
     adsb_store.apply_configuration(updated)
     return configuration_store.response()
+
+
+@app.post("/api/actions/clear-local-data")
+def clear_local_data() -> dict[str, str]:
+    adsb_store.clear()
+    return {"message": "Cleared local ADS-B live flights data."}
 
 
 @app.get("/api/geojson")

@@ -1,1 +1,1 @@
-{"status":"failed","message":"Vector action was cancelled because the service restarted.","progress":0}
+{"status":"succeeded","message":"Merged 258 GeoJSON features from natural-earth-10m-countries.geojson into the native vector tile store.","progress":100}

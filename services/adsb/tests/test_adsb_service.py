@@ -18,6 +18,15 @@ from kody_adsb.units import (
 
 
 class AdsbStoreTests(unittest.TestCase):
+    def test_clear_discards_cached_aircraft_and_trails(self) -> None:
+        store = AdsbStore(fetcher=lambda _: [{"hex": "40621d", "lat": 50.6, "lon": -1.2}])
+        store.response()
+        store.clear()
+
+        self.assertEqual(store.features, [])
+        self.assertEqual(store.tracks, {})
+        self.assertEqual(store.last_seen, {})
+
     def test_provider_unit_conversions_preserve_kody_kilometres(self) -> None:
         self.assertAlmostEqual(kilometres_to_nautical_miles(25), 13.4989200864)
         self.assertAlmostEqual(nautical_miles_to_kilometres(13.4989200864), 25)

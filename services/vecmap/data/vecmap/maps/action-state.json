@@ -1,1 +1,1 @@
-{"status":"running","message":"Finalizing native Vector tiles.","progress":99}
+{"status":"failed","message":"Vector action was cancelled because the service restarted.","progress":0}

@@ -44,6 +44,12 @@ Place `.osm.pbf`, `.gpkg`, and `.gpkg.zip` map sources in `imports/`, then use
 `vector-library.gpkg`. Keep `land-polygons-split-4326.zip` in that folder as
 the shared land-fill source; it is not itself a map import.
 
+The **Import selected Vector file** field also accepts an HTTPS URL ending in
+`.geojson`, `.gpkg`, `.gpkg.zip`, `.pbf`, or `.zip`. Kody downloads that source
+to `imports/` before validation and import, retaining the downloaded file for
+later rebuilds. Remote downloads are limited to 512 MB and redirects must also
+use HTTPS.
+
 For a validated regional base-map source, import a Geofabrik `free.gpkg` or
 `free.gpkg.zip` extract. Kody reads its water polygons, woodland, major roads,
 and populated places and combines them with the OSM land-polygon archive in

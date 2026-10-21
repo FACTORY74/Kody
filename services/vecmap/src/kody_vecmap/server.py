@@ -14,6 +14,9 @@ from math import ceil
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Callable
+from urllib.error import URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +40,8 @@ IMPORTS_DIRECTORY = DATA_ROOT / "vecmap" / "imports"
 SHARED_IMPORTS_DIRECTORY = DATA_ROOT / "imports"
 CONFIG_FILE = ROOT_DIRECTORY / "config" / "vecmap.json"
 ACTION_STATE_FILE = MAPS_DIRECTORY / "action-state.json"
+REMOTE_SOURCE_MAXIMUM_BYTES = 512 * 1024 * 1024
+REMOTE_SOURCE_CHUNK_SIZE = 1024 * 1024
 
 
 def initialize_data_directory() -> None:
@@ -169,7 +174,17 @@ class ImportState:
 
 def import_geofabrik_file() -> str:
     filename = configuration_store.configuration.source_filename
+    parsed_url = urlparse(filename)
     configured_source = Path(filename)
+    if parsed_url.scheme == "https":
+        source = download_remote_vector_source(filename, import_state.update)
+        if not is_importable_vector_source(source):
+            raise ValueError(
+                "the downloaded URL does not contain a supported Vector source"
+            )
+        return import_vector_source(source)
+    if parsed_url.scheme and not configured_source.is_absolute():
+        raise ValueError("sourceFilename URL must use HTTPS and include a host")
     source = (
         configured_source.resolve()
         if configured_source.is_absolute()
@@ -194,6 +209,55 @@ def import_geofabrik_file() -> str:
             ".osm.pbf or .geojson path"
         )
     return import_vector_source(source)
+
+
+def download_remote_vector_source(
+    source_url: str, progress: Callable[[str, int], None]
+) -> Path:
+    parsed_url = urlparse(source_url)
+    if parsed_url.scheme != "https" or not parsed_url.netloc:
+        raise ValueError("sourceFilename URL must use HTTPS and include a host")
+    filename = Path(parsed_url.path).name
+    if not filename or not is_vector_source(Path(filename)) and Path(filename).suffix.lower() != ".zip":
+        raise ValueError(
+            "sourceFilename URL must end with .geojson, .gpkg, .gpkg.zip, .pbf, or .zip"
+        )
+    destination = IMPORTS_DIRECTORY / (
+        f"remote-{hashlib.sha256(source_url.encode('utf-8')).hexdigest()[:12]}-{filename}"
+    )
+    temporary = destination.with_suffix(f"{destination.suffix}.download")
+    request = Request(source_url, headers={"User-Agent": "Kody Vector Map importer"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            final_url = urlparse(response.geturl())
+            if final_url.scheme != "https" or not final_url.netloc:
+                raise ValueError("source URL redirected to an invalid location")
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None and int(content_length) > REMOTE_SOURCE_MAXIMUM_BYTES:
+                raise ValueError("remote Vector source exceeds the 512 MB download limit")
+            received = 0
+            with temporary.open("wb") as stream:
+                while chunk := response.read(REMOTE_SOURCE_CHUNK_SIZE):
+                    received += len(chunk)
+                    if received > REMOTE_SOURCE_MAXIMUM_BYTES:
+                        raise ValueError(
+                            "remote Vector source exceeds the 512 MB download limit"
+                        )
+                    stream.write(chunk)
+                    if content_length is not None:
+                        progress(
+                            f"Downloading {filename}: {received:,} of {int(content_length):,} bytes.",
+                            5 + min(19, round(received / int(content_length) * 19)),
+                        )
+        temporary.replace(destination)
+    except URLError as error:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(f"unable to download Vector source: {error.reason}") from error
+    except (OSError, ValueError):
+        temporary.unlink(missing_ok=True)
+        raise
+    progress(f"Downloaded {filename}.", 24)
+    return destination
 
 
 def is_vector_source(source: Path) -> bool:
@@ -512,7 +576,7 @@ async def get_manifest() -> dict[str, object]:
                 {"key": "showUrbanAreas", "label": "Show urban areas", "type": "boolean"},
                 {"key": "showWoodland", "label": "Show woodland", "type": "boolean"},
                 {"key": "showPlaceNames", "label": "Show placenames", "type": "boolean"},
-                {"key": "sourceFilename", "label": "Vector filename in imports", "type": "string", "required": False},
+                {"key": "sourceFilename", "label": "Vector filename, absolute path, or HTTPS URL", "type": "string", "required": False},
             ],
             "actions": [
                 {
@@ -532,6 +596,12 @@ async def get_manifest() -> dict[str, object]:
                     "path": "/api/actions/rebuild-pyramid",
                     "statusPath": "/api/actions/rebuild-pyramid",
                     "method": "POST",
+                },
+                {
+                    "label": "Clear local data",
+                    "path": "/api/actions/clear-local-data",
+                    "method": "POST",
+                    "confirmationMessage": "Clear all local Vector map data? This cannot be undone.",
                 },
             ],
         },
@@ -614,3 +684,13 @@ async def rebuild_pyramid() -> dict[str, str]:
 @app.get("/api/actions/rebuild-pyramid")
 async def get_rebuild_pyramid_status() -> dict[str, str | int]:
     return import_state.response()
+
+
+@app.post("/api/actions/clear-local-data")
+async def clear_local_data() -> dict[str, str]:
+    if import_state.response()["status"] == "running":
+        raise HTTPException(status_code=409, detail="a vector map operation is already running")
+    shutil.rmtree(MAPS_DIRECTORY, ignore_errors=True)
+    shutil.rmtree(IMPORTS_DIRECTORY, ignore_errors=True)
+    initialize_data_directory()
+    return {"message": "Cleared local Vector map data."}

@@ -70,6 +70,7 @@ class ShapesStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.lock = Lock()
         self.collection = self._load()
         self.revision = hashlib.sha256(
             json.dumps(self.collection, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -106,7 +107,19 @@ class ShapesStore:
         return collection
 
     def response(self) -> dict[str, object]:
-        return {"revision": self.revision, **self.collection}
+        with self.lock:
+            return {"revision": self.revision, **self.collection}
+
+    def clear(self) -> None:
+        with self.lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = self.path.with_suffix(".tmp")
+            temporary_path.write_text(json.dumps(EMPTY_COLLECTION, indent=2) + "\n", encoding="utf-8")
+            temporary_path.replace(self.path)
+            self.collection = EMPTY_COLLECTION
+            self.revision = hashlib.sha256(
+                json.dumps(self.collection, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            ).hexdigest()
 
 
 shapes_store = ShapesStore(SHAPES_FILE)
@@ -115,7 +128,7 @@ app = FastAPI(title="Kody Shapes Service", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
-    allow_methods=["GET", "PUT"],
+    allow_methods=["GET", "PUT", "POST"],
     allow_headers=["Content-Type", "If-Match"],
 )
 
@@ -131,6 +144,12 @@ def get_manifest() -> dict[str, object]:
             "readPath": "/api/config",
             "writePath": "/api/config",
             "fields": [],
+            "actions": [{
+                "label": "Clear local data",
+                "path": "/api/actions/clear-local-data",
+                "method": "POST",
+                "confirmationMessage": "Clear all local Shapes data? This cannot be undone.",
+            }],
         },
     }
 
@@ -152,3 +171,9 @@ def update_configuration(
 @app.get("/api/shapes")
 def get_shapes() -> dict[str, object]:
     return shapes_store.response()
+
+
+@app.post("/api/actions/clear-local-data")
+def clear_local_data() -> dict[str, str]:
+    shapes_store.clear()
+    return {"message": "Cleared local Shapes data."}

@@ -47,24 +47,24 @@
     }
   ],
   "mapView": {
-    "longitude": -1.8630846775862437,
-    "latitude": 51.116337703494395,
-    "zoom": 7.800000000000034,
+    "longitude": -4.223687965759922,
+    "latitude": 53.158647280114565,
+    "zoom": 9.08,
     "layers": {
-      "satelliteImagery": true,
+      "satelliteImagery": false,
       "terrain": false,
       "vectorMap": true,
       "grid": true,
       "gridCrosshair": true,
-      "satelliteOpacity": 6,
+      "satelliteOpacity": 8,
       "terrainOpacity": 5,
       "vectorOpacity": 1,
       "gridOpacity": 2,
       "dataSources": {
-        "local-shapes": false,
+        "local-shapes": true,
         "local-track": false,
-        "local-adsb": true,
-        "local-ais": true,
+        "local-adsb": false,
+        "local-ais": false,
         "local-airlanes": false,
         "local-symbols": true
       },
@@ -168,14 +168,6 @@
         "module": "kody_terrain.server:app",
         "workingDirectory": "services/terrain",
         "port": 8010,
-        "enabled": true
-      },
-      {
-        "id": "osmtiles",
-        "displayName": "Static OSM tile service",
-        "module": "kody_osmtiles.server:app",
-        "workingDirectory": "services/osmtiles",
-        "port": 8011,
         "enabled": true
       }
     ]

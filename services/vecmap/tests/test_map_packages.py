@@ -7,7 +7,9 @@ import tempfile
 import unittest
 import zipfile
 from argparse import Namespace
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
@@ -28,11 +30,13 @@ from kody_vecmap.map_manager import (
 from kody_vecmap.math import MapMath
 from kody_vecmap.server import (
     ConfigurationStore,
+    download_remote_vector_source,
     ImportState,
     VectorConfiguration,
     VectorPatchService,
     filter_vector_features,
     get_manifest,
+    import_geofabrik_file,
     import_vector_source,
     importable_vector_sources,
 )
@@ -40,6 +44,65 @@ from kody_vecmap.map_packages import NativeTileStore
 
 
 class MapManagerCoverageTests(unittest.TestCase):
+    def test_import_selected_accepts_an_absolute_windows_geojson_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "countries.geojson"
+            source.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+            configuration = VectorConfiguration(sourceFilename=str(source))
+            with (
+                patch(
+                    "kody_vecmap.server.configuration_store",
+                    SimpleNamespace(configuration=configuration),
+                ),
+                patch("kody_vecmap.server.download_remote_vector_source") as download,
+                patch("kody_vecmap.server.import_vector_source", return_value="Imported.") as import_source,
+            ):
+                result = import_geofabrik_file()
+
+            self.assertEqual(result, "Imported.")
+            download.assert_not_called()
+            import_source.assert_called_once_with(source.resolve())
+
+    def test_downloads_https_source_into_vector_imports(self) -> None:
+        class Response(BytesIO):
+            def __init__(self, payload: bytes) -> None:
+                super().__init__(payload)
+                self.headers = {"Content-Length": str(len(payload))}
+
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                self.close()
+
+            def geturl(self) -> str:
+                return "https://samples.example.test/countries.geojson"
+
+        payload = b'{"type":"FeatureCollection","features":[]}'
+        updates: list[tuple[str, int]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            imports_directory = Path(directory)
+            with (
+                patch("kody_vecmap.server.IMPORTS_DIRECTORY", imports_directory),
+                patch("kody_vecmap.server.urlopen", return_value=Response(payload)),
+            ):
+                source = download_remote_vector_source(
+                    "https://samples.example.test/countries.geojson",
+                    lambda message, progress: updates.append((message, progress)),
+                )
+
+            self.assertEqual(source.parent, imports_directory)
+            self.assertTrue(source.name.endswith("-countries.geojson"))
+            self.assertEqual(source.read_bytes(), payload)
+            self.assertEqual(updates[-1], ("Downloaded countries.geojson.", 24))
+
+    def test_rejects_non_https_vector_source_url(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must use HTTPS"):
+            download_remote_vector_source(
+                "http://samples.example.test/countries.geojson",
+                lambda _message, _progress: None,
+            )
+
     def test_imports_geojson_features_into_the_native_geopackage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

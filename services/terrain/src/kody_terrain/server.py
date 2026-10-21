@@ -189,6 +189,11 @@ class ImportState:
         with self.lock:
             return {"status": self.status, "message": self.message, "progress": self.progress}
 
+    def assert_idle(self) -> None:
+        with self.lock:
+            if self.status == "processing":
+                raise HTTPException(status_code=409, detail="terrain import is already running")
+
 
 class LosRosetteState:
     """Owns the one background LOS computation and its current GeoJSON result."""
@@ -1070,6 +1075,7 @@ def get_manifest() -> dict[str, object]:
             {"label": "Import viewport from local file", "path": "/api/actions/import-viewport", "statusPath": "/api/actions/import-terrain", "method": "POST"},
             {"label": "Build numeric terrain chunks", "path": "/api/actions/build-numeric-tiles", "statusPath": "/api/actions/import-terrain", "method": "POST"},
             {"label": "Rebuild terrain display tiles", "path": "/api/actions/rebuild-display-tiles", "statusPath": "/api/actions/import-terrain", "method": "POST"},
+            {"label": "Clear local data", "path": "/api/actions/clear-local-data", "method": "POST", "confirmationMessage": "Clear all local Terrain data? This cannot be undone."},
         ],
     }, "contextMenuActions": [
         {
@@ -1195,3 +1201,13 @@ def get_los_rosette() -> dict[str, object]:
 def clear_los_rosette() -> dict[str, object]:
     los_rosette_state.clear()
     return los_rosette_state.result()
+
+
+@app.post("/api/actions/clear-local-data")
+def clear_local_data() -> dict[str, str]:
+    import_state.assert_idle()
+    shutil.rmtree(TERRAIN_DIRECTORY, ignore_errors=True)
+    initialize_data_directory()
+    cached_raster_tile_bytes.cache_clear()
+    los_rosette_state.clear()
+    return {"message": "Cleared local Terrain data."}

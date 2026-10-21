@@ -191,7 +191,10 @@ function renderTile(collection, zoom, x, y, transparentBase) {
       if (transparentBase) {
         return;
       }
-      context.fillStyle = "#9ac889";
+      const fill = feature.properties.fill;
+      context.fillStyle = typeof fill === "string" && /^#[0-9a-fA-F]{6}$/.test(fill)
+        ? fill
+        : "#9ac889";
       context.fill("evenodd");
       return;
     }

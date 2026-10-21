@@ -186,6 +186,10 @@ class TrackStore:
         with self.lock:
             self.configuration = configuration
 
+    def clear(self) -> None:
+        with self.lock:
+            self.tracks = ()
+
     def response(self) -> dict[str, object]:
         sample_time = int(self.clock())
         with self.lock:
@@ -214,7 +218,7 @@ app = FastAPI(title="Kody Track GeoJSON Service", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
-    allow_methods=["GET", "PUT"],
+    allow_methods=["GET", "PUT", "POST"],
     allow_headers=["Content-Type", "If-Match"],
 )
 
@@ -239,6 +243,12 @@ def get_manifest() -> dict[str, object]:
                     "step": 1,
                 },
             ],
+            "actions": [{
+                "label": "Clear local data",
+                "path": "/api/actions/clear-local-data",
+                "method": "POST",
+                "confirmationMessage": "Clear all local Live tracks data? This cannot be undone.",
+            }],
         },
     }
 
@@ -256,6 +266,12 @@ def update_configuration(
     configuration_store.update(configuration, if_match)
     track_store.apply_configuration(configuration)
     return configuration_store.response()
+
+
+@app.post("/api/actions/clear-local-data")
+def clear_local_data() -> dict[str, str]:
+    track_store.clear()
+    return {"message": "Cleared local Live tracks data."}
 
 
 @app.get("/api/geojson")

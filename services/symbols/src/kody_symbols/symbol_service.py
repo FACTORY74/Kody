@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -109,7 +110,7 @@ app = FastAPI(title="Kody Symbols Service", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
 
@@ -121,7 +122,12 @@ def get_manifest() -> dict[str, object]:
         "serviceId": "symbols",
         "displayName": "Symbols",
         "dataEndpoint": {"path": "/api/symbols", "format": "kody-symbols"},
-        "configuration": {"readPath": "/api/config", "writePath": "/api/config", "fields": []},
+        "configuration": {"readPath": "/api/config", "writePath": "/api/config", "fields": [], "actions": [{
+            "label": "Clear local data",
+            "path": "/api/actions/clear-local-data",
+            "method": "POST",
+            "confirmationMessage": "Clear all local Symbols data? This cannot be undone.",
+        }]},
     }
 
 
@@ -134,3 +140,10 @@ def get_configuration() -> dict[str, str]:
 def get_symbols() -> dict[str, object]:
     symbols = collection()
     return {"revision": revision(symbols), **symbols}
+
+
+@app.post("/api/actions/clear-local-data")
+def clear_local_data() -> dict[str, str]:
+    shutil.rmtree(SYMBOLS_DIRECTORY, ignore_errors=True)
+    initialize_data_directory()
+    return {"message": "Cleared local Symbols data."}

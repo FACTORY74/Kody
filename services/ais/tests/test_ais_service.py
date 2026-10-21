@@ -11,6 +11,15 @@ from kody_ais.ais_service import (
 
 
 class AisServiceTests(unittest.TestCase):
+    def test_clear_discards_cached_vessels_and_trails(self) -> None:
+        store = AisStore()
+        store.ingest({"MetaData": {}, "Message": {"PositionReport": {"UserID": 123456789, "Latitude": 50.6, "Longitude": -1.2}}})
+        store.clear()
+
+        self.assertEqual(store.vessels, {})
+        self.assertEqual(store.ship_types, {})
+        self.assertEqual(store.trails, {})
+
     def test_builds_ship_position_trail_and_boundary(self) -> None:
         clock = [1_000.0]
         store = AisStore(clock=lambda: clock[0])

@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "profileId": "high-detail-v1",
+  "description": "High-detail replacement Vector Map import policy.",
+  "source": {
+    "format": "osm-pbf",
+    "selection": "per-import"
+  },
+  "coverage": {
+    "mode": "replace",
+    "boundary": "supplied-with-import",
+    "preserveOutsideBoundary": true
+  },
+  "output": {
+    "minimumZoom": 0,
+    "maximumZoom": 17,
+    "storage": "geopackage",
+    "tileGeneration": "on-demand",
+    "publish": "atomic-swap",
+    "retainPreviousVersion": true
+  },
+  "detailStages": [
+    {
+      "minimumZoom": 0,
+      "features": [
+        "existing baseline map coverage outside the replacement boundary"
+      ]
+    },
+    {
+      "minimumZoom": 8,
+      "features": [
+        "coastlines and land polygons",
+        "motorway, trunk, primary, and their link roads",
+        "forests and major urban land-use areas",
+        "city labels"
+      ]
+    },
+    {
+      "minimumZoom": 11,
+      "features": [
+        "secondary and tertiary roads, including link roads",
+        "water bodies, parks, and additional urban land-use areas",
+        "town labels"
+      ]
+    },
+    {
+      "minimumZoom": 14,
+      "features": [
+        "unclassified and residential roads",
+        "village and hamlet labels",
+        "railways and stations"
+      ]
+    },
+    {
+      "minimumZoom": 16,
+      "features": [
+        "service and living-street roads",
+        "building footprints",
+        "pedestrian areas, car parks, and local water features"
+      ]
+    },
+    {
+      "minimumZoom": 17,
+      "features": [
+        "cycleways, footways, paths, bridleways, and steps",
+        "selected public amenities and transport stops",
+        "neighbourhood and suburb labels"
+      ]
+    }
+  ],
+  "exclusions": [
+    "addresses",
+    "indoor mapping",
+    "private access ways",
+    "unselected points of interest"
+  ],
+  "validation": {
+    "requireSourceChecksum": true,
+    "verifyFeatureCounts": true,
+    "verifyCoverageBoundary": true,
+    "sampleTileZooms": [8, 11, 14, 16, 17],
+    "maximumTileResponseMilliseconds": 500
+  }
+}

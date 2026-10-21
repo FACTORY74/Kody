@@ -14,6 +14,12 @@ from kody_tracks.track_service import (
 
 
 class TrackStoreTests(unittest.TestCase):
+    def test_clear_discards_the_local_demo_track_store(self) -> None:
+        store = TrackStore()
+        store.clear()
+
+        self.assertEqual(store.response()["features"], [])
+
     def test_returns_current_positions_and_five_minute_tails(self) -> None:
         clock = [1_000_000.0]
         track_store = TrackStore(clock=lambda: clock[0])

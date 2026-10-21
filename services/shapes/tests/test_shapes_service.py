@@ -41,6 +41,26 @@ class ShapesStoreTests(unittest.TestCase):
         self.assertEqual(response["features"][0]["properties"]["name"], "Test shape")
         self.assertEqual(len(response["revision"]), 64)
 
+    def test_clear_replaces_shapes_with_an_empty_feature_collection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            shapes_file = Path(directory) / "shapes.geojson"
+            shapes_file.write_text(
+                json.dumps({
+                    "type": "FeatureCollection",
+                    "features": [{
+                        "type": "Feature",
+                        "properties": {"name": "Temporary shape", "color": "#0099ff"},
+                        "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            store = ShapesStore(shapes_file)
+            store.clear()
+
+            self.assertEqual(store.response()["features"], [])
+            self.assertEqual(json.loads(shapes_file.read_text(encoding="utf-8"))["type"], "FeatureCollection")
+
 
 if __name__ == "__main__":
     unittest.main()

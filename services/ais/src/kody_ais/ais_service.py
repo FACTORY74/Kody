@@ -193,6 +193,14 @@ class AisStore:
                 self.ship_types.clear()
                 self.trails.clear()
 
+    def clear(self) -> None:
+        with self.lock:
+            self.vessels.clear()
+            self.ship_types.clear()
+            self.trails.clear()
+            self.last_error = None
+            self.generation += 1
+
     def ingest(self, message: dict[str, Any], observed_at: float | None = None) -> None:
         report = message.get("Message", {}).get("PositionReport", {})
         metadata = message.get("MetaData", {})
@@ -343,7 +351,12 @@ def get_manifest() -> dict[str, object]:
             {"key": "trackFade", "label": "Track fade", "type": "boolean"},
             {"key": "drawBoundary", "label": "Draw dotted AIS coverage boundary", "type": "boolean"},
             {"key": "displayColor", "label": "Display color", "type": "color"},
-        ]},
+        ], "actions": [{
+            "label": "Clear local data",
+            "path": "/api/actions/clear-local-data",
+            "method": "POST",
+            "confirmationMessage": "Clear all local AIS vessels data? This cannot be undone.",
+        }]},
         "contextMenuActions": [
             {
                 "id": "set-origin",
@@ -373,6 +386,12 @@ def set_origin(position: Position) -> dict[str, object]:
     updated = configuration_store.update(configuration, None)
     ais_store.apply_configuration(updated)
     return configuration_store.response()
+
+
+@app.post("/api/actions/clear-local-data")
+def clear_local_data() -> dict[str, str]:
+    ais_store.clear()
+    return {"message": "Cleared local AIS vessels data."}
 
 
 @app.get("/api/geojson")

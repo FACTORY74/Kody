@@ -249,6 +249,7 @@ class TerrainTests(unittest.TestCase):
                 "Import viewport from local file",
                 "Build numeric terrain chunks",
                 "Rebuild terrain display tiles",
+                "Clear local data",
             ],
         )
         self.assertEqual(

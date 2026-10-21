@@ -1,7 +1,20 @@
 {
-  "sourceFilename": "C:\\Util\\GithubRepos\\Kody\\data_starter\\imports\\natural-earth-10m-countries.geojson",
-  "showMajorRoads": true,
-  "showUrbanAreas": true,
-  "showWoodland": true,
-  "showPlaceNames": true
+  "naturalEarthDirectory": "C:\\Util\\GithubRepos\\Kody\\temp_import\\NaturalEarth",
+  "naturalEarthPhysicalUrl": "https://www.factory74.com/permenant/kody/NaturalEarth/10m_physical.zip",
+  "naturalEarthCulturalUrl": "https://www.factory74.com/permenant/kody/NaturalEarth/10m_cultural.zip",
+  "naturalEarthTileZooms": "0, 2, 4, 5, 6, 8, 9, 10, 11, 12",
+  "showNaturalEarthPhysical": true,
+  "showNaturalEarthCoastline": false,
+  "showNaturalEarthHydrography": true,
+  "showNaturalEarthMarine": true,
+  "showNaturalEarthBathymetry": true,
+  "showNaturalEarthIce": true,
+  "showNaturalEarthGeography": true,
+  "showNaturalEarthGraticules": false,
+  "showNaturalEarthAdministrative": false,
+  "showNaturalEarthPlaces": true,
+  "showNaturalEarthTransport": true,
+  "showNaturalEarthProtected": true,
+  "showNaturalEarthTimezones": true,
+  "showNaturalEarthOther": true
 }

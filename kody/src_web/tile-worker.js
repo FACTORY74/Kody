@@ -2,32 +2,46 @@ const pendingTiles = new Set();
 const pendingRasterTiles = new Set();
 const tileQueue = [];
 const activeTileRequests = new Map();
-const MAX_CONCURRENT_TILE_LOADS = 4;
+const MAX_CONCURRENT_TILE_LOADS = 2;
 let activeTileLoads = 0;
 let currentTileGeneration = -1;
 
-function tileKey(serviceUrl, zoom, x, y, transparentBase = false) {
-  return `${serviceUrl}/vector/${transparentBase}/${zoom}/${x}/${y}`;
+function tileKey(serviceUrl, revision, zoom, x, y, transparentBase = false) {
+  return `${serviceUrl}/vector/${revision || "unversioned"}/${transparentBase}/${zoom}/${x}/${y}`;
 }
 
-async function loadTile(serviceUrl, zoom, x, y, transparentBase, generation) {
-  const key = tileKey(serviceUrl, zoom, x, y, transparentBase);
+async function loadTile(serviceUrl, revision, zoom, x, y, transparentBase, generation) {
+  const key = tileKey(serviceUrl, revision, zoom, x, y, transparentBase);
   const controller = new AbortController();
   activeTileRequests.set(key, controller);
   try {
-    const response = await fetch(`${serviceUrl}/api/patch/${zoom}/${x}/${y}?buffer_pixels=2`, {
+    const response = await fetch(`${serviceUrl}/api/tiles/${zoom}/${x}/${y}.webp?v=${encodeURIComponent(revision || "unversioned")}`, {
       signal: controller.signal,
     });
+    if (response.status === 202) {
+      const { retryAfterMilliseconds } = await response.json();
+      self.postMessage({
+        type: "tile-pending",
+        key,
+        retryAfterMilliseconds,
+      });
+      return;
+    }
     if (!response.ok) {
       throw new Error(`Map service returned ${response.status}`);
     }
-    const collection = await response.json();
     if (generation !== currentTileGeneration) {
       self.postMessage({ type: "tile-cancelled", key });
       return;
     }
-    const bitmap = renderTile(collection, zoom, x, y, transparentBase);
-    self.postMessage({ type: "tile", key, tile: { zoom, x, y }, source: collection.source, bitmap }, [bitmap]);
+    const bitmap = await createImageBitmap(await response.blob());
+    self.postMessage({
+      type: "tile",
+      key,
+      tile: { zoom, x, y },
+      source: { id: "natural-earth", attribution: "Natural Earth" },
+      bitmap,
+    }, [bitmap]);
   } catch (error) {
     if (controller.signal.aborted || generation !== currentTileGeneration) {
       self.postMessage({ type: "tile-cancelled", key });
@@ -46,6 +60,7 @@ function loadQueuedTiles() {
     activeTileLoads += 1;
     loadTile(
       tile.serviceUrl,
+      tile.revision,
       tile.zoom,
       tile.x,
       tile.y,
@@ -58,23 +73,23 @@ function loadQueuedTiles() {
   }
 }
 
-function queueTiles(serviceUrl, tiles, transparentBase, generation) {
+function queueTiles(serviceUrl, revision, tiles, transparentBase, generation) {
   if (generation !== currentTileGeneration) {
     currentTileGeneration = generation;
     tileQueue.forEach((tile) => {
       self.postMessage({
         type: "tile-cancelled",
-        key: tileKey(tile.serviceUrl, tile.zoom, tile.x, tile.y, tile.transparentBase),
+        key: tileKey(tile.serviceUrl, tile.revision, tile.zoom, tile.x, tile.y, tile.transparentBase),
       });
     });
     tileQueue.length = 0;
     activeTileRequests.forEach((controller) => controller.abort());
   }
   tiles.forEach(({ zoom, x, y }) => {
-    const key = tileKey(serviceUrl, zoom, x, y, transparentBase);
+    const key = tileKey(serviceUrl, revision, zoom, x, y, transparentBase);
     if (!pendingTiles.has(key)) {
       pendingTiles.add(key);
-      tileQueue.push({ serviceUrl, zoom, x, y, transparentBase, generation });
+      tileQueue.push({ serviceUrl, revision, zoom, x, y, transparentBase, generation });
     }
   });
   loadQueuedTiles();
@@ -105,9 +120,9 @@ async function loadRasterTile(serviceUrl, zoom, x, y) {
 }
 
 self.addEventListener("message", (event) => {
-  const { type, serviceUrl, tiles, transparentBase, generation } = event.data;
+  const { type, serviceUrl, revision, tiles, transparentBase, generation } = event.data;
   if (type === "request-tiles") {
-    queueTiles(serviceUrl, tiles, transparentBase, generation);
+    queueTiles(serviceUrl, revision, tiles, transparentBase, generation);
   } else if (type === "request-raster-tiles") {
     tiles.forEach(({ zoom, x, y }) => loadRasterTile(serviceUrl, zoom, x, y));
   }
@@ -159,117 +174,46 @@ function renderTile(collection, zoom, x, y, transparentBase) {
   const canvas = new OffscreenCanvas(512, 512);
   const context = canvas.getContext("2d");
   context.scale(2, 2);
-  const features = collection.features.filter((feature) => {
-    if (zoom >= 10) {
-      return true;
-    }
-    if (feature.properties.layer === "osm-forest") {
-      return false;
-    }
-    return (
-      feature.properties.layer !== "osm-road"
-      || ["motorway", "trunk"].includes(feature.properties.highway)
-    );
-  }).sort((left, right) => {
-    const order = {
-      "osm-land": 1,
-      "osm-water": 2,
-      "osm-urban": 3,
-      "osm-green": 4,
-      "osm-forest": 5,
-      "osm-building": 6,
-      "osm-road": 7,
-      "osm-coastline": 8,
-      "osm-place": 9,
-    };
-    return (order[left.properties.layer] || 0) - (order[right.properties.layer] || 0);
-  });
+  const styles = collection.styles || {};
+  const features = collection.features.filter((feature) => styles[feature.properties.layer])
+    .sort((left, right) => (
+      styles[left.properties.layer].zIndex - styles[right.properties.layer].zIndex
+    ));
   features.forEach((feature) => {
+    const style = styles[feature.properties.layer];
+    if (feature.geometry.type === "Point") {
+      const point = toTilePoint(...feature.geometry.coordinates, zoom, x, y);
+      if (style.label && feature.properties.name) {
+        context.font = style.font;
+        context.textAlign = style.textAlign;
+        context.textBaseline = style.textBaseline;
+        context.lineWidth = style.labelStrokeWidth;
+        context.strokeStyle = style.labelStroke;
+        context.fillStyle = style.labelFill;
+        context.strokeText(feature.properties.name, point.x + style.labelOffsetX, point.y + style.labelOffsetY);
+        context.fillText(feature.properties.name, point.x + style.labelOffsetX, point.y + style.labelOffsetY);
+      }
+      if (style.pointRadius) {
+        context.fillStyle = style.fill;
+        context.beginPath();
+        context.arc(point.x, point.y, style.pointRadius, 0, Math.PI * 2);
+        context.fill();
+      }
+      return;
+    }
     context.beginPath();
     drawGeometry(context, feature.geometry, zoom, x, y);
-    if (feature.properties.layer === "osm-land") {
-      if (transparentBase) {
-        return;
-      }
-      const fill = feature.properties.fill;
-      context.fillStyle = typeof fill === "string" && /^#[0-9a-fA-F]{6}$/.test(fill)
-        ? fill
-        : "#9ac889";
+    if (style.fill && !(transparentBase && feature.properties.layer === "osm-land")) {
+      context.fillStyle = style.fill;
       context.fill("evenodd");
-      return;
     }
-    if (feature.properties.layer === "osm-water") {
-      context.fillStyle = "#8eb8c5";
-      context.fill("evenodd");
-      return;
-    }
-    if (feature.properties.layer === "osm-urban") {
-      context.fillStyle = "#c7b89d";
-      context.fill("evenodd");
-      return;
-    }
-    if (feature.properties.layer === "osm-green") {
-      context.fillStyle = "#78a56d";
-      context.fill("evenodd");
-      return;
-    }
-    if (feature.properties.layer === "osm-building") {
-      context.fillStyle = "#d9c9b3";
-      context.strokeStyle = "#ad9a7d";
-      context.lineWidth = 0.7;
-      context.fill("evenodd");
+    if (style.stroke) {
+      context.strokeStyle = style.stroke;
+      context.lineWidth = style.lineWidth;
+      context.setLineDash(style.lineDash || []);
       context.stroke();
-      return;
+      context.setLineDash([]);
     }
-    if (feature.properties.layer === "osm-forest") {
-      if (!["Polygon", "MultiPolygon"].includes(feature.geometry.type)) {
-        return;
-      }
-      context.fillStyle = "#5e8f55";
-      context.fill("evenodd");
-      return;
-    }
-    if (feature.properties.layer === "osm-road") {
-      context.strokeStyle = "#f5f1e5";
-      context.lineWidth = feature.properties.highway === "motorway" ? 2.4 : 1.2;
-      context.stroke();
-      return;
-    }
-    if (feature.properties.layer === "osm-coastline") {
-      context.strokeStyle = "#274c58";
-      context.lineWidth = 1.4;
-      context.stroke();
-      return;
-    }
-    if (feature.properties.layer === "osm-place") {
-      if (feature.geometry.type !== "Point" || !feature.properties.name) {
-        return;
-      }
-      const point = toTilePoint(...feature.geometry.coordinates, zoom, x, y);
-      context.font = feature.properties.place === "city" ? "600 13px system-ui, sans-serif" : "12px system-ui, sans-serif";
-      context.textAlign = "left";
-      context.textBaseline = "middle";
-      context.lineWidth = 3;
-      context.strokeStyle = "rgb(7 17 30 / 80%)";
-      context.fillStyle = "#f7f1dd";
-      context.strokeText(feature.properties.name, point.x + 5, point.y);
-      context.fillText(feature.properties.name, point.x + 5, point.y);
-      return;
-    }
-    if (feature.properties.kind === "graticule") {
-      context.strokeStyle = "#5f7b8e";
-      context.lineWidth = 0.8;
-      context.stroke();
-      return;
-    }
-    if (transparentBase) {
-      context.strokeStyle = "#3f6c4e";
-      context.lineWidth = 0.7;
-      context.stroke();
-      return;
-    }
-    context.fillStyle = "#9ac889";
-    context.fill("evenodd");
   });
   return canvas.transferToImageBitmap();
 }

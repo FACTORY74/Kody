@@ -75,21 +75,20 @@ the 50 m North West Wales source replaces the 500 m Southern UK source.
 
 ## 5. Import the vector map
 
-Open the **Vector map** cog. In **Vector filename in imports**, enter the full
-path below, then select **Import selected Vector file**:
+Open the **Vector map** cog and confirm the public archive URLs are set:
 
 ```text
-C:\Util\GithubRepos\Kody\data_starter\imports\natural-earth-110m-countries.geojson
+https://www.factory74.com/permenant/kody/NaturalEarth/10m_physical.zip
+https://www.factory74.com/permenant/kody/NaturalEarth/10m_cultural.zip
 ```
 
-Wait for the import to finish. This GeoJSON becomes the offline
-GeoPackage-backed vector library and provides low-resolution country
-boundaries. Alternatively, select **Import all Vector sources** to import
-every supported Vector file in the configured shared imports folder.
+Select **Import Natural Earth dataset** and wait for the import to finish. Kody
+downloads, validates, and loads the physical and cultural 1:10m archives into
+the offline vector library.
 
 ## Result
 
 The map now combines global/UK/Portsmouth satellite imagery, a terrain mosaic
-with higher-resolution coverage in North West Wales, and Natural Earth country
-boundaries. Kody keeps the original import files and stores the processed
-service data beneath `data_starter`.
+with higher-resolution coverage in North West Wales, and the Natural Earth
+physical, cultural, and administrative layers. Kody keeps the original archive
+files and stores the processed service data beneath `data_starter`.

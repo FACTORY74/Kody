@@ -2,46 +2,82 @@
 
 from __future__ import annotations
 
-import argparse
+from contextlib import ExitStack
+from dataclasses import dataclass
 import hashlib
+from itertools import chain
 import json
+import logging
 import os
+from queue import Queue
+import re
 import shutil
 import subprocess
 import sys
+from threading import Thread
 import zipfile
-from math import ceil
 from pathlib import Path
 from threading import Lock, RLock
-from typing import Callable
-from urllib.error import URLError
+from time import sleep
+from typing import Callable, Iterator
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import shapefile
 from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from shapely.geometry import box, mapping, shape
+from pydantic import BaseModel, Field, field_validator
+from shapely.geometry import mapping, shape
 
-from .map_manager import (
-    LAND_POLYGONS_FILE,
-    install_geofabrik_gpkg,
-    install_osm_pbf,
-    rebuild_all_lod_pyramids,
-)
-from .map_packages import NativeTileStore
+from .vector_theme import load_vector_theme
+from .native_tiles import NativeTileStore
 from .math import MapMath
-from .quadtree import IndexedFeature, QuadTreeMap
+from .raster_tiles import (
+    MAXIMUM_ZOOM as RASTER_MAXIMUM_ZOOM,
+    NaturalEarthRasterCache,
+    cache_revision,
+    render_tile,
+)
 
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
+PROJECT_DIRECTORY = ROOT_DIRECTORY.parent.parent
 DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
 MAPS_DIRECTORY = DATA_ROOT / "vecmap" / "maps"
 IMPORTS_DIRECTORY = DATA_ROOT / "vecmap" / "imports"
-SHARED_IMPORTS_DIRECTORY = DATA_ROOT / "imports"
+DEFAULT_NATURAL_EARTH_DIRECTORY = PROJECT_DIRECTORY / "temp_import" / "NaturalEarth"
+DEFAULT_NATURAL_EARTH_PHYSICAL_URL = (
+    "https://www.factory74.com/permenant/kody/NaturalEarth/10m_physical.zip"
+)
+DEFAULT_NATURAL_EARTH_CULTURAL_URL = (
+    "https://www.factory74.com/permenant/kody/NaturalEarth/10m_cultural.zip"
+)
 CONFIG_FILE = ROOT_DIRECTORY / "config" / "vecmap.json"
 ACTION_STATE_FILE = MAPS_DIRECTORY / "action-state.json"
-REMOTE_SOURCE_MAXIMUM_BYTES = 512 * 1024 * 1024
-REMOTE_SOURCE_CHUNK_SIZE = 1024 * 1024
+REMOTE_ARCHIVE_MAXIMUM_BYTES = 512 * 1024 * 1024
+REMOTE_ARCHIVE_CHUNK_SIZE = 1024 * 1024
+NATURAL_EARTH_MAXIMUM_DETAIL_ZOOM = 4
+NATURAL_EARTH_RASTER_DETAIL_ZOOM = 8
+DEFAULT_NATURAL_EARTH_TILE_ZOOMS = "0, 2, 4, 6, 8, 10, 12"
+NATURAL_EARTH_CATEGORIES = {
+    "physical": "Physical land and ocean",
+    "coastline": "Coastlines and islands",
+    "hydrography": "Lakes, rivers, and playas",
+    "marine": "Marine regions and reefs",
+    "bathymetry": "Bathymetry",
+    "ice": "Ice and glaciated areas",
+    "geography": "Geographic regions and labels",
+    "graticules": "Graticules and reference lines",
+    "administrative": "Country and administrative boundaries",
+    "places": "Cities, towns, and place labels",
+    "transport": "Roads, railways, airports, and ports",
+    "protected": "Parks and protected areas",
+    "timezones": "Time zones",
+    "other": "Other Natural Earth data",
+}
+TILE_RENDER_RETRY_MILLISECONDS = 250
+logger = logging.getLogger(__name__)
 
 
 def initialize_data_directory() -> None:
@@ -52,12 +88,138 @@ def initialize_data_directory() -> None:
 initialize_data_directory()
 
 
+def natural_earth_tile_zooms(value: str) -> tuple[int, ...]:
+    try:
+        zooms = tuple(
+            sorted({int(item.strip()) for item in value.split(",") if item.strip()})
+        )
+    except ValueError as error:
+        raise ValueError("Natural Earth tile zooms must be comma-separated integers.") from error
+    if not zooms:
+        raise ValueError("Natural Earth tile zooms must include at least one zoom.")
+    if zooms[0] < 0 or zooms[-1] > RASTER_MAXIMUM_ZOOM:
+        raise ValueError(
+            f"Natural Earth tile zooms must be between 0 and {RASTER_MAXIMUM_ZOOM}."
+        )
+    return zooms
+
+
 class VectorConfiguration(BaseModel):
-    source_filename: str = Field(default="", alias="sourceFilename")
-    show_major_roads: bool = Field(default=True, alias="showMajorRoads")
-    show_urban_areas: bool = Field(default=True, alias="showUrbanAreas")
-    show_woodland: bool = Field(default=True, alias="showWoodland")
-    show_place_names: bool = Field(default=True, alias="showPlaceNames")
+    natural_earth_directory: str = Field(
+        default=str(DEFAULT_NATURAL_EARTH_DIRECTORY), alias="naturalEarthDirectory"
+    )
+    natural_earth_physical_url: str = Field(
+        default=DEFAULT_NATURAL_EARTH_PHYSICAL_URL,
+        alias="naturalEarthPhysicalUrl",
+    )
+    natural_earth_cultural_url: str = Field(
+        default=DEFAULT_NATURAL_EARTH_CULTURAL_URL,
+        alias="naturalEarthCulturalUrl",
+    )
+    natural_earth_tile_zooms: str = Field(
+        default=DEFAULT_NATURAL_EARTH_TILE_ZOOMS,
+        alias="naturalEarthTileZooms",
+    )
+    show_natural_earth_physical: bool = Field(default=True, alias="showNaturalEarthPhysical")
+    show_natural_earth_coastline: bool = Field(default=False, alias="showNaturalEarthCoastline")
+    show_natural_earth_hydrography: bool = Field(default=True, alias="showNaturalEarthHydrography")
+    show_natural_earth_marine: bool = Field(default=False, alias="showNaturalEarthMarine")
+    show_natural_earth_bathymetry: bool = Field(default=False, alias="showNaturalEarthBathymetry")
+    show_natural_earth_ice: bool = Field(default=True, alias="showNaturalEarthIce")
+    show_natural_earth_geography: bool = Field(default=False, alias="showNaturalEarthGeography")
+    show_natural_earth_graticules: bool = Field(default=False, alias="showNaturalEarthGraticules")
+    show_natural_earth_administrative: bool = Field(default=True, alias="showNaturalEarthAdministrative")
+    show_natural_earth_places: bool = Field(default=True, alias="showNaturalEarthPlaces")
+    show_natural_earth_transport: bool = Field(default=False, alias="showNaturalEarthTransport")
+    show_natural_earth_protected: bool = Field(default=True, alias="showNaturalEarthProtected")
+    show_natural_earth_timezones: bool = Field(default=False, alias="showNaturalEarthTimezones")
+    show_natural_earth_other: bool = Field(default=False, alias="showNaturalEarthOther")
+
+    @field_validator("natural_earth_tile_zooms")
+    @classmethod
+    def validate_natural_earth_tile_zooms(cls, value: str) -> str:
+        return ", ".join(str(zoom) for zoom in natural_earth_tile_zooms(value))
+
+
+@dataclass(frozen=True)
+class RasterTileJob:
+    key: str
+    render: Callable[[], None]
+
+
+class RasterTileRenderQueue:
+    """Serializes cold-tile rendering and reports the active batch."""
+
+    def __init__(self) -> None:
+        self._jobs: Queue[RasterTileJob] = Queue()
+        self._lock = RLock()
+        self._pending: set[str] = set()
+        self._active: str | None = None
+        self._total = 0
+        self._completed = 0
+        self._failed = 0
+        self._last_error = ""
+        Thread(target=self._run, name="natural-earth-tile-renderer", daemon=True).start()
+
+    def enqueue(self, key: str, render: Callable[[], None]) -> bool:
+        with self._lock:
+            if key in self._pending:
+                return False
+            if not self._pending:
+                self._total = 0
+                self._completed = 0
+                self._failed = 0
+                self._last_error = ""
+            self._pending.add(key)
+            self._total += 1
+            self._jobs.put(RasterTileJob(key, render))
+            return True
+
+    def response(self) -> dict[str, str | int]:
+        with self._lock:
+            queued = self._jobs.qsize()
+            rendering = 1 if self._active is not None else 0
+            processed = self._completed + self._failed
+            active = bool(self._pending)
+            if active:
+                message = (
+                    f"Rendering {rendering} Natural Earth tile"
+                    f"{'' if rendering == 1 else 's'}; {queued} queued."
+                )
+            elif self._failed:
+                message = f"{self._failed} Natural Earth tile render(s) failed: {self._last_error}"
+            else:
+                message = ""
+            return {
+                "status": "processing" if active else "idle",
+                "message": message,
+                "progress": round(processed / self._total * 100) if self._total else 0,
+                "processed": processed,
+                "total": self._total,
+                "queued": queued,
+                "retained": queued,
+            }
+
+    def _run(self) -> None:
+        while True:
+            job = self._jobs.get()
+            with self._lock:
+                self._active = job.key
+            try:
+                job.render()
+            except Exception as error:
+                logger.exception("Natural Earth tile rendering failed for %s", job.key)
+                with self._lock:
+                    self._failed += 1
+                    self._last_error = str(error)
+            else:
+                with self._lock:
+                    self._completed += 1
+            finally:
+                with self._lock:
+                    self._pending.discard(job.key)
+                    self._active = None
+                self._jobs.task_done()
 
 
 class ConfigurationStore:
@@ -108,328 +270,488 @@ class ImportState:
                 if self._read()["status"] == "running":
                     self._write(
                         {
-                            "status": "failed",
-                            "message": "Vector action was cancelled because the service restarted.",
-                            "progress": 0,
+                            "status":    "failed",
+                            "message":   "Natural Earth import was cancelled because the service restarted.",
+                            "progress":  0,
+                            "processed": 0,
+                            "total":     0,
+                            "retained":  0,
                         }
                     )
 
     @staticmethod
     def _idle_response() -> dict[str, str | int]:
-        return {"status": "idle", "message": "", "progress": 0}
+        return {
+            "status":    "idle",
+            "message":   "",
+            "progress":  0,
+            "processed": 0,
+            "total":     0,
+            "retained":  0,
+        }
 
     def _read(self) -> dict[str, str | int]:
         if not self.path.is_file():
             return self._idle_response()
         response = json.loads(self.path.read_text(encoding="utf-8"))
         return {
-            "status": str(response["status"]),
-            "message": str(response["message"]),
-            "progress": int(response["progress"]),
+            "status":    str(response["status"]),
+            "message":   str(response["message"]),
+            "progress":  int(response["progress"]),
+            "processed": int(response.get("processed", 0)),
+            "total":     int(response.get("total", 0)),
+            "retained":  int(response.get("retained", 0)),
         }
 
     def _write(self, response: dict[str, str | int]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = self.path.with_suffix(".tmp")
+        temporary_path = self.path.with_suffix(f".{os.getpid()}.tmp")
         temporary_path.write_text(
             json.dumps(response, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
-        temporary_path.replace(self.path)
+        for attempt in range(5):
+            try:
+                temporary_path.replace(self.path)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                sleep(0.05 * (attempt + 1))
 
     def start(self) -> None:
         with self.lock:
             if self._read()["status"] == "running":
-                raise HTTPException(status_code=409, detail="a vector map operation is already running")
+                raise HTTPException(status_code=409, detail="a Natural Earth import is already running")
             self._write(
                 {
-                    "status": "running",
-                    "message": "Preparing Vector import.",
-                    "progress": 5,
+                    "status":    "running",
+                    "message":   "Preparing Natural Earth import.",
+                    "progress":  0,
+                    "processed": 0,
+                    "total":     0,
+                    "retained":  0,
                 }
             )
 
     def update(self, message: str, progress: int) -> None:
         with self.lock:
+            previous = self._read()
             self._write(
                 {
-                    "status": "running",
-                    "message": message,
-                    "progress": progress,
+                    "status":    "running",
+                    "message":   message,
+                    "progress":  progress,
+                    "processed": previous["processed"],
+                    "total":     previous["total"],
+                    "retained":  previous["retained"],
                 }
             )
 
     def finish(self, message: str) -> None:
         with self.lock:
-            self._write({"status": "succeeded", "message": message, "progress": 100})
+            previous = self._read()
+            self._write(
+                {
+                    "status":    "succeeded",
+                    "message":   message,
+                    "progress":  100,
+                    "processed": previous["processed"],
+                    "total":     previous["total"],
+                    "retained":  previous["retained"],
+                }
+            )
 
     def fail(self, error: Exception) -> None:
         with self.lock:
-            self._write({"status": "failed", "message": str(error), "progress": 0})
+            previous = self._read()
+            self._write(
+                {
+                    "status":    "failed",
+                    "message":   str(error),
+                    "progress":  0,
+                    "processed": previous["processed"],
+                    "total":     previous["total"],
+                    "retained":  previous["retained"],
+                }
+            )
 
     def response(self) -> dict[str, str | int]:
         with self.lock:
             return self._read()
 
 
-def import_geofabrik_file() -> str:
-    filename = configuration_store.configuration.source_filename
-    parsed_url = urlparse(filename)
-    configured_source = Path(filename)
-    if parsed_url.scheme == "https":
-        source = download_remote_vector_source(filename, import_state.update)
-        if not is_importable_vector_source(source):
-            raise ValueError(
-                "the downloaded URL does not contain a supported Vector source"
-            )
-        return import_vector_source(source)
-    if parsed_url.scheme and not configured_source.is_absolute():
-        raise ValueError("sourceFilename URL must use HTTPS and include a host")
-    source = (
-        configured_source.resolve()
-        if configured_source.is_absolute()
-        else (IMPORTS_DIRECTORY / configured_source).resolve()
-    )
-    if (
-        not filename
-        or not source.is_file()
-        or not is_importable_vector_source(source)
-        or (
-            configured_source.is_absolute()
-            and source.suffix.lower() not in {".pbf", ".geojson"}
-        )
-        or (
-            not configured_source.is_absolute()
-            and source.parent != IMPORTS_DIRECTORY.resolve()
-        )
-    ):
-        raise ValueError(
-            "sourceFilename must name a .geojson, .gpkg, .gpkg.zip, .pbf, or OSM "
-            "land-polygon Shapefile ZIP in vector imports, or an existing absolute "
-            ".osm.pbf or .geojson path"
-        )
-    return import_vector_source(source)
+def natural_earth_source_layers(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
+    members = {
+        Path(info.filename).as_posix().casefold(): info.filename
+        for info in archive.infolist()
+        if not info.is_dir()
+    }
+    layers = []
+    for folded_name, filename in members.items():
+        if not folded_name.endswith(".shp"):
+            continue
+        layer_stem = filename[:-4]
+        layer_name = Path(filename).stem
+        if not layer_name.casefold().startswith("ne_10m_"):
+            continue
+        if all(
+            f"{folded_name[:-4]}.{extension}" in members
+            for extension in ("shx", "dbf")
+        ):
+            layers.append((layer_stem, layer_name))
+    return sorted(layers, key=lambda layer: layer[1].casefold())
 
 
-def download_remote_vector_source(
-    source_url: str, progress: Callable[[str, int], None]
-) -> Path:
-    parsed_url = urlparse(source_url)
-    if parsed_url.scheme != "https" or not parsed_url.netloc:
-        raise ValueError("sourceFilename URL must use HTTPS and include a host")
-    filename = Path(parsed_url.path).name
-    if not filename or not is_vector_source(Path(filename)) and Path(filename).suffix.lower() != ".zip":
-        raise ValueError(
-            "sourceFilename URL must end with .geojson, .gpkg, .gpkg.zip, .pbf, or .zip"
-        )
-    destination = IMPORTS_DIRECTORY / (
-        f"remote-{hashlib.sha256(source_url.encode('utf-8')).hexdigest()[:12]}-{filename}"
-    )
-    temporary = destination.with_suffix(f"{destination.suffix}.download")
-    request = Request(source_url, headers={"User-Agent": "Kody Vector Map importer"})
-    try:
-        with urlopen(request, timeout=30) as response:
-            final_url = urlparse(response.geturl())
-            if final_url.scheme != "https" or not final_url.netloc:
-                raise ValueError("source URL redirected to an invalid location")
-            content_length = response.headers.get("Content-Length")
-            if content_length is not None and int(content_length) > REMOTE_SOURCE_MAXIMUM_BYTES:
-                raise ValueError("remote Vector source exceeds the 512 MB download limit")
-            received = 0
-            with temporary.open("wb") as stream:
-                while chunk := response.read(REMOTE_SOURCE_CHUNK_SIZE):
-                    received += len(chunk)
-                    if received > REMOTE_SOURCE_MAXIMUM_BYTES:
-                        raise ValueError(
-                            "remote Vector source exceeds the 512 MB download limit"
-                        )
-                    stream.write(chunk)
-                    if content_length is not None:
-                        progress(
-                            f"Downloading {filename}: {received:,} of {int(content_length):,} bytes.",
-                            5 + min(19, round(received / int(content_length) * 19)),
-                        )
-        temporary.replace(destination)
-    except URLError as error:
-        temporary.unlink(missing_ok=True)
-        raise ValueError(f"unable to download Vector source: {error.reason}") from error
-    except (OSError, ValueError):
-        temporary.unlink(missing_ok=True)
-        raise
-    progress(f"Downloaded {filename}.", 24)
-    return destination
-
-
-def is_vector_source(source: Path) -> bool:
-    return (
-        source.suffix.lower() in {".geojson", ".pbf", ".gpkg"}
-        or source.name.lower().endswith(".gpkg.zip")
-    )
-
-
-def is_land_polygon_source(source: Path) -> bool:
+def is_natural_earth_archive(source: Path) -> bool:
     if source.suffix.lower() != ".zip":
         return False
     try:
         with zipfile.ZipFile(source) as archive:
-            names = {entry.filename.lower() for entry in archive.infolist() if not entry.is_dir()}
-    except zipfile.BadZipFile:
+            return bool(natural_earth_source_layers(archive))
+    except (OSError, zipfile.BadZipFile):
         return False
-    shapefiles = [name for name in names if name.endswith(".shp")]
-    return any(
-        {
-            f"{shapefile[:-4]}.shx",
-            f"{shapefile[:-4]}.dbf",
-        }.issubset(names)
-        for shapefile in shapefiles
-    )
 
 
-def is_importable_vector_source(source: Path) -> bool:
-    return is_vector_source(source) or is_land_polygon_source(source)
-
-
-def importable_vector_sources(directory: Path) -> list[Path]:
+def natural_earth_archives(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
     return sorted(
         (
-            source
+            source.resolve()
             for source in directory.iterdir()
-            if source.is_file() and is_importable_vector_source(source)
+            if source.is_file() and is_natural_earth_archive(source)
         ),
-        key=lambda source: (not is_land_polygon_source(source), source.name.lower()),
+        key=lambda source: source.name.casefold(),
     )
 
 
-def all_importable_vector_sources() -> list[Path]:
-    sources: dict[Path, Path] = {}
-    for directory in (IMPORTS_DIRECTORY, SHARED_IMPORTS_DIRECTORY):
-        for source in importable_vector_sources(directory):
-            sources[source.resolve()] = source
-    return sorted(
-        sources.values(),
-        key=lambda source: (not is_land_polygon_source(source), source.name.lower()),
+def configured_natural_earth_directory() -> Path:
+    configured = Path(
+        configuration_store.configuration.natural_earth_directory
+    ).expanduser()
+    if configured.is_absolute():
+        return configured.resolve()
+    return (IMPORTS_DIRECTORY / configured).resolve()
+
+
+def download_natural_earth_archive(
+    source_url: str,
+    progress: Callable[[str, int], None],
+    progress_start: int,
+    progress_end: int,
+) -> Path:
+    parsed_url = urlparse(source_url)
+    if parsed_url.scheme != "https" or not parsed_url.netloc:
+        raise ValueError("Natural Earth archive URLs must use HTTPS and include a host.")
+    filename = Path(parsed_url.path).name
+    if not filename.lower().endswith(".zip"):
+        raise ValueError("Natural Earth archive URLs must end in .zip.")
+    archive_directory = IMPORTS_DIRECTORY / "natural-earth"
+    archive_directory.mkdir(parents=True, exist_ok=True)
+    destination = archive_directory / (
+        f"{hashlib.sha256(source_url.encode('utf-8')).hexdigest()[:12]}-{filename}"
     )
-
-
-def geojson_features(source: Path) -> list[dict[str, object]]:
+    temporary = destination.with_name(
+        f"{destination.stem}.download{destination.suffix}"
+    )
+    request = Request(source_url, headers={"User-Agent": "Kody Natural Earth importer"})
     try:
-        collection = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"GeoJSON source is unreadable: {source}") from error
-    if collection.get("type") != "FeatureCollection" or not isinstance(
-        collection.get("features"), list
+        with urlopen(request, timeout=30) as response:
+            final_url = urlparse(response.geturl())
+            if final_url.scheme != "https" or not final_url.netloc:
+                raise ValueError("Natural Earth archive redirected to an invalid location.")
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None and int(content_length) > REMOTE_ARCHIVE_MAXIMUM_BYTES:
+                raise ValueError("Natural Earth archive exceeds the 512 MB download limit.")
+            received = 0
+            with temporary.open("wb") as stream:
+                while chunk := response.read(REMOTE_ARCHIVE_CHUNK_SIZE):
+                    received += len(chunk)
+                    if received > REMOTE_ARCHIVE_MAXIMUM_BYTES:
+                        raise ValueError("Natural Earth archive exceeds the 512 MB download limit.")
+                    stream.write(chunk)
+                    if content_length is not None:
+                        progress(
+                            f"Downloading {filename}: {received:,} of {int(content_length):,} bytes.",
+                            progress_start
+                            + round(
+                                received / int(content_length)
+                                * (progress_end - progress_start)
+                            ),
+                        )
+        if not is_natural_earth_archive(temporary):
+            raise ValueError(
+                f"Downloaded {filename} is not a Natural Earth 1:10m archive."
+            )
+        temporary.replace(destination)
+    except HTTPError as error:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(
+            f"Unable to download Natural Earth archive {filename}: HTTP {error.code}."
+        ) from error
+    except (OSError, URLError, ValueError) as error:
+        temporary.unlink(missing_ok=True)
+        if isinstance(error, ValueError):
+            raise
+        raise ValueError(
+            f"Unable to download Natural Earth archive {filename}: {error}."
+        ) from error
+    return destination
+
+
+def configured_natural_earth_archives() -> list[Path]:
+    configuration = configuration_store.configuration
+    urls = (
+        configuration.natural_earth_physical_url.strip(),
+        configuration.natural_earth_cultural_url.strip(),
+    )
+    if any(urls):
+        if not all(urls):
+            raise ValueError(
+                "Both Natural Earth physical and cultural archive URLs must be configured."
+            )
+        return [
+            download_natural_earth_archive(
+                source_url,
+                import_state.update,
+                index * 20,
+                (index + 1) * 20,
+            )
+            for index, source_url in enumerate(urls)
+        ]
+    return natural_earth_archives(configured_natural_earth_directory())
+
+
+def natural_earth_category(source_layer: str) -> tuple[str, int]:
+    name = source_layer.casefold()
+    if "bathymetry" in name:
+        return "bathymetry", 0
+    if "graticule" in name or "bounding_box" in name:
+        return "graticules", 6
+    if "scale_rank" in name:
+        return "geography", 6
+    if "urban_areas" in name:
+        return "places", 6
+    if (
+        "populated_places" in name
+        or "label_points" in name
+        or "land_ocean_label" in name
     ):
-        raise ValueError(f"GeoJSON source must be a FeatureCollection: {source}")
-
-    features: list[dict[str, object]] = []
-    for index, feature in enumerate(collection["features"]):
-        if not isinstance(feature, dict):
-            raise ValueError(f"GeoJSON feature {index} must be an object")
-        properties = feature.get("properties")
-        geometry = feature.get("geometry")
-        if not isinstance(properties, dict) or not isinstance(geometry, dict):
-            raise ValueError(f"GeoJSON feature {index} requires properties and geometry")
-        min_zoom = properties.get("minZoom", properties.get("MIN_ZOOM", 0))
-        if (
-            not isinstance(min_zoom, (int, float))
-            or isinstance(min_zoom, bool)
-            or not 0 <= min_zoom <= 18
-        ):
-            raise ValueError(f"GeoJSON feature {index} has an invalid minZoom")
-        features.append(
-            {
-                "type": "Feature",
-                "properties": {
-                    **properties,
-                    "layer": properties.get("layer", "osm-land"),
-                    "minZoom": ceil(min_zoom),
-                },
-                "geometry": geometry,
-            }
+        return "places", 4
+    if any(
+        token in name
+        for token in (
+            "admin_",
+            "antarctic_claim",
+            "boundary",
+            "countries",
+            "disputed",
+            "map_subunits",
+            "map_units",
+            "sovereignty",
+            "pacific_groupings",
         )
-    return features
+    ):
+        return "administrative", 3
+    if "land_ocean_seams" in name:
+        return "coastline", 2
+    if "coastline" in name or (
+        "minor_islands" in name and "admin_" not in name
+    ):
+        return "coastline", 2
+    if "river" in name or "lake" in name or "playa" in name:
+        return "hydrography", 4
+    if "reef" in name or "marine" in name:
+        return "marine", 6
+    if "ice" in name or "glaciated" in name:
+        return "ice", 5
+    if "parks_and_protected_lands" in name:
+        return "protected", 7
+    if "time_zone" in name:
+        return "timezones", 5
+    if any(token in name for token in ("airports", "roads", "railroads", "ports")):
+        return "transport", 5
+    if "geography" in name or "geographic" in name:
+        return "geography", 7
+    if "land" in name or "ocean" in name:
+        return "physical", 0
+    return "other", 6
 
 
-def import_land_polygon_source(source: Path) -> str:
-    if source.resolve() != LAND_POLYGONS_FILE.resolve():
-        LAND_POLYGONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, LAND_POLYGONS_FILE)
-    return (
-        f"Registered {source.name} as the supporting OSM land-polygon source. "
-        "It will be used automatically by the next .osm.pbf or GeoPackage import."
-    )
+def natural_earth_display_layer(source_layer: str, category: str) -> str:
+    name = source_layer.casefold()
+    if "bathymetry" in name:
+        match = re.search(r"_bathymetry_[a-z]_(\d+)$", name)
+        if match:
+            return f"ne-bathymetry-{match.group(1)}"
+        return "ne-bathymetry"
+    if "graticule" in name or "bounding_box" in name:
+        return "ne-graticule"
+    if "urban_areas" in name:
+        return "ne-urban"
+    if "label_points" in name or "populated_places" in name or "land_ocean_label" in name:
+        return "ne-place"
+    if "airports" in name or "ports" in name:
+        return "ne-transport-point"
+    if "roads" in name:
+        return "ne-road"
+    if "railroads" in name:
+        return "ne-rail"
+    if "time_zone" in name:
+        return "ne-timezone"
+    if "parks_and_protected_lands" in name:
+        return "ne-protected"
+    if "disputed" in name or "antarctic_claim" in name:
+        return "ne-disputed"
+    if category == "administrative":
+        if "admin_0" in name:
+            return "ne-admin0"
+        if "admin_1" in name:
+            return "ne-admin1"
+        if "admin_2" in name:
+            return "ne-admin2"
+        return "ne-admin"
+    if "coastline" in name or ("seams" in name and category == "coastline"):
+        return "ne-coastline"
+    if "river" in name:
+        return "ne-river"
+    if "lake" in name:
+        return "ne-lake"
+    if "playa" in name:
+        return "ne-playa"
+    if "reef" in name:
+        return "ne-reef"
+    if "marine" in name:
+        return "ne-marine"
+    if "ice" in name or "glaciated" in name:
+        return "ne-ice"
+    if "geography_regions_points" in name or "geography_regions_elevation_points" in name:
+        return "ne-geography-point"
+    if "geography" in name or "geographic" in name:
+        return "ne-geography"
+    if "ocean" in name:
+        return "ne-ocean"
+    if "land" in name or "minor_islands" in name:
+        return "ne-land"
+    return f"ne-{category}"
 
 
-def import_vector_source(
+def natural_earth_minimum_zoom(
+    category: str, default_zoom: int, attributes: dict[str, object]
+) -> int:
+    normalized_attributes = {
+        str(key).casefold(): value for key, value in attributes.items()
+    }
+    for key in ("min_zoom", "minzoom"):
+        value = normalized_attributes.get(key)
+        if value is not None:
+            try:
+                return max(default_zoom, min(18, int(float(value) + 0.999)))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    if category != "places":
+        return default_zoom
+    for key in ("scalerank", "labelrank"):
+        value = normalized_attributes.get(key)
+        if value is not None:
+            try:
+                rank = max(0, int(float(value)))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            return min(16, default_zoom + rank)
+    return default_zoom
+
+
+def natural_earth_features(
     source: Path, progress: Callable[[str, int], None] | None = None
-) -> str:
-    package_id = f"import-{hashlib.sha256(source.name.encode('utf-8')).hexdigest()[:10]}"
-    report = progress or import_state.update
-    report("Preparing source.", 1)
-    arguments = argparse.Namespace(
-        id=package_id,
-        source=source,
-        coverage_zoom=11,
-        min_zoom=8,
-        max_zoom=14,
-        replace=True,
-        progress=report,
-    )
-    if is_land_polygon_source(source):
-        report("Registering supporting OSM land polygons.", 90)
-        return import_land_polygon_source(source)
-    if source.suffix.lower() == ".geojson":
-        report("Loading GeoJSON features.", 25)
-        features = geojson_features(source)
-        report("Writing GeoPackage feature library.", 75)
-        count = NativeTileStore(MAPS_DIRECTORY).replace_source(
-            f"geojson-{source.resolve()}",
-            features,
-        )
-        report("Finalizing native Vector tiles.", 99)
-        return f"Merged {count} GeoJSON features from {source.name} into the native vector tile store."
-    (install_osm_pbf if source.suffix.lower() == ".pbf" else install_geofabrik_gpkg)(
-        arguments
-    )
-    report("Finalizing native Vector tiles.", 99)
-    return f"Merged {source.name} into the native vector tile store."
+) -> Iterator[dict[str, object]]:
+    with zipfile.ZipFile(source) as archive:
+        source_layers = natural_earth_source_layers(archive)
+        if not source_layers:
+            raise ValueError(f"No Natural Earth 10m shapefiles found in {source.name}.")
+        for layer_index, (layer_stem, source_layer) in enumerate(source_layers):
+            category, minimum_zoom = natural_earth_category(source_layer)
+            display_layer = natural_earth_display_layer(source_layer, category)
+            if progress:
+                progress(
+                    f"Reading {source_layer}.",
+                    min(80, 15 + round((layer_index / len(source_layers)) * 65)),
+                )
+            with ExitStack() as streams:
+                shapefile_streams = [
+                    streams.enter_context(archive.open(f"{layer_stem}.{extension}"))
+                    for extension in ("shp", "shx", "dbf")
+                ]
+                reader = shapefile.Reader(
+                    shp=shapefile_streams[0],
+                    shx=shapefile_streams[1],
+                    dbf=shapefile_streams[2],
+                )
+                for record in reader.iterShapeRecords():
+                    if record.shape.shapeType == shapefile.NULL:
+                        continue
+                    geometry = shape(record.shape.__geo_interface__)
+                    if geometry.is_empty:
+                        continue
+                    attributes = record.record.as_dict()
+                    normalized_attributes = {
+                        str(key).casefold(): value
+                        for key, value in attributes.items()
+                    }
+                    minimum_feature_zoom = natural_earth_minimum_zoom(
+                        category, minimum_zoom, attributes
+                    )
+                    yield {
+                        "type": "Feature",
+                        "properties": {
+                            "layer": display_layer,
+                            "category": category,
+                            "name": normalized_attributes.get("name")
+                            or normalized_attributes.get("name_en"),
+                            "minZoom": minimum_feature_zoom,
+                            "sourceLayer": source_layer,
+                        },
+                        "geometry": mapping(geometry),
+                    }
 
 
-def import_all_vector_sources() -> str:
-    sources = all_importable_vector_sources()
+def import_natural_earth_dataset() -> str:
+    sources = configured_natural_earth_archives()
     if not sources:
         raise ValueError(
-            "no .geojson, .osm.pbf, .gpkg, .gpkg.zip, or OSM land-polygon Shapefile "
-            "ZIP sources were found in vector or shared imports"
+            f"No Natural Earth 10m ZIP archives were found in "
+            f"{configured_natural_earth_directory()}."
         )
-    for index, source in enumerate(sources, start=1):
-        source_start = round((index - 1) / len(sources) * 100)
-        source_end = round(index / len(sources) * 100)
 
-        def report(message: str, progress: int) -> None:
-            overall_progress = source_start + round(
-                max(0, min(100, progress)) / 100 * (source_end - source_start)
-            )
-            import_state.update(
-                f"Importing {source.name} ({index} of {len(sources)}): {message}",
-                overall_progress,
-            )
-
-        import_vector_source(source, report)
-    return f"Merged {len(sources)} Vector source file(s) into the native tile store."
+    import_state.update(
+        f"Importing {len(sources)} Natural Earth archive(s).", 5
+    )
+    features = chain.from_iterable(
+        natural_earth_features(
+            source,
+            lambda message, progress: import_state.update(
+                f"{source.name}: {message}",
+                min(95, round((index + progress / 100) / len(sources) * 100)),
+            ),
+        )
+        for index, source in enumerate(sources)
+    )
+    count = NativeTileStore(MAPS_DIRECTORY).replace_source_prefix(
+        "natural-earth", "natural-earth", features
+    )
+    store = NativeTileStore(MAPS_DIRECTORY)
+    store.build_base_overview(force=True)
+    import_state.update("Finished writing the Natural Earth library.", 99)
+    return (
+        f"Imported {count:,} Natural Earth features from "
+        f"{len(sources)} configured archive(s). Map tiles will render and cache on demand."
+    )
 
 
 def filter_vector_features(
     collection: dict[str, object], configuration: VectorConfiguration
 ) -> dict[str, object]:
-    visible_layers = {
-        "osm-road": configuration.show_major_roads,
-        "osm-urban": configuration.show_urban_areas,
-        "osm-forest": configuration.show_woodland,
-        "osm-place": configuration.show_place_names,
-    }
     features = collection.get("features", [])
     if not isinstance(features, list):
         return collection
@@ -439,85 +761,43 @@ def filter_vector_features(
             feature
             for feature in features
             if not isinstance(feature, dict)
-            or visible_layers.get(
-                feature.get("properties", {}).get("layer"), True
+            or not isinstance(feature.get("properties"), dict)
+            or getattr(
+                configuration,
+                "show_natural_earth_"
+                + str(feature["properties"].get("category", "")),
+                True,
             )
         ],
     }
 
 
 class VectorPatchService:
-    """Serves directly addressed native Vector tiles, otherwise the Earth base."""
+    """Serves directly addressed Natural Earth display tiles."""
 
-    def __init__(self, sources: list[Path], maps_directory: Path = MAPS_DIRECTORY) -> None:
-        self.base_index = QuadTreeMap()
-        for source in sources:
-            self._load_source(source, self.base_index)
+    def __init__(self, maps_directory: Path = MAPS_DIRECTORY) -> None:
         self.tile_store = NativeTileStore(maps_directory)
-
-    @staticmethod
-    def _load_source(source: Path, index: QuadTreeMap) -> None:
-        if not source.is_file():
-            raise RuntimeError(f"required map data file is missing: {source}")
-        with source.open(encoding="utf-8") as stream:
-            collection = json.load(stream)
-        if collection.get("type") != "FeatureCollection":
-            raise RuntimeError(f"map data is not a GeoJSON FeatureCollection: {source}")
-        for feature in collection.get("features", []):
-            geometry_data = feature.get("geometry")
-            if not geometry_data:
-                continue
-            geometry = shape(geometry_data)
-            if not geometry.is_empty:
-                index.insert(IndexedFeature(feature.get("properties", {}), geometry))
+        self.tile_store.build_world_overview()
 
     def patch(self, zoom: int, x: int, y: int, buffer_pixels: int = 0) -> dict[str, object]:
         try:
-            tile_bounds = MapMath.tile_bounds(zoom, x, y, buffer_pixels)
             display_bounds = MapMath.tile_bounds(zoom, x, y)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
-        tile_geometry = box(
-            tile_bounds.west, tile_bounds.south, tile_bounds.east, tile_bounds.north
+        tile = self.tile_store.tile_collection(
+            zoom,
+            x,
+            y,
+            buffer_pixels,
+            detail_zoom=min(zoom, NATURAL_EARTH_MAXIMUM_DETAIL_ZOOM),
         )
-        tile = self.tile_store.tile_collection(zoom, x, y)
-        if tile is not None:
-            collection, lod = tile
-            return {
-                **collection,
-                "tile": {
-                    "z": zoom,
-                    "x": x,
-                    "y": y,
-                    "bounds": [
-                        display_bounds.west,
-                        display_bounds.south,
-                        display_bounds.east,
-                        display_bounds.north,
-                    ],
-                },
-                "source": {
-                    "id": "native-vector-tiles",
-                    "attribution": "© OpenStreetMap contributors",
-                    "lod": lod,
-                },
-            }
-        features = []
-        for entry in self.base_index.query(tile_bounds):
-            clipped_geometry = entry.geometry.intersection(tile_geometry)
-            if not clipped_geometry.is_empty:
-                features.append(
-                    {
-                        "type": "Feature",
-                        "properties": entry.properties,
-                        "geometry": mapping(clipped_geometry),
-                    }
-                )
-
+        collection, lod = tile or (
+            {"type": "FeatureCollection", "features": []},
+            zoom,
+        )
         return {
-            "type": "FeatureCollection",
-            "features": features,
+            **collection,
             "tile": {
                 "z": zoom,
                 "x": x,
@@ -530,15 +810,17 @@ class VectorPatchService:
                 ],
             },
             "source": {
-                "id": "earth-base",
-                "attribution": None,
+                "id": "natural-earth",
+                "attribution": "Natural Earth",
+                "lod": lod,
             },
         }
 
 
-patch_service = VectorPatchService([])
+patch_service = VectorPatchService()
 configuration_store = ConfigurationStore(CONFIG_FILE)
 import_state = ImportState()
+tile_render_queue = RasterTileRenderQueue()
 app = FastAPI(title="Kody Vector Map Service", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -555,10 +837,87 @@ def get_patch(
     y: int,
     buffer_pixels: int = Query(default=0, ge=0, le=16),
 ) -> dict[str, object]:
-    return filter_vector_features(
+    collection = filter_vector_features(
         patch_service.patch(zoom, x, y, buffer_pixels),
         configuration_store.configuration,
     )
+    return {
+        **collection,
+        "styles": {
+            layer: style.model_dump(by_alias=True)
+            for layer, style in load_vector_theme().styles.items()
+        },
+    }
+
+
+@app.get("/api/tiles/{zoom}/{x}/{y}.webp", response_model=None)
+def get_raster_tile(zoom: int, x: int, y: int) -> FileResponse | JSONResponse:
+    configuration = configuration_store.configuration
+    enabled_zooms = natural_earth_tile_zooms(configuration.natural_earth_tile_zooms)
+    if not (zoom in enabled_zooms and 0 <= x < 2**zoom and 0 <= y < 2**zoom):
+        raise HTTPException(status_code=422, detail="tile coordinates are outside the Natural Earth range")
+    store = patch_service.tile_store
+    styles = load_vector_theme().styles
+    cache = NaturalEarthRasterCache(
+        MAPS_DIRECTORY,
+        cache_revision(store, configuration.model_dump(by_alias=True), styles),
+    )
+
+    def render() -> bytes:
+        tile = store.tile_collection(
+            zoom,
+            x,
+            y,
+            buffer_pixels=2,
+            detail_zoom=min(zoom, NATURAL_EARTH_RASTER_DETAIL_ZOOM),
+        )
+        collection = tile[0] if tile else {"type": "FeatureCollection", "features": []}
+        return render_tile(filter_vector_features(collection, configuration), styles, zoom, x, y)
+
+    path = cache.tile_path(zoom, x, y)
+    if not path.is_file():
+        queued = tile_render_queue.enqueue(
+            str(path),
+            lambda: cache.get_or_render(zoom, x, y, render),
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "queued" if queued else "rendering",
+                "retryAfterMilliseconds": TILE_RENDER_RETRY_MILLISECONDS,
+            },
+            headers={
+                "Cache-Control": "no-store",
+                "Retry-After": "1",
+            },
+        )
+    return FileResponse(
+        path,
+        media_type="image/webp",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+@app.get("/api/tiles/revision")
+def get_raster_tile_revision() -> dict[str, object]:
+    store = patch_service.tile_store
+    return {
+        "revision": cache_revision(
+            store,
+            configuration_store.configuration.model_dump(by_alias=True),
+            load_vector_theme().styles,
+        ),
+        "tileZooms": list(
+            natural_earth_tile_zooms(
+                configuration_store.configuration.natural_earth_tile_zooms
+            )
+        ),
+    }
+
+
+@app.get("/api/tiles/status")
+def get_raster_tile_status() -> dict[str, str | int]:
+    return tile_render_queue.response()
 
 
 @app.get("/api/kody/manifest")
@@ -570,38 +929,54 @@ async def get_manifest() -> dict[str, object]:
         "configuration": {
             "readPath": "/api/config",
             "writePath": "/api/config",
+            "activityStatusPath": "/api/tiles/status",
             "initialConfiguration": configuration_store.response(),
             "fields": [
-                {"key": "showMajorRoads", "label": "Show major roads", "type": "boolean"},
-                {"key": "showUrbanAreas", "label": "Show urban areas", "type": "boolean"},
-                {"key": "showWoodland", "label": "Show woodland", "type": "boolean"},
-                {"key": "showPlaceNames", "label": "Show placenames", "type": "boolean"},
-                {"key": "sourceFilename", "label": "Vector filename, absolute path, or HTTPS URL", "type": "string", "required": False},
+                {
+                    "key": "naturalEarthDirectory",
+                    "label": "Natural Earth archive folder (local fallback)",
+                    "type": "string",
+                    "required": False,
+                },
+                {
+                    "key": "naturalEarthPhysicalUrl",
+                    "label": "Natural Earth physical archive URL",
+                    "type": "string",
+                    "required": False,
+                },
+                {
+                    "key": "naturalEarthCulturalUrl",
+                    "label": "Natural Earth cultural archive URL",
+                    "type": "string",
+                    "required": False,
+                },
+                {
+                    "key": "naturalEarthTileZooms",
+                    "label": "Natural Earth cached tile zooms",
+                    "type": "string",
+                    "required": True,
+                },
+            ]
+            + [
+                {
+                    "key": f"showNaturalEarth{category.title()}",
+                    "label": f"Natural Earth: {label.lower()}",
+                    "type": "boolean",
+                }
+                for category, label in NATURAL_EARTH_CATEGORIES.items()
             ],
             "actions": [
                 {
-                    "label": "Import all Vector sources",
-                    "path": "/api/actions/import-all",
-                    "statusPath": "/api/actions/import-all",
-                    "method": "POST",
-                },
-                {
-                    "label": "Import selected Vector file",
-                    "path": "/api/actions/import-geofabrik",
-                    "statusPath": "/api/actions/import-geofabrik",
-                    "method": "POST",
-                },
-                {
-                    "label": "Rebuild vector pyramid",
-                    "path": "/api/actions/rebuild-pyramid",
-                    "statusPath": "/api/actions/rebuild-pyramid",
+                    "label": "Import Natural Earth dataset",
+                    "path": "/api/actions/import-natural-earth",
+                    "statusPath": "/api/actions/import-natural-earth",
                     "method": "POST",
                 },
                 {
                     "label": "Clear local data",
                     "path": "/api/actions/clear-local-data",
                     "method": "POST",
-                    "confirmationMessage": "Clear all local Vector map data? This cannot be undone.",
+                    "confirmationMessage": "Clear all local Natural Earth map data? This cannot be undone.",
                 },
             ],
         },
@@ -620,27 +995,18 @@ async def update_configuration(
     return configuration_store.update(configuration, if_match)
 
 
-def run_vector_action(action: str) -> None:
+def run_natural_earth_action(action: str) -> None:
     try:
-        if action == "import-selected":
-            result = import_geofabrik_file()
-        elif action == "import-all":
-            result = import_all_vector_sources()
-        elif action == "rebuild-pyramid":
-            import_state.update("Building intermediate local vector LOD tiles.", 10)
-            package_count, tile_count = rebuild_all_lod_pyramids()
-            result = (
-                f"Rebuilt {tile_count} LOD tile(s) across {package_count} "
-                "native Vector tile set(s)."
-            )
+        if action == "import-natural-earth":
+            result = import_natural_earth_dataset()
         else:
-            raise ValueError(f"unsupported Vector action: {action}")
+            raise ValueError(f"unsupported Natural Earth action: {action}")
         import_state.finish(result)
     except Exception as error:
         import_state.fail(error)
 
 
-def start_vector_action(action: str, message: str) -> dict[str, str]:
+def start_natural_earth_action(action: str, message: str) -> dict[str, str]:
     import_state.start()
     try:
         subprocess.Popen(
@@ -654,42 +1020,24 @@ def start_vector_action(action: str, message: str) -> dict[str, str]:
     return {"message": message}
 
 
-@app.post("/api/actions/import-geofabrik", status_code=202)
-async def start_geofabrik_import() -> dict[str, str]:
-    return start_vector_action("import-selected", "Vector import started.")
-
-
-@app.get("/api/actions/import-geofabrik")
-async def get_geofabrik_import_status() -> dict[str, str | int]:
-    return import_state.response()
-
-
-@app.post("/api/actions/import-all", status_code=202)
-async def start_all_vector_imports() -> dict[str, str]:
-    return start_vector_action("import-all", "Importing all Vector sources.")
-
-
-@app.get("/api/actions/import-all")
-async def get_all_vector_import_status() -> dict[str, str | int]:
-    return import_state.response()
-
-
-@app.post("/api/actions/rebuild-pyramid", status_code=202)
-async def rebuild_pyramid() -> dict[str, str]:
-    return start_vector_action(
-        "rebuild-pyramid", "Rebuilding local vector LOD pyramid."
+@app.post("/api/actions/import-natural-earth", status_code=202)
+async def start_natural_earth_import() -> dict[str, str]:
+    return start_natural_earth_action(
+        "import-natural-earth", "Natural Earth import started."
     )
 
 
-@app.get("/api/actions/rebuild-pyramid")
-async def get_rebuild_pyramid_status() -> dict[str, str | int]:
+@app.get("/api/actions/import-natural-earth")
+async def get_natural_earth_import_status() -> dict[str, str | int]:
     return import_state.response()
 
 
 @app.post("/api/actions/clear-local-data")
 async def clear_local_data() -> dict[str, str]:
     if import_state.response()["status"] == "running":
-        raise HTTPException(status_code=409, detail="a vector map operation is already running")
+        raise HTTPException(status_code=409, detail="a Natural Earth import is already running")
+    if tile_render_queue.response()["status"] == "processing":
+        raise HTTPException(status_code=409, detail="Natural Earth tile rendering is still running")
     shutil.rmtree(MAPS_DIRECTORY, ignore_errors=True)
     shutil.rmtree(IMPORTS_DIRECTORY, ignore_errors=True)
     initialize_data_directory()

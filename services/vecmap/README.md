@@ -1,7 +1,10 @@
-# Kody vector map service
+# Kody Natural Earth vector map service
 
-This tree owns the offline vector map API and its GeoPackage-backed Vector
-working library.
+This service imports and displays Natural Earth 1:10m physical and cultural
+layers. By default it downloads the two public archive URLs configured in the
+Vector map service settings, caching validated ZIPs beneath the service data
+directory before importing. A local `Natural Earth archive folder` remains
+available as an offline fallback when both archive URLs are blank.
 
 ```powershell
 Set-Location services\vecmap
@@ -13,55 +16,43 @@ python -m uvicorn kody_vecmap.server:app --host 127.0.0.1 --port 8004
 ```
 
 Register `http://127.0.0.1:8004/` as the **Vector map** connection in the
-central product. Build/manage local packages with:
+central product, then run **Import Natural Earth dataset**. The import
+downloads each configured archive over HTTPS to
+`<dataDirectory>\vecmap\imports\natural-earth`, validates the nested
+shapefiles, and imports every complete `ne_10m_*` layer. Downloaded archives
+replace the cache atomically, so a failed download cannot replace the
+previously validated local copy.
 
-```powershell
-$env:PYTHONPATH = "$PWD\src"
-python -m kody_vecmap.map_manager list
-```
+Features are streamed directly from the archives into
+`maps\vector-library.gpkg`. The GeoPackage stores binary geometries with an
+SQLite RTree index. Reimporting replaces the previous Natural Earth feature set
+in one transaction. Display lossless WebP tiles for selected zooms (by default
+`0, 2, 4, 6, 8, 10, 12`) are rendered only when viewed,
+then saved in a versioned persistent cache. A cold tile receives `202 Accepted`
+while a single service worker queues and renders it; the browser retains the
+nearest cached parent tile and retries shortly afterward. The Vector map
+configuration dialog reports queued and rendering tile progress. Revisiting a
+location is a compact image read rather than another geometry query and draw
+operation; unseen areas never consume rendering time or cache space. Zooms
+above 8 use their smaller tile bounds with the prepared zoom-8 cartographic
+geometry, avoiding a costly exact-geometry path. Zooming beyond the highest
+configured level smoothly scales the regional Natural Earth cartography; the
+source does not claim street-level coverage.
 
-`imports/` contains the immutable master copies of downloaded or supplied
-sources. Kody never deletes these files during a working-library rebuild.
+Layer switches group the source layers into physical features, coastlines,
+hydrography, marine features, bathymetry, ice, geographic features, graticules,
+administrative boundaries, places, transport, protected areas, time zones, and
+other data. Reference-heavy categories such as marine boundaries, bathymetry,
+transport, time zones, and miscellaneous source layers are imported but hidden
+by default for a clean map. Cache revisions include the enabled layers, source
+data, and `config\vecmap-theme.json`, so changes automatically create new
+on-demand tiles without serving stale ones. The paint theme is maintained in
+`config\vecmap-theme.json`.
 
-All generated Vector working data is stored in one GeoPackage:
-`maps/vector-library.gpkg`. It stores binary GeoPackage geometries and an
-SQLite RTree spatial index. The map service queries that index for each
-display tile; it does not create a large file hierarchy of pre-rendered
-GeoJSON tiles.
+When bathymetry is enabled, Natural Earth's 0 m through 10,000 m source bands
+are painted in progressively darker blues. Existing imports retain their source
+layer name, so this depth styling also applies without a reimport.
 
-Each completed source update is committed as one SQLite transaction. A failed
-or cancelled import cannot expose a partially written set of Vector features.
-Overlapping imports merge their features and imports do not retain a separate
-identity.
-Satellite imagery is independently owned by
-[`services/satmap`](../satmap/README.md).
-
-The same dialog provides independent switches for the imported major
-roads, urban areas, woodland, and placename layers.
-
-Place `.osm.pbf`, `.gpkg`, and `.gpkg.zip` map sources in `imports/`, then use
-**Import all Vector sources** to merge every map source into
-`vector-library.gpkg`. Keep `land-polygons-split-4326.zip` in that folder as
-the shared land-fill source; it is not itself a map import.
-
-The **Import selected Vector file** field also accepts an HTTPS URL ending in
-`.geojson`, `.gpkg`, `.gpkg.zip`, `.pbf`, or `.zip`. Kody downloads that source
-to `imports/` before validation and import, retaining the downloaded file for
-later rebuilds. Remote downloads are limited to 512 MB and redirects must also
-use HTTPS.
-
-For a validated regional base-map source, import a Geofabrik `free.gpkg` or
-`free.gpkg.zip` extract. Kody reads its water polygons, woodland, major roads,
-and populated places and combines them with the OSM land-polygon archive in
-the Vector `imports` directory, then writes binary geometry to the working
-GeoPackage:
-
-```powershell
-$env:PYTHONPATH = "$PWD\src"
-python -m kody_vecmap.map_manager install-geofabrik-gpkg `
-  --id wales-geofabrik `
-  --source C:\path\to\wales-latest-free.gpkg.zip `
-  --replace
-```
-
-The imported Vector data remains subject to OpenStreetMap's ODbL attribution.
+Natural Earth data is public domain. Satellite imagery and terrain are
+independently owned by [`services/satmap`](../satmap/README.md) and
+[`services/terrain`](../terrain/README.md).

@@ -32,23 +32,18 @@ stop it with `Ctrl+C` in its launcher window before running
 `start_kody.py` again.
 
 Once started, use **Service control** to manage connections. On the map, use
-the dark **Layers** panel to toggle base map, reference, and attached data
-sources; the compact cog control opens an attached service's own settings
-dialog. Vector imports merge into one native on-disk tile hierarchy at
-`<dataDirectory>\vecmap\maps\tiles\<zoom>\<x>\<y>.geojson.gz`; the map reads
-the requested tile directly rather than searching among import folders. Its **Show
-major roads**, **Show urban areas**, **Show woodland**, and **Show placenames**
-checkboxes control those imported Vector map layers independently. Placenames
-include named cities, towns, villages, and hamlets at progressively closer
-zoom levels.
-Place regional `.osm.pbf`, `.gpkg`, or `.gpkg.zip` files in the Vector
-`<dataDirectory>\vecmap\imports` folder and use **Import all Vector sources**
-to rebuild the native tile store. Keep `land-polygons-split-4326.zip` there as
-supporting land-fill data; it is not imported as a map layer.
-The shared `<dataDirectory>\imports` folder can also contain GeoJSON starter
-maps. Import all Vector sources loads these datasets into the same GeoPackage
-library, using the `osm-land` layer unless the GeoJSON feature specifies a
-different `layer`.
+the dark **Layers** panel to toggle base maps, reference layers, and attached
+data sources; the compact cog control opens an attached service's own settings
+dialog. The Vector map service downloads Natural Earth 1:10m physical and
+cultural archives from its configured HTTPS URLs, validates them, and caches
+them in `<dataDirectory>\vecmap\imports\natural-earth`. **Import Natural Earth
+dataset** loads all complete Natural Earth shapefile layers into
+`<dataDirectory>\vecmap\maps\vector-library.gpkg`. Clear both archive URLs to
+use a local **Natural Earth archive folder** as an offline fallback. The map
+queries its spatial index for each display tile and simplifies geometry to
+screen scale. The Vector map settings independently toggle physical features,
+coastlines, hydrography, bathymetry, administrative boundaries, places,
+transport, protected areas, and other Natural Earth groups.
 
 Terrain imports accept an `.asc`, `.grd`, `.tif`, or `.tiff` filename directly
 inside `<dataDirectory>\terrain\imports`. A fully qualified path to an

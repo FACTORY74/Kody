@@ -42,7 +42,7 @@ const terrainTileCache = new Map();
 const requestedTileKeys = new Set();
 const requestedRasterTileKeys = new Set();
 const requestedTerrainTileKeys = new Set();
-const tileWorker = new Worker("/tile-worker.js?v=20261020b");
+const tileWorker = new Worker("/tile-worker.js?v=20261020d");
 let vectorMapServiceUrl = window.location.origin;
 let satelliteMapServiceUrl = window.location.origin;
 let terrainServiceUrl = window.location.origin;
@@ -59,6 +59,8 @@ let lastUpsDisplayUpdate = 0;
 let resizingPanel = false;
 let mapStateVersion = 0;
 let vectorTileGeneration = 0;
+let vectorTileRevision = null;
+let vectorTileZooms = [0];
 let savedMapStateVersion = 0;
 let mapViewSaveInProgress = false;
 let rasterRevision = null;
@@ -78,6 +80,7 @@ let contextMenuPlugins = [];
 let measureStart = null;
 let measureEnd = null;
 let configurationSession = null;
+let serviceActivityTimer = null;
 let viewportPublishTimer = null;
 let viewportElevationTimer = null;
 let viewportElevationRequest = 0;
@@ -971,6 +974,9 @@ function configurationInput(field, value) {
   if (field.type === "boolean") {
     container.classList.add("service-config-toggle");
   }
+  if (field.type === "color") {
+    container.classList.add("service-config-color");
+  }
   container.append(field.label);
   if (field.type === "position") {
     const positionFields = document.createElement("div");
@@ -1099,6 +1105,7 @@ async function saveServiceConfiguration() {
   }
   if (service.type === "vecmap") {
     clearVectorTileCache();
+    await refreshVectorTileRevision();
     refreshMap();
   }
 }
@@ -1116,9 +1123,15 @@ async function waitForServiceAction(service, action) {
     const result = await response.json();
     serviceConfigStatus.textContent = result.message || "Action status updated.";
     const progress = Math.max(0, Math.min(100, Number(result.progress) || 0));
+    const processed = Math.max(0, Number(result.processed) || 0);
+    const total = Math.max(0, Number(result.total) || 0);
+    const retained = Math.max(0, Number(result.retained) || 0);
+    const detail = total > 0
+      ? `${processed.toLocaleString()} / ${total.toLocaleString()} · ${retained.toLocaleString()} retained`
+      : "";
     serviceConfigProgress.hidden = false;
-    serviceConfigProgressLabel.textContent = result.message || "Action status updated.";
-    serviceConfigProgressValue.textContent = `${progress}%`;
+    serviceConfigProgressLabel.textContent = [result.message, detail].filter(Boolean).join(" ");
+    serviceConfigProgressValue.textContent = detail || `${progress}%`;
     serviceConfigProgressBar.style.width = `${progress}%`;
     const active = ["running", "processing"].includes(result.status);
     if (!active) {
@@ -1134,6 +1147,51 @@ async function waitForServiceAction(service, action) {
       return;
     }
   }
+}
+
+function stopServiceActivityPolling() {
+  if (serviceActivityTimer !== null) {
+    window.clearInterval(serviceActivityTimer);
+    serviceActivityTimer = null;
+  }
+}
+
+async function refreshServiceActivity(service, statusPath) {
+  const response = await fetch(`${service.url}${statusPath}`);
+  if (!response.ok) {
+    throw new Error(`service activity status returned ${response.status}`);
+  }
+  const result = await response.json();
+  if (result.status !== "processing") {
+    serviceConfigProgress.hidden = true;
+    return;
+  }
+  const progress = Math.max(0, Math.min(100, Number(result.progress) || 0));
+  const processed = Math.max(0, Number(result.processed) || 0);
+  const total = Math.max(0, Number(result.total) || 0);
+  const queued = Math.max(0, Number(result.queued ?? result.retained) || 0);
+  const detail = total > 0
+    ? `${processed.toLocaleString()} / ${total.toLocaleString()} · ${queued.toLocaleString()} queued`
+    : "";
+  serviceConfigProgress.hidden = false;
+  serviceConfigProgressLabel.textContent = [result.message, detail].filter(Boolean).join(" ");
+  serviceConfigProgressValue.textContent = detail || `${progress}%`;
+  serviceConfigProgressBar.style.width = `${progress}%`;
+}
+
+function startServiceActivityPolling(service, manifest) {
+  stopServiceActivityPolling();
+  const statusPath = manifest.configuration.activityStatusPath;
+  if (!statusPath) {
+    return;
+  }
+  const refresh = () => {
+    refreshServiceActivity(service, statusPath).catch((error) => {
+      serviceConfigStatus.textContent = `Unable to load service activity: ${error.message}`;
+    });
+  };
+  refresh();
+  serviceActivityTimer = window.setInterval(refresh, 500);
 }
 
 async function configureService(service) {
@@ -1197,6 +1255,7 @@ async function configureService(service) {
           await waitForServiceAction(service, action);
           if (service.type === "vecmap") {
             clearVectorTileCache();
+            await refreshVectorTileRevision();
             refreshMap();
           }
         } catch (error) {
@@ -1212,6 +1271,7 @@ async function configureService(service) {
   serviceConfigStatus.textContent = "";
   serviceConfigProgress.hidden = true;
   serviceConfigDialog.showModal();
+  startServiceActivityPolling(service, manifest);
 }
 
 function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) {
@@ -1541,7 +1601,7 @@ function draw() {
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
   context.clearRect(0, 0, width, height);
-  context.fillStyle = "#222";
+  context.fillStyle = "#202020";
   context.fillRect(0, 0, width, height);
   Object.values(layers).forEach((layer) => {
     if (layer.isVisible()) {
@@ -1594,7 +1654,13 @@ function renderMap(timestamp) {
 }
 
 function tileKey({ zoom, x, y }) {
-  return `${vectorMapServiceUrl}/vector/false/${zoom}/${x}/${y}`;
+  return `${vectorMapServiceUrl}/vector/${vectorTileRevision || "unversioned"}/false/${zoom}/${x}/${y}`;
+}
+
+function vectorTileZoom() {
+  const cameraZoom = Math.floor(camera.zoom);
+  return [...vectorTileZooms].reverse().find((zoom) => zoom <= cameraZoom)
+    ?? vectorTileZooms[0];
 }
 
 function rasterTileKey({ zoom, x, y }) {
@@ -1698,6 +1764,29 @@ async function refreshRasterRevision() {
     requestVisibleTiles();
   }
   rasterRevision = revision;
+}
+
+async function refreshVectorTileRevision() {
+  if (!mapServices.has("vecmap") || !vectorLayer || !vectorLayer.checked) {
+    return;
+  }
+
+  const response = await fetch(`${vectorMapServiceUrl}/api/tiles/revision`);
+  if (!response.ok) {
+    throw new Error(`vector map service returned ${response.status} for tile revision`);
+  }
+  const { revision, tileZooms } = await response.json();
+  if (!Array.isArray(tileZooms) || tileZooms.length === 0
+    || tileZooms.some((zoom) => !Number.isInteger(zoom) || zoom < 0 || zoom > 12)) {
+    throw new Error("vector map service returned invalid tile zoom levels");
+  }
+  if (vectorTileRevision !== null && vectorTileRevision !== revision) {
+    clearVectorTileCache();
+    requestVisibleTiles();
+  }
+  vectorTileRevision = revision;
+  vectorTileZooms = [...new Set(tileZooms)].sort((left, right) => left - right);
+  requestVisibleTiles();
 }
 
 async function refreshTerrainRevision() {
@@ -2040,14 +2129,10 @@ function requestVisibleTiles() {
   }
   tileRequestFrame = requestAnimationFrame(() => {
     tileRequestFrame = null;
-    const baseZoom = Math.max(0, Math.min(18, Math.floor(camera.zoom)));
+    const baseZoom = vectorTileZoom();
     const baseTiles = visibleTiles(baseZoom);
-    let tiles = missingTiles(baseZoom);
-    const baseTilesReady = baseTiles.every((tile) => tileCache.has(tileKey(tile)));
+    const tiles = missingTiles(baseZoom);
     const detailZoom = Math.min(18, Math.ceil(camera.zoom));
-    if (baseTilesReady && updatesPerSecond >= 50 && detailZoom > baseZoom) {
-      tiles = tiles.concat(missingTiles(detailZoom));
-    }
     if (tiles.length > 0) {
       if (status.dataset.liveDataError !== "true") {
         status.textContent = "";
@@ -2055,6 +2140,7 @@ function requestVisibleTiles() {
       tileWorker.postMessage({
         type: "request-tiles",
         serviceUrl: vectorMapServiceUrl,
+        revision: vectorTileRevision,
         tiles: prioritizeTiles(tiles),
         transparentBase: false,
         generation: vectorTileGeneration,
@@ -2147,6 +2233,7 @@ async function loadConfiguration(restoreMapView = true) {
     clearVectorTileCache();
     clearRasterTileCache();
     clearTerrainTileCache();
+    vectorTileRevision = null;
     rasterRevision = null;
     terrainRevision = null;
     terrainPalette = null;
@@ -2175,6 +2262,9 @@ async function loadConfiguration(restoreMapView = true) {
   }
   configurationLoaded = true;
   renderMapServiceControls(mapView?.layers);
+  if (vectorService) {
+    await refreshVectorTileRevision();
+  }
   updateOpacityControls();
   scheduleViewportPublish();
   renderOverlaySourceControls(mapView?.layers?.dataSources, mapView?.layers?.dataSourceOpacity);
@@ -2263,16 +2353,23 @@ function saveMapViewOnExit() {
 }
 
 tileWorker.addEventListener("message", (event) => {
-  const { type, key, tile, bitmap, source, message } = event.data;
+  const { type, key, tile, bitmap, source, message, retryAfterMilliseconds } = event.data;
   if (type === "tile") {
     tileCache.set(key, { ...tile, bitmap, source });
     requestVisibleTiles();
   } else if (type === "tile-cancelled") {
     requestedTileKeys.delete(key);
     requestVisibleTiles();
+  } else if (type === "tile-pending") {
+    requestedTileKeys.delete(key);
+    window.setTimeout(
+      requestVisibleTiles,
+      Math.max(100, Number(retryAfterMilliseconds) || 250),
+    );
   } else if (type === "error") {
     requestedTileKeys.delete(key);
     status.textContent = `Unable to load map tile: ${message}`;
+    window.setTimeout(requestVisibleTiles, 1000);
   } else if (type === "raster-tile") {
     if (key.startsWith(`${terrainServiceUrl}/`)) {
       terrainTileCache.set(key, bitmap);
@@ -2290,6 +2387,7 @@ tileWorker.addEventListener("message", (event) => {
     }
   }
 });
+serviceConfigDialog.addEventListener("close", stopServiceActivityPolling);
 
 canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) {
@@ -2380,6 +2478,11 @@ new ResizeObserver(() => {
 }).observe(container);
 window.addEventListener("pagehide", saveMapViewOnExit);
 window.setInterval(saveMapView, 5000);
+window.setInterval(() => {
+  refreshVectorTileRevision().catch((error) => {
+    status.textContent = `Unable to refresh vector map tiles: ${error.message}`;
+  });
+}, 5000);
 window.setInterval(() => {
   refreshRasterRevision().catch((error) => {
     status.textContent = `Unable to refresh satellite imagery: ${error.message}`;

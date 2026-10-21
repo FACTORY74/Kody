@@ -1,1 +1,1 @@
-{"status":"succeeded","message":"Merged 258 GeoJSON features from natural-earth-10m-countries.geojson into the native vector tile store.","progress":100}
+{"status":"succeeded","message":"Imported 335,651 Natural Earth features from 2 configured archive(s). Map tiles will render and cache on demand.","progress":100,"processed":0,"total":0,"retained":0}

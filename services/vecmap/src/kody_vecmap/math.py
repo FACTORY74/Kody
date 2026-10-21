@@ -1,4 +1,4 @@
-"""Shared Web Mercator and quadtree coordinate calculations."""
+"""Web Mercator coordinate and display-tile calculations."""
 
 from __future__ import annotations
 

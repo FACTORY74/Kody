@@ -1,9 +1,6 @@
 import unittest
 
-from shapely.geometry import Point
-
 from kody_vecmap.math import MapMath
-from kody_vecmap.quadtree import IndexedFeature, QuadTreeMap
 
 
 class MapMathTests(unittest.TestCase):
@@ -23,20 +20,5 @@ class MapMathTests(unittest.TestCase):
         self.assertAlmostEqual(bounds.east, 180)
         self.assertAlmostEqual(bounds.south, -MapMath.MAX_LATITUDE)
         self.assertAlmostEqual(bounds.north, MapMath.MAX_LATITUDE)
-
-
-class QuadTreeMapTests(unittest.TestCase):
-    def test_query_returns_only_intersecting_features(self) -> None:
-        index = QuadTreeMap(node_capacity=1)
-        london = IndexedFeature({"name": "London"}, Point(-0.1276, 51.5072))
-        sydney = IndexedFeature({"name": "Sydney"}, Point(151.2093, -33.8688))
-        index.insert(london)
-        index.insert(sydney)
-
-        bounds = MapMath.tile_bounds(2, 1, 1)
-
-        self.assertEqual(list(index.query(bounds)), [london])
-
-
 if __name__ == "__main__":
     unittest.main()

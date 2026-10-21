@@ -5,3 +5,8 @@
 /data_starter/airlanes
 /data_starter/satmap
 /data_starter/terrain
+/data_starter/vecmap/maps
+/data_starter/vecmap/imports
+/services/vecmap/data/vecmap/maps
+*.gpkg
+/data_starter/vecmap/maps

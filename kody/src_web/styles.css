@@ -286,6 +286,16 @@ input[type="checkbox"], input[type="radio"] {
   background: rgb(3 16 27 / 54%);
 }
 .service-config-field.service-config-toggle input[type="checkbox"] { width: 1rem; min-width: 1rem; height: 1rem; margin-left: auto; padding: 0; }
+.service-config-field.service-config-color input[type="color"] {
+  height: 2.6rem;
+  padding: 0.22rem;
+  cursor: pointer;
+}
+.service-config-field.service-config-color input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.service-config-field.service-config-color input[type="color"]::-webkit-color-swatch {
+  border: 0;
+  border-radius: 0.3rem;
+}
 .service-config-field input:focus, .service input:focus, .service select:focus { border-color: #54d8ff; box-shadow: 0 0 0 0.18rem rgb(73 207 255 / 15%); }
 .service-config-toggle input[type="checkbox"]:focus { box-shadow: 0 0 0 0.18rem rgb(73 207 255 / 15%); }
 .position-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem; }

@@ -11,6 +11,10 @@ boundaries and run each component from its local runbook:
 
 ![Kody progress screenshot](./progress/2026-10-21%20-%20001.png)
 
+All map microservices implement, or are migrating to, the shared
+[microservice API specification](./API_SPEC.md). New services must follow this
+contract rather than add central-map service-specific interfaces.
+
 
 - [`kody`](./kody/README.md) — central browser UI and configuration service
 - [`services/vecmap`](./services/vecmap/README.md) — offline vector map API, data, and package tooling

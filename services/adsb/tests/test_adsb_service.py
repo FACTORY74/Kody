@@ -98,6 +98,11 @@ class AdsbStoreTests(unittest.TestCase):
         initial = store.response()
         self.assertEqual(len(initial["features"]), 1)
         self.assertEqual(initial["features"][0]["geometry"]["type"], "Point")
+        self.assertEqual(initial["features"][0]["id"], "adsb:40621d")
+        self.assertEqual(
+            initial["features"][0]["properties"]["kody"],
+            {"selectable": True, "selectionLabel": "BAW123"},
+        )
         self.assertEqual(initial["features"][0]["properties"]["callsign"], "BAW123")
         self.assertEqual(requests, ["https://api.adsb.lol/v2/point/50.65/-1.3/13.499"])
 

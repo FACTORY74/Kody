@@ -30,6 +30,11 @@ class TrackStoreTests(unittest.TestCase):
         trail, position = response["features"][:2]
         coordinates = trail["geometry"]["coordinates"]
         self.assertEqual(len(coordinates), TRAIL_DURATION_SECONDS + 1)
+        self.assertEqual(position["id"], f"track:{track_store.tracks[0].name}")
+        self.assertEqual(
+            position["properties"]["kody"],
+            {"selectable": True, "selectionLabel": track_store.tracks[0].name},
+        )
         self.assertEqual(position["geometry"]["coordinates"], coordinates[-1])
         self.assertEqual(position["properties"]["speedMetresPerSecond"], TRACK_SPEED_METRES_PER_SECOND)
         self.assertEqual(position["properties"]["symbol"], track_store.tracks[0].symbol)

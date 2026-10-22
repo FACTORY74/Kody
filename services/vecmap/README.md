@@ -28,7 +28,9 @@ Features are streamed directly from the archives into
 SQLite RTree index. Reimporting replaces the previous Natural Earth feature set
 in one transaction. Display lossless WebP tiles for selected zooms (by default
 `0, 2, 4, 6, 8, 10, 12`) are rendered only when viewed,
-then saved in a versioned persistent cache. A cold tile receives `202 Accepted`
+then saved as a WebP BLOB in `maps\raster-tiles.sqlite`, keyed by its cache
+revision and tile coordinate. On startup, any legacy versioned cache files are
+migrated into that database. A cold tile receives `202 Accepted`
 while a single service worker queues and renders it; the browser retains the
 nearest cached parent tile and retries shortly afterward. The Vector map
 configuration dialog reports queued and rendering tile progress. Revisiting a

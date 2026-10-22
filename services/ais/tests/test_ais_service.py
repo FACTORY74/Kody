@@ -42,6 +42,11 @@ class AisServiceTests(unittest.TestCase):
 
         response = store.response()
         position = next(feature for feature in response["features"] if feature["geometry"]["type"] == "Point")
+        self.assertEqual(position["id"], "ais:123456789")
+        self.assertEqual(
+            position["properties"]["kody"],
+            {"selectable": True, "selectionLabel": "Test vessel"},
+        )
         self.assertEqual(position["properties"]["symbol"], "ship")
         self.assertEqual(position["properties"]["bearingDegrees"], 90)
         trail = next(feature for feature in response["features"] if feature["properties"]["kind"] == "track-trail")

@@ -385,6 +385,10 @@ class AdsbStore:
             self.last_seen[aircraft_id] = sampled_at
             active_ids.add(aircraft_id)
             properties = self._feature_properties(aircraft, aircraft_id)
+            properties["kody"] = {
+                "selectable": True,
+                "selectionLabel": str(properties["name"]),
+            }
             if len(track) >= 2:
                 features.append(
                     {
@@ -405,6 +409,7 @@ class AdsbStore:
             features.append(
                 {
                     "type": "Feature",
+                    "id": f"adsb:{aircraft_id}",
                     "properties": properties,
                     "geometry": {"type": "Point", "coordinates": point},
                 }

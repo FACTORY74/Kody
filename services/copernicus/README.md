@@ -4,7 +4,9 @@ Copernicus downloads the latest Sentinel-2 L2A true-color Global Mosaic for
 the current Kody viewport and stores it as local 256px Web-Mercator quad tiles.
 Downloaded tiles remain available through `/api/raster` until cleared.
 Completed local tiles and generated parent tiles are saved as WebP at quality
-90. The Copernicus tile cache contains WebP files only.
+90 in `data_starter\copernicus\tiles\tiles.sqlite`. The database stores each
+tile as a WebP BLOB, rather than as an individual filesystem object. On startup,
+the service migrates any legacy WebP cache files into the database.
 
 ```powershell
 Set-Location services\copernicus
@@ -36,3 +38,7 @@ Leave **Rebuild tile pyramid after download** enabled to generate lower-zoom
 parent tiles for newly downloaded imagery. This makes each downloaded area
 visible while the map is zoomed out. Use **Rebuild Copernicus tile pyramid** to
 build parent tiles for imagery already in the local cache.
+
+**Download Viewport At 10m** covers the current viewport with zoom-14 local
+tiles and requests imagery no finer than the Global Mosaic's native 10m
+resolution. It then generates the lower-zoom tile pyramid when enabled.

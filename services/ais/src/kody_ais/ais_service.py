@@ -265,6 +265,10 @@ class AisStore:
                 "courseDegrees": vessel.course_degrees,
                 "positionAgeSeconds": round(age, 1),
                 "isExtrapolated": extrapolated,
+                "kody": {
+                    "selectable": True,
+                    "selectionLabel": vessel.name,
+                },
             }
             trail = [
                 trail_point
@@ -277,7 +281,12 @@ class AisStore:
                     "properties": {**properties, "name": f"{vessel.name} trail", "kind": "track-trail", "fadeTrail": configuration.track_fade, "durationSeconds": configuration.track_length_seconds},
                     "geometry": {"type": "LineString", "coordinates": trail},
                 })
-            features.append({"type": "Feature", "properties": properties, "geometry": {"type": "Point", "coordinates": point}})
+            features.append({
+                "type": "Feature",
+                "id": f"ais:{vessel.mmsi}",
+                "properties": properties,
+                "geometry": {"type": "Point", "coordinates": point},
+            })
         if configuration.draw_boundary:
             features.append({
                 "type": "Feature",

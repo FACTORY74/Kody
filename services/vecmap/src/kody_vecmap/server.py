@@ -26,7 +26,7 @@ from urllib.request import Request, urlopen
 
 import shapefile
 from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from shapely.geometry import mapping, shape
@@ -828,6 +828,7 @@ class VectorPatchService:
 
 
 patch_service = VectorPatchService()
+NaturalEarthRasterCache.migrate_legacy_files(MAPS_DIRECTORY)
 configuration_store = ConfigurationStore(CONFIG_FILE)
 import_state = ImportState()
 tile_render_queue = RasterTileRenderQueue()
@@ -861,7 +862,7 @@ def get_patch(
 
 
 @app.get("/api/tiles/{zoom}/{x}/{y}.webp", response_model=None)
-def get_raster_tile(zoom: int, x: int, y: int) -> FileResponse | JSONResponse:
+def get_raster_tile(zoom: int, x: int, y: int) -> Response | JSONResponse:
     configuration = configuration_store.configuration
     enabled_zooms = natural_earth_tile_zooms(configuration.natural_earth_tile_zooms)
     if not (zoom in enabled_zooms and 0 <= x < 2**zoom and 0 <= y < 2**zoom):
@@ -884,11 +885,14 @@ def get_raster_tile(zoom: int, x: int, y: int) -> FileResponse | JSONResponse:
         collection = tile[0] if tile else {"type": "FeatureCollection", "features": []}
         return render_tile(filter_vector_features(collection, configuration), styles, zoom, x, y)
 
-    path = cache.tile_path(zoom, x, y)
-    if not path.is_file():
+    tile = cache.read_tile(zoom, x, y)
+    if tile is None:
+        def render_to_cache() -> None:
+            cache.get_or_render(zoom, x, y, render)
+
         queued = tile_render_queue.enqueue(
-            str(path),
-            lambda: cache.get_or_render(zoom, x, y, render),
+            f"{cache.path}:{cache.revision}:{zoom}/{x}/{y}",
+            render_to_cache,
         )
         return JSONResponse(
             status_code=202,
@@ -901,8 +905,8 @@ def get_raster_tile(zoom: int, x: int, y: int) -> FileResponse | JSONResponse:
                 "Retry-After": "1",
             },
         )
-    return FileResponse(
-        path,
+    return Response(
+        content=tile,
         media_type="image/webp",
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )

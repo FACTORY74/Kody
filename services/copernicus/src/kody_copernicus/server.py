@@ -5,11 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from functools import lru_cache
 import hashlib
+from contextlib import contextmanager
 from io import BytesIO
 from math import atan, ceil, cos, exp, floor, log, log2, pi, sin, sinh, tan
 from pathlib import Path
 import os
 import shutil
+import sqlite3
 from threading import Lock, RLock
 from typing import Any, Literal
 from urllib.error import HTTPError, URLError
@@ -41,7 +43,10 @@ MAXIMUM_UNCONFIRMED_DOWNLOAD_TILES = 64
 MAXIMUM_PROCESS_REQUEST_DEGREES = 10
 MAXIMUM_PROCESS_PIXEL_SIZE_METRES = 1_600
 MAXIMUM_PROCESS_OUTPUT_PIXELS = 2_500
-LOCAL_TILE_EXTENSION = ".webp"
+COPERNICUS_NATIVE_RESOLUTION_METRES = 10
+COPERNICUS_NATIVE_TILE_ZOOM = ceil(
+    log2(2 * WEB_MERCATOR_HALF_WORLD / (256 * COPERNICUS_NATIVE_RESOLUTION_METRES))
+)
 LOCAL_TILE_FORMAT = "WEBP"
 LOCAL_TILE_SAVE_OPTIONS = {"quality": 90, "method": 6}
 TRUE_COLOR_EVALSCRIPT = """//VERSION=3
@@ -58,8 +63,156 @@ function evaluatePixel(sample) {
 """
 
 
+class CopernicusTileStore:
+    """SQLite-backed local WebP tile cache."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+        self.path = directory / "tiles.sqlite"
+
+    def _connect(self) -> sqlite3.Connection:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tiles (
+                zoom INTEGER NOT NULL,
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                image_webp BLOB NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (zoom, x, y)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        return connection
+
+    @contextmanager
+    def _connection(self):
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    def migrate_legacy_files(self) -> int:
+        files: list[tuple[Path, int, int, int]] = []
+        for path in self.directory.glob("*/*/*.webp"):
+            if not path.is_file():
+                continue
+            try:
+                files.append(
+                    (path, int(path.parents[1].name), int(path.parent.name), int(path.stem))
+                )
+            except ValueError:
+                continue
+        revision_marker = self.directory / ".revision"
+        if not files and not revision_marker.is_file():
+            return 0
+        migrated = 0
+        with self._connection() as connection:
+            for path, zoom, x, y in files:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO tiles (zoom, x, y, image_webp, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (zoom, x, y, path.read_bytes(), datetime.now(UTC).isoformat()),
+                )
+                migrated += 1
+            if revision_marker.is_file():
+                connection.execute(
+                    """
+                    INSERT INTO metadata (key, value) VALUES ('revision', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """,
+                    (revision_marker.read_text(encoding="utf-8").strip(),),
+                )
+        for path, _, _, _ in files:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        for directory in sorted(
+            (path for path in self.directory.glob("*/*") if path.is_dir()),
+            reverse=True,
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        if revision_marker.is_file():
+            revision_marker.unlink()
+        return migrated
+
+    def get(self, zoom: int, x: int, y: int) -> bytes | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT image_webp FROM tiles WHERE zoom = ? AND x = ? AND y = ?",
+                (zoom, x, y),
+            ).fetchone()
+        return bytes(row[0]) if row is not None else None
+
+    def put(self, zoom: int, x: int, y: int, image_webp: bytes) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO tiles (zoom, x, y, image_webp, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(zoom, x, y) DO UPDATE SET
+                    image_webp = excluded.image_webp,
+                    updated_at = excluded.updated_at
+                """,
+                (zoom, x, y, image_webp, datetime.now(UTC).isoformat()),
+            )
+
+    def coordinates(self, zoom: int) -> set[tuple[int, int]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT x, y FROM tiles WHERE zoom = ?", (zoom,)
+            ).fetchall()
+        return {(int(x), int(y)) for x, y in rows}
+
+    def zooms(self) -> list[int]:
+        with self._connection() as connection:
+            rows = connection.execute("SELECT DISTINCT zoom FROM tiles").fetchall()
+        return sorted(int(row[0]) for row in rows)
+
+    def revision(self) -> str:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = 'revision'"
+            ).fetchone()
+        return str(row[0]) if row is not None else ""
+
+    def set_revision(self) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO metadata (key, value) VALUES ('revision', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (datetime.now(UTC).isoformat(),),
+            )
+
+
+def tile_store(directory: Path | None = None) -> CopernicusTileStore:
+    return CopernicusTileStore(COPERNICUS_DIRECTORY if directory is None else directory)
+
+
 def initialize_data_directory() -> None:
-    COPERNICUS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    tile_store().migrate_legacy_files()
 
 
 initialize_data_directory()
@@ -205,8 +358,10 @@ def latitude_tile(latitude: float, zoom: int) -> int:
     return min(2**zoom - 1, max(0, floor(coordinate)))
 
 
-def viewport_tiles(viewport: Viewport) -> tuple[int, list[tuple[int, int]]]:
-    zoom = floor(viewport.zoom)
+def viewport_tiles(
+    viewport: Viewport, requested_zoom: int | None = None
+) -> tuple[int, list[tuple[int, int]]]:
+    zoom = floor(viewport.zoom) if requested_zoom is None else requested_zoom
     west = longitude_tile(viewport.west, zoom)
     east = min(2**zoom - 1, max(0, ceil((viewport.east + 180) / 360 * 2**zoom) - 1))
     north = latitude_tile(viewport.north, zoom)
@@ -304,8 +459,20 @@ def copernicus_request_dimensions(
     left, bottom, right, top = bounds
     destination_left, destination_top, destination_right, destination_bottom = destination
     return (
-        max(destination_right - destination_left, ceil((right - left) / MAXIMUM_PROCESS_PIXEL_SIZE_METRES)),
-        max(destination_bottom - destination_top, ceil((top - bottom) / MAXIMUM_PROCESS_PIXEL_SIZE_METRES)),
+        min(
+            max(
+                destination_right - destination_left,
+                ceil((right - left) / MAXIMUM_PROCESS_PIXEL_SIZE_METRES),
+            ),
+            max(1, floor((right - left) / COPERNICUS_NATIVE_RESOLUTION_METRES)),
+        ),
+        min(
+            max(
+                destination_bottom - destination_top,
+                ceil((top - bottom) / MAXIMUM_PROCESS_PIXEL_SIZE_METRES),
+            ),
+            max(1, floor((top - bottom) / COPERNICUS_NATIVE_RESOLUTION_METRES)),
+        ),
     )
 
 
@@ -385,21 +552,23 @@ def download_copernicus_tile(
                     ),
                     (left, top),
                 )
-        destination = (
-            COPERNICUS_DIRECTORY / str(tile_zoom) / str(x) / f"{y}{LOCAL_TILE_EXTENSION}"
-        )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        image.save(destination, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
+        output = BytesIO()
+        image.save(output, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
+        tile_store().put(tile_zoom, x, y, output.getvalue())
     finally:
         image.close()
     return len(sections)
 
 
-def download_current_viewport(configuration: CopernicusConfiguration) -> str:
+def download_viewport(
+    configuration: CopernicusConfiguration,
+    requested_zoom: int | None = None,
+    resolution_label: str = "",
+) -> str:
     if not configuration.client_id or not configuration.client_secret:
         raise ValueError("Copernicus client ID and client secret are required")
     viewport = viewport_from_configuration_service()
-    zoom, tiles = viewport_tiles(viewport)
+    zoom, tiles = viewport_tiles(viewport, requested_zoom)
     request_count = sum(len(copernicus_tile_sections(zoom, x, y)) for x, y in tiles)
     session = requests.Session()
     token_response = session.post(
@@ -423,17 +592,33 @@ def download_current_viewport(configuration: CopernicusConfiguration) -> str:
             f"({completed_requests + 1} of {request_count} Copernicus requests)."
         )
         completed_requests += download_copernicus_tile(session, headers, zoom, x, y)
-    marker = COPERNICUS_DIRECTORY / ".revision"
-    marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+    tile_store().set_revision()
     cached_raster_tile_bytes.cache_clear()
     message = (
         f"Downloaded {len(tiles)} Copernicus Global Mosaic tiles at zoom {zoom} "
         f"using {request_count} Copernicus requests."
     )
+    if resolution_label:
+        message = (
+            f"Downloaded {len(tiles)} Copernicus Global Mosaic tiles at {resolution_label} "
+            f"(zoom {zoom}) using {request_count} Copernicus requests."
+        )
     if configuration.rebuild_pyramid_with_download:
         overview_tiles = compose_parent_tiles(COPERNICUS_DIRECTORY, zoom, set(tiles))
         message += f" Updated {overview_tiles} parent overview tiles."
     return message
+
+
+def download_current_viewport(configuration: CopernicusConfiguration) -> str:
+    return download_viewport(configuration)
+
+
+def download_viewport_at_10m(configuration: CopernicusConfiguration) -> str:
+    return download_viewport(
+        configuration,
+        requested_zoom=COPERNICUS_NATIVE_TILE_ZOOM,
+        resolution_label="10m",
+    )
 
 
 def associated_file(source: Path, extensions: tuple[str, ...]) -> Path:
@@ -478,30 +663,29 @@ def web_mercator_to_world_mercator(x: float, y: float) -> tuple[float, float]:
 def compose_parent_level(
     directory: Path, child_zoom: int, child_tiles: set[tuple[int, int]]
 ) -> set[tuple[int, int]]:
+    store = tile_store(directory)
     parent_zoom = child_zoom - 1
     parent_tiles = {(x // 2, y // 2) for x, y in child_tiles}
     for parent_x, parent_y in parent_tiles:
-            destination = (
-                directory / str(parent_zoom) / str(parent_x) / f"{parent_y}{LOCAL_TILE_EXTENSION}"
-            )
-            existing_path = raster_tile_path(directory, parent_zoom, parent_x, parent_y)
-            if existing_path is not None:
-                with Image.open(existing_path) as existing:
+            existing_payload = store.get(parent_zoom, parent_x, parent_y)
+            if existing_payload is not None:
+                with Image.open(BytesIO(existing_payload)) as existing:
                     parent = existing.convert("RGBA")
             else:
                 parent = Image.new("RGBA", (256, 256))
             for child_x, child_y in child_tiles:
                 if child_x // 2 != parent_x or child_y // 2 != parent_y:
                     continue
-                child_path = raster_tile_path(directory, child_zoom, child_x, child_y)
-                if child_path is None:
+                child_payload = store.get(child_zoom, child_x, child_y)
+                if child_payload is None:
                     continue
-                with Image.open(child_path) as source:
+                with Image.open(BytesIO(child_payload)) as source:
                     child = source.convert("RGBA").resize((128, 128), Image.Resampling.LANCZOS)
                 parent.alpha_composite(child, ((child_x % 2) * 128, (child_y % 2) * 128))
                 child.close()
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            parent.save(destination, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
+            output = BytesIO()
+            parent.save(output, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
+            store.put(parent_zoom, parent_x, parent_y, output.getvalue())
             parent.close()
     return parent_tiles
 
@@ -520,26 +704,11 @@ def compose_parent_tiles(
 
 
 def tile_coordinates(directory: Path, zoom: int) -> set[tuple[int, int]]:
-    zoom_directory = directory / str(zoom)
-    if not zoom_directory.is_dir():
-        return set()
-    coordinates = set()
-    for path in zoom_directory.glob("*/*"):
-        if not path.is_file() or path.suffix.lower() != LOCAL_TILE_EXTENSION:
-            continue
-        try:
-            coordinates.add((int(path.parent.name), int(path.stem)))
-        except ValueError:
-            continue
-    return coordinates
+    return tile_store(directory).coordinates(zoom)
 
 
 def rebuild_overview_tiles(directory: Path) -> int:
-    zooms = [
-        int(path.name)
-        for path in directory.iterdir()
-        if path.is_dir() and path.name.isdigit() and 0 <= int(path.name) <= 18
-    ]
+    zooms = tile_store(directory).zooms()
     written_tiles = 0
     for zoom in range(max(zooms, default=0), 0, -1):
         child_tiles = tile_coordinates(directory, zoom)
@@ -606,16 +775,13 @@ def import_georeferenced_png(filename: str, rebuild_pyramid: bool = True) -> str
     minimum_y = max(0, floor((WEB_MERCATOR_HALF_WORLD - source_top_web) / (2 * WEB_MERCATOR_HALF_WORLD) * tiles_per_axis))
     maximum_y = min(tiles_per_axis - 1, ceil((WEB_MERCATOR_HALF_WORLD - source_bottom_web) / (2 * WEB_MERCATOR_HALF_WORLD) * tiles_per_axis) - 1)
     tile_span = 2 * WEB_MERCATOR_HALF_WORLD / tiles_per_axis
+    store = tile_store()
     written_tiles = 0
     native_tiles = set()
     for y in range(minimum_y, maximum_y + 1):
         for x in range(minimum_x, maximum_x + 1):
             tile_left = -WEB_MERCATOR_HALF_WORLD + x * tile_span
             tile_top = WEB_MERCATOR_HALF_WORLD - y * tile_span
-            destination = (
-                COPERNICUS_DIRECTORY / str(native_zoom) / str(x) / f"{y}{LOCAL_TILE_EXTENSION}"
-            )
-            destination.parent.mkdir(parents=True, exist_ok=True)
             if source_projection == "world-mercator":
                 def source_pixel(target_x: float, target_y: float) -> tuple[float, float]:
                     source_x, source_y = web_mercator_to_world_mercator(target_x, target_y)
@@ -642,14 +808,17 @@ def import_georeferenced_png(filename: str, rebuild_pyramid: bool = True) -> str
                     (tile_top - tile_span - source_top) / pixel_height,
                 )
                 patch = source_image.crop(crop).resize((256, 256), Image.Resampling.LANCZOS)
-            if destination.is_file():
-                with Image.open(destination) as existing:
+            existing_payload = store.get(native_zoom, x, y)
+            if existing_payload is not None:
+                with Image.open(BytesIO(existing_payload)) as existing:
                     tile = existing.convert("RGBA")
                 tile.alpha_composite(patch)
                 patch.close()
             else:
                 tile = patch
-            tile.save(destination, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
+            output = BytesIO()
+            tile.save(output, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
+            store.put(native_zoom, x, y, output.getvalue())
             tile.close()
             native_tiles.add((x, y))
             written_tiles += 1
@@ -659,18 +828,12 @@ def import_georeferenced_png(filename: str, rebuild_pyramid: bool = True) -> str
         if rebuild_pyramid
         else 0
     )
-    marker = COPERNICUS_DIRECTORY / ".revision"
-    marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+    store.set_revision()
     cached_raster_tile_bytes.cache_clear()
     message = f"Imported {written_tiles} satellite tiles at zoom {native_zoom}."
     if rebuild_pyramid:
         message += f" Updated {ancestor_tiles} impacted lower-zoom tiles."
     return message
-
-
-def raster_tile_path(directory: Path, zoom: int, x: int, y: int) -> Path | None:
-    path = directory / str(zoom) / str(x) / f"{y}{LOCAL_TILE_EXTENSION}"
-    return path if path.is_file() else None
 
 
 def child_tile_from_parent(parent: Image.Image, x: int, y: int) -> Image.Image:
@@ -688,9 +851,10 @@ def child_tile_from_parent(parent: Image.Image, x: int, y: int) -> Image.Image:
 
 
 def raster_tile_image(directory: Path, zoom: int, x: int, y: int) -> Image.Image | None:
-    path = raster_tile_path(directory, zoom, x, y)
-    if path is not None:
-        with Image.open(path) as source:
+    store = tile_store(directory)
+    tile_payload = store.get(zoom, x, y)
+    if tile_payload is not None:
+        with Image.open(BytesIO(tile_payload)) as source:
             tile = source.convert("RGBA")
         if tile.getchannel("A").getextrema() == (255, 255) or zoom == 0:
             return tile
@@ -740,8 +904,7 @@ import_state = ImportState()
 
 @app.get("/api/raster/revision")
 def get_raster_revision() -> dict[str, str]:
-    marker = COPERNICUS_DIRECTORY / ".revision"
-    return {"revision": marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""}
+    return {"revision": tile_store().revision()}
 
 
 @app.get("/api/raster/{zoom}/{x}/{y}")
@@ -792,6 +955,13 @@ def get_manifest() -> dict[str, object]:
                     "method": "POST",
                 },
                 {
+                    "label": "Download Viewport At 10m",
+                    "path": "/api/actions/download-viewport-at-10m",
+                    "statusPath": "/api/actions/download-viewport-at-10m",
+                    "confirmationPath": "/api/actions/assess-viewport-at-10m",
+                    "method": "POST",
+                },
+                {
                     "label": "Rebuild Copernicus tile pyramid",
                     "path": "/api/actions/build-overview-tiles",
                     "statusPath": "/api/actions/build-overview-tiles",
@@ -823,7 +993,11 @@ def update_configuration(
 
 @app.get("/api/actions/assess-current-viewport")
 def assess_current_viewport() -> dict[str, object]:
-    zoom, tiles = viewport_tiles(viewport_from_configuration_service())
+    return assess_viewport_download()
+
+
+def assess_viewport_download(requested_zoom: int | None = None) -> dict[str, object]:
+    zoom, tiles = viewport_tiles(viewport_from_configuration_service(), requested_zoom)
     request_count = sum(len(copernicus_tile_sections(zoom, x, y)) for x, y in tiles)
     return {
         "tileCount": len(tiles),
@@ -840,6 +1014,22 @@ def assess_current_viewport() -> dict[str, object]:
             )
         ),
     }
+
+
+@app.get("/api/actions/assess-viewport-at-10m")
+def assess_viewport_at_10m() -> dict[str, object]:
+    assessment = assess_viewport_download(COPERNICUS_NATIVE_TILE_ZOOM)
+    assessment["message"] = (
+        f"The current viewport needs {assessment['tileCount']} local 10m map tiles from "
+        f"{assessment['requestCount']} Copernicus requests at zoom "
+        f"{COPERNICUS_NATIVE_TILE_ZOOM}. "
+        + (
+            "Continue with this download?"
+            if assessment["requiresConfirmation"]
+            else "Download now?"
+        )
+    )
+    return assessment
 
 
 @app.post("/api/actions/download-current-viewport", status_code=202)
@@ -872,6 +1062,42 @@ def get_download_status() -> dict[str, str]:
     return import_state.response()
 
 
+@app.post("/api/actions/download-viewport-at-10m", status_code=202)
+def download_viewport_at_10m_action(
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    configuration = configuration_store.configuration
+    if not configuration.client_id or not configuration.client_secret:
+        raise HTTPException(status_code=422, detail="Copernicus client ID and client secret are required")
+    zoom, tiles = viewport_tiles(
+        viewport_from_configuration_service(), COPERNICUS_NATIVE_TILE_ZOOM
+    )
+    request_count = sum(len(copernicus_tile_sections(zoom, x, y)) for x, y in tiles)
+    import_state.start(
+        f"Downloading {len(tiles)} 10m map tiles with {request_count} "
+        f"Copernicus requests at zoom {zoom}."
+    )
+
+    def process() -> None:
+        try:
+            import_state.complete(download_viewport_at_10m(configuration))
+        except Exception as error:
+            import_state.fail(error)
+
+    background_tasks.add_task(process)
+    return {
+        "message": (
+            f"Downloading {len(tiles)} 10m map tiles with {request_count} "
+            f"Copernicus requests at zoom {zoom}."
+        )
+    }
+
+
+@app.get("/api/actions/download-viewport-at-10m")
+def get_10m_download_status() -> dict[str, str]:
+    return import_state.response()
+
+
 @app.post("/api/actions/build-overview-tiles", status_code=202)
 def build_overview_tiles(background_tasks: BackgroundTasks) -> dict[str, str]:
     import_state.start("Rebuilding lower-zoom Copernicus tile pyramid.")
@@ -879,8 +1105,7 @@ def build_overview_tiles(background_tasks: BackgroundTasks) -> dict[str, str]:
     def process() -> None:
         try:
             count = rebuild_overview_tiles(COPERNICUS_DIRECTORY)
-            marker = COPERNICUS_DIRECTORY / ".revision"
-            marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+            tile_store().set_revision()
             cached_raster_tile_bytes.cache_clear()
             import_state.complete(f"Built {count} Copernicus parent overview tiles.")
         except Exception as error:

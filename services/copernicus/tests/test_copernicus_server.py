@@ -9,6 +9,7 @@ import requests
 
 from kody_copernicus.server import (
     ConfigurationStore,
+    COPERNICUS_NATIVE_TILE_ZOOM,
     CopernicusConfiguration,
     Viewport,
     copernicus_request,
@@ -18,6 +19,7 @@ from kody_copernicus.server import (
     import_georeferenced_png,
     process_response_bytes,
     raster_tile_bytes,
+    tile_store,
     web_mercator_latitude,
     web_mercator_longitude,
     viewport_tiles,
@@ -45,6 +47,14 @@ class SatelliteTileTests(unittest.TestCase):
 
         self.assertEqual(zoom, 3)
         self.assertEqual(tiles, [(3, 3), (4, 3), (3, 4), (4, 4)])
+
+    def test_viewport_at_10m_uses_the_native_tile_zoom(self) -> None:
+        viewport = Viewport(west=-1, south=-1, east=1, north=1, zoom=3.9)
+
+        zoom, tiles = viewport_tiles(viewport, COPERNICUS_NATIVE_TILE_ZOOM)
+
+        self.assertEqual(zoom, 14)
+        self.assertGreater(len(tiles), 1)
 
     def test_singapore_region_selects_covering_zoom_six_tiles(self) -> None:
         zoom, tiles = viewport_tiles(
@@ -91,6 +101,13 @@ class SatelliteTileTests(unittest.TestCase):
         )
 
         self.assertEqual(dimensions, (522, 850))
+
+    def test_request_dimensions_do_not_exceed_ten_metre_resolution(self) -> None:
+        dimensions = copernicus_request_dimensions(
+            (0, 0, 1_000, 1_000), (0, 0, 256, 256)
+        )
+
+        self.assertEqual(dimensions, (100, 100))
 
     def test_process_api_error_includes_request_context(self) -> None:
         response = MagicMock(spec=requests.Response)
@@ -166,20 +183,20 @@ class SatelliteTileTests(unittest.TestCase):
                 message = download_current_viewport(configuration)
 
             self.assertEqual(message, "Downloaded 1 Copernicus Global Mosaic tiles at zoom 7 using 1 Copernicus requests.")
-            tile_path = root / "7" / "1" / "1.webp"
-            self.assertTrue(tile_path.is_file())
-            with Image.open(tile_path) as tile:
+            tile_payload = tile_store(root).get(7, 1, 1)
+            self.assertIsNotNone(tile_payload)
+            with Image.open(BytesIO(tile_payload)) as tile:
                 self.assertEqual(tile.format, "WEBP")
             self.assertEqual(session.post.call_count, 2)
 
     def test_missing_child_tile_is_cropped_from_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            parent_path = root / "0" / "0"
-            parent_path.mkdir(parents=True)
             image = Image.new("RGB", (256, 256), "black")
             ImageDraw.Draw(image).rectangle((128, 0, 255, 127), fill="red")
-            image.save(parent_path / "0.webp", format="WEBP")
+            payload = BytesIO()
+            image.save(payload, format="WEBP")
+            tile_store(root).put(0, 0, 0, payload.getvalue())
 
             tile = raster_tile_bytes(root, 1, 1, 0)
 
@@ -198,17 +215,37 @@ class SatelliteTileTests(unittest.TestCase):
 
             self.assertIsNone(raster_tile_bytes(root, 0, 0, 0))
 
+    def test_legacy_webp_tiles_are_migrated_into_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy_path = root / "2" / "1" / "3.webp"
+            legacy_path.parent.mkdir(parents=True)
+            Image.new("RGB", (256, 256), "red").save(legacy_path, format="WEBP")
+            marker = root / ".revision"
+            marker.write_text("legacy-revision", encoding="utf-8")
+
+            store = tile_store(root)
+
+            self.assertEqual(store.migrate_legacy_files(), 1)
+            self.assertFalse(legacy_path.exists())
+            self.assertFalse(marker.exists())
+            self.assertEqual(store.revision(), "legacy-revision")
+            payload = store.get(2, 1, 3)
+            self.assertIsNotNone(payload)
+            with Image.open(BytesIO(payload)) as image:
+                self.assertEqual(image.format, "WEBP")
+
     def test_transparent_child_tile_is_composited_over_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            parent_path = root / "0" / "0"
-            child_path = root / "1" / "1"
-            parent_path.mkdir(parents=True)
-            child_path.mkdir(parents=True)
-            Image.new("RGBA", (256, 256), "red").save(parent_path / "0.webp", format="WEBP")
+            parent = BytesIO()
+            Image.new("RGBA", (256, 256), "red").save(parent, format="WEBP")
+            tile_store(root).put(0, 0, 0, parent.getvalue())
             child = Image.new("RGBA", (256, 256))
             ImageDraw.Draw(child).rectangle((128, 0, 255, 255), fill="blue")
-            child.save(child_path / "0.webp", format="WEBP")
+            child_payload = BytesIO()
+            child.save(child_payload, format="WEBP")
+            tile_store(root).put(1, 1, 0, child_payload.getvalue())
 
             tile = raster_tile_bytes(root, 1, 1, 0)
 
@@ -239,7 +276,7 @@ class SatelliteTileTests(unittest.TestCase):
                 result = import_georeferenced_png(str(source))
 
             self.assertIn("Imported 1 satellite tiles", result)
-            self.assertTrue((output / "0" / "0" / "0.webp").is_file())
+            self.assertIsNotNone(tile_store(output).get(0, 0, 0))
 
     def test_georeferenced_png_generates_visible_lower_zoom_ancestors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -287,7 +324,7 @@ class SatelliteTileTests(unittest.TestCase):
                 result = import_georeferenced_png(str(source))
 
             self.assertIn("Imported 1 satellite tiles", result)
-            self.assertTrue((output / "0" / "0" / "0.webp").is_file())
+            self.assertIsNotNone(tile_store(output).get(0, 0, 0))
 
     def test_georeferenced_png_can_skip_impacted_overview_tile_rebuild(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -307,8 +344,8 @@ class SatelliteTileTests(unittest.TestCase):
                 result = import_georeferenced_png(str(source), rebuild_pyramid=False)
 
             self.assertNotIn("Updated", result)
-            self.assertTrue((output / "1" / "1" / "0.webp").is_file())
-            self.assertFalse((output / "0" / "0" / "0.webp").exists())
+            self.assertIsNotNone(tile_store(output).get(1, 1, 0))
+            self.assertIsNone(tile_store(output).get(0, 0, 0))
 
 
 if __name__ == "__main__":

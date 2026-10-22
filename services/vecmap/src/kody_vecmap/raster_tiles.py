@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
+from contextlib import contextmanager
 from collections.abc import Callable
 from io import BytesIO
-import os
 from pathlib import Path
-from threading import Lock, get_ident
+from threading import Lock
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from .math import MapMath
@@ -43,26 +44,85 @@ def cache_revision(
 
 class NaturalEarthRasterCache:
     _locks_guard = Lock()
-    _tile_locks: dict[Path, Lock] = {}
+    _tile_locks: dict[tuple[Path, str, int, int, int], Lock] = {}
+    _database_locks: dict[Path, Lock] = {}
 
     def __init__(self, maps_directory: Path, revision: str) -> None:
-        self.root = maps_directory / "raster-tiles" / revision
+        self.maps_directory = maps_directory
+        self.revision = revision
+        self.path = maps_directory / "raster-tiles.sqlite"
+        self._initialize_database()
 
-    def tile_path(self, zoom: int, x: int, y: int) -> Path:
-        return self.root / str(zoom) / str(x) / f"{y}.webp"
+    def _initialize_database(self) -> None:
+        with self._locks_guard:
+            lock = self._database_locks.setdefault(self.path, Lock())
+        with lock:
+            if self.path.is_file():
+                return
+            self._create_database()
+
+    def _create_database(self) -> None:
+        self.maps_directory.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path, timeout=30)
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS raster_tiles (
+                    revision TEXT NOT NULL,
+                    zoom INTEGER NOT NULL,
+                    x INTEGER NOT NULL,
+                    y INTEGER NOT NULL,
+                    image_webp BLOB NOT NULL,
+                    PRIMARY KEY (revision, zoom, x, y)
+                )
+                """
+            )
+        finally:
+            connection.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.execute("PRAGMA busy_timeout = 30000")
+        return connection
+
+    @contextmanager
+    def _connection(self):
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    @property
+    def tile_key(self) -> tuple[Path, str]:
+        return self.path, self.revision
+
+    def read_tile(self, zoom: int, x: int, y: int) -> bytes | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT image_webp
+                FROM raster_tiles
+                WHERE revision = ? AND zoom = ? AND x = ? AND y = ?
+                """,
+                (self.revision, zoom, x, y),
+            ).fetchone()
+        return bytes(row[0]) if row is not None else None
 
     def write_tile(self, zoom: int, x: int, y: int, payload: bytes) -> None:
-        path = self.tile_path(zoom, x, y)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = path.with_name(
-            f".{path.name}.{os.getpid()}.{get_ident()}.tmp"
-        )
-        try:
-            temporary_path.write_bytes(payload)
-            temporary_path.replace(path)
-        finally:
-            if temporary_path.exists():
-                temporary_path.unlink()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO raster_tiles (revision, zoom, x, y, image_webp)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(revision, zoom, x, y) DO UPDATE SET
+                    image_webp = excluded.image_webp
+                """,
+                (self.revision, zoom, x, y, payload),
+            )
 
     def get_or_render(
         self,
@@ -70,16 +130,67 @@ class NaturalEarthRasterCache:
         x: int,
         y: int,
         renderer: Callable[[], bytes],
-    ) -> Path:
-        path = self.tile_path(zoom, x, y)
-        if path.is_file():
-            return path
+    ) -> bytes:
+        payload = self.read_tile(zoom, x, y)
+        if payload is not None:
+            return payload
+        key = (*self.tile_key, zoom, x, y)
         with self._locks_guard:
-            lock = self._tile_locks.setdefault(path, Lock())
+            lock = self._tile_locks.setdefault(key, Lock())
         with lock:
+            payload = self.read_tile(zoom, x, y)
+            if payload is None:
+                payload = renderer()
+                self.write_tile(zoom, x, y, payload)
+        return payload
+
+    @classmethod
+    def migrate_legacy_files(cls, maps_directory: Path) -> int:
+        legacy_root = maps_directory / "raster-tiles"
+        files: list[tuple[Path, str, int, int, int]] = []
+        for path in legacy_root.glob("*/*/*/*.webp"):
             if not path.is_file():
-                self.write_tile(zoom, x, y, renderer())
-        return path
+                continue
+            try:
+                files.append(
+                    (
+                        path,
+                        path.parents[2].name,
+                        int(path.parents[1].name),
+                        int(path.parent.name),
+                        int(path.stem),
+                    )
+                )
+            except ValueError:
+                continue
+        if not files:
+            return 0
+        cache = cls(maps_directory, files[0][1])
+        with cache._connection() as connection:
+            for path, revision, zoom, x, y in files:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO raster_tiles (revision, zoom, x, y, image_webp)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (revision, zoom, x, y, path.read_bytes()),
+                )
+        for path, _, _, _, _ in files:
+            path.unlink()
+        for directory in sorted(
+            (path for path in legacy_root.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        try:
+            legacy_root.rmdir()
+        except OSError:
+            pass
+        return len(files)
 
 
 def _tile_point(longitude: float, latitude: float, zoom: int, x: int, y: int) -> tuple[float, float]:

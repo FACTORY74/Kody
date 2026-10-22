@@ -18,6 +18,12 @@ const mapServiceList = document.querySelector("#map-service-list");
 const dataSourceList = document.querySelector("#data-source-list");
 const liveSourceList = document.querySelector("#live-source-list");
 const symbolSourceList = document.querySelector("#symbol-source-list");
+const layersTab = document.querySelector("#layers-tab");
+const selectionTab = document.querySelector("#selection-tab");
+const layersPanel = document.querySelector("#layers-panel");
+const selectionPanel = document.querySelector("#selection-panel");
+const selectionList = document.querySelector("#selection-list");
+const selectionEmpty = document.querySelector("#selection-empty");
 const serviceConfigDialog = document.querySelector("#service-config-dialog");
 const serviceConfigForm = document.querySelector("#service-config-form");
 const serviceConfigTitle = document.querySelector("#service-config-title");
@@ -45,7 +51,7 @@ const requestedTileKeys = new Set();
 const requestedRasterTileKeys = new Set();
 const requestedCopernicusTileKeys = new Set();
 const requestedTerrainTileKeys = new Set();
-const tileWorker = new Worker("/tile-worker.js?v=20261020d");
+const tileWorker = new Worker("/tile-worker.js?v=20261022a");
 let vectorMapServiceUrl = window.location.origin;
 let satelliteMapServiceUrl = window.location.origin;
 let copernicusServiceUrl = window.location.origin;
@@ -84,6 +90,10 @@ let airLanesShapeGroups = [];
 let liveShapeFeatureGroups = [];
 let contextActionFeatures = [];
 let contextMenuPlugins = [];
+const selectedFeatures = new Map();
+let selectionPointer = null;
+let selectionActionsKey = null;
+let centeredSelectionKey = null;
 let measureStart = null;
 let measureEnd = null;
 let configurationSession = null;
@@ -101,6 +111,7 @@ const tileLayerContext = tileLayerCanvas.getContext("2d");
 const EARTH_RADIUS_KILOMETRES = 6_371.0088;
 const AIRLANES_CACHE_PADDING = 96;
 const AIRLANES_CACHE_SETTLE_DELAY = 180;
+const SELECTION_CAPTURE_RADIUS_PIXELS = 12;
 let airLanesCache = null;
 let airLanesCacheRevision = null;
 let airLanesCacheRebuildTimer = null;
@@ -117,7 +128,12 @@ async function registeredRunningServices(services) {
         return null;
       }
       const manifest = await response.json();
-      return { ...service, url: service.url.replace(/\/$/, ""), displayName: manifest.displayName || service.id };
+      return {
+        ...service,
+        url: service.url.replace(/\/$/, ""),
+        displayName: manifest.displayName || service.id,
+        manifest,
+      };
     } catch {
       return null;
     } finally {
@@ -901,6 +917,7 @@ function drawShapesLayer() {
   drawCachedAirLanes();
   drawFeatureGroups(liveShapeFeatureGroups, []);
   drawShapeFeatures(contextActionFeatures, []);
+  drawSelectedFeatureMarkers();
 }
 
 function drawFeatureGroups(groups, liveTrackLabelBoxes = null) {
@@ -941,11 +958,15 @@ function enabledOverlayServices() {
 }
 
 function isLiveOverlayService(service) {
+  return !["shapes", "airlanes"].includes(service.type);
+}
+
+function supportsLiveOverlayActivity(service) {
   return service.type === "adsb" || service.type === "ais";
 }
 
 async function setLiveOverlayActivity(service) {
-  if (!isLiveOverlayService(service)) {
+  if (!supportsLiveOverlayActivity(service)) {
     return;
   }
   const response = await fetch(`${service.url}/api/activity`, {
@@ -960,12 +981,288 @@ async function setLiveOverlayActivity(service) {
 
 async function synchronizeLiveOverlayActivity() {
   const results = await Promise.allSettled(
-    overlayServices.filter(isLiveOverlayService).map(setLiveOverlayActivity),
+    overlayServices.filter(supportsLiveOverlayActivity).map(setLiveOverlayActivity),
   );
   const failures = results.filter((result) => result.status === "rejected");
   if (failures.length > 0) {
     throw new Error(failures.map((failure) => failure.reason.message).join("; "));
   }
+}
+
+function selectionKey(service, feature) {
+  return `${service.id}:${feature.id}`;
+}
+
+function isSelectableFeature(feature) {
+  return typeof feature?.id === "string"
+    && feature.geometry?.type === "Point"
+    && feature.properties?.kody?.selectable === true;
+}
+
+function selectableLiveFeatures() {
+  return enabledOverlayServices()
+    .filter(isLiveOverlayService)
+    .flatMap((service) => {
+      const features = overlayCollections.get(overlayKey(service))?.features;
+      if (!Array.isArray(features)) {
+        return [];
+      }
+      return features
+        .filter(isSelectableFeature)
+        .map((feature) => ({ service, feature }));
+    });
+}
+
+function selectionLabel(feature) {
+  const { properties } = feature;
+  return typeof properties.kody.selectionLabel === "string" && properties.kody.selectionLabel
+    ? properties.kody.selectionLabel
+    : feature.id;
+}
+
+function selectedTelemetry(properties) {
+  const details = [];
+  const altitudeFeet = Number(properties.altitudeBarometricFeet);
+  if (Number.isFinite(altitudeFeet)) {
+    details.push(`Alt ${Math.round(altitudeFeet).toLocaleString()} ft`);
+  }
+  const bearing = [
+    properties.bearingDegrees,
+    properties.trueHeadingDegrees,
+    properties.trackDegrees,
+    properties.courseDegrees,
+  ].map(Number).find(Number.isFinite);
+  if (Number.isFinite(bearing)) {
+    details.push(`Brg ${Math.round((bearing % 360 + 360) % 360)}°`);
+  }
+  const speedKnots = [properties.groundSpeedKnots, properties.speedKnots]
+    .map(Number)
+    .find(Number.isFinite);
+  if (Number.isFinite(speedKnots)) {
+    details.push(`Spd ${Math.round(speedKnots)} kt`);
+  } else {
+    const speedMetresPerSecond = Number(properties.speedMetresPerSecond);
+    if (Number.isFinite(speedMetresPerSecond)) {
+      details.push(`Spd ${Math.round(speedMetresPerSecond * 3.6)} km/h`);
+    }
+  }
+  return details.join(" · ");
+}
+
+function declaredFeatureActions(service, feature) {
+  const actions = Array.isArray(service.manifest?.featureActions)
+    ? service.manifest.featureActions
+    : [];
+  const allowedIds = Array.isArray(feature.properties.kodyActions)
+    ? new Set(feature.properties.kodyActions)
+    : null;
+  return actions.filter((action) => (
+    typeof action?.id === "string"
+    && typeof action.label === "string"
+    && typeof action.path === "string"
+    && (allowedIds === null || allowedIds.has(action.id))
+  ));
+}
+
+function renderSelectedFeatures() {
+  selectionList.replaceChildren();
+  selectionEmpty.hidden = selectedFeatures.size > 0;
+  for (const { service, feature } of selectedFeatures.values()) {
+    const key = selectionKey(service, feature);
+    const row = document.createElement("article");
+    row.className = "selection-item";
+    const item = document.createElement("div");
+    item.className = "selection-item-row";
+    const label = document.createElement("div");
+    label.className = "selection-item-label";
+    const name = document.createElement("strong");
+    name.textContent = selectionLabel(feature);
+    const metadata = document.createElement("small");
+    const telemetry = selectedTelemetry(feature.properties);
+    metadata.textContent = [service.displayName, telemetry].filter(Boolean).join(" · ");
+    label.append(name, metadata);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "X";
+    remove.setAttribute("aria-label", `Remove ${selectionLabel(feature)} from selection`);
+    remove.addEventListener("click", () => {
+      selectedFeatures.delete(key);
+      if (centeredSelectionKey === key) {
+        centeredSelectionKey = null;
+      }
+      if (selectionActionsKey === key) {
+        selectionActionsKey = null;
+      }
+      renderSelectedFeatures();
+    });
+
+    const actions = document.createElement("button");
+    actions.type = "button";
+    actions.textContent = "→";
+    actions.setAttribute("aria-label", `Actions for ${selectionLabel(feature)}`);
+    actions.title = "Open item actions.";
+    actions.addEventListener("click", () => {
+      selectionActionsKey = selectionActionsKey === key ? null : key;
+      renderSelectedFeatures();
+    });
+    item.append(label, remove, actions);
+    row.append(item);
+    if (selectionActionsKey === key) {
+      const menu = document.createElement("div");
+      menu.className = "selection-item-actions";
+      const center = document.createElement("button");
+      center.type = "button";
+      center.textContent = centeredSelectionKey === key
+        ? "Centering on screen"
+        : "Center on screen";
+      center.disabled = centeredSelectionKey === key;
+      center.addEventListener("click", () => {
+        centeredSelectionKey = key;
+        centerOnSelectedFeature();
+        renderSelectedFeatures();
+      });
+      menu.append(center);
+      const serviceActions = declaredFeatureActions(service, feature);
+      if (serviceActions.length === 0) {
+        const unavailable = document.createElement("small");
+        unavailable.textContent = "No service actions are registered.";
+        menu.append(unavailable);
+      }
+      row.append(menu);
+    }
+    selectionList.append(row);
+  }
+}
+
+function centerOnSelectedFeature() {
+  const selected = centeredSelectionKey === null
+    ? null
+    : selectedFeatures.get(centeredSelectionKey);
+  if (!selected) {
+    centeredSelectionKey = null;
+    return;
+  }
+  const [longitude, latitude] = selected.feature.geometry.coordinates;
+  const { x, y } = MapMath.lonLatToWorld(longitude, latitude);
+  const center = viewportCrosshairPoint();
+  const nextCameraX = Math.max(
+    0,
+    Math.min(1, x - (center.x - canvas.clientWidth / 2) / scale()),
+  );
+  const nextCameraY = Math.max(
+    0,
+    Math.min(1, y - (center.y - canvas.clientHeight / 2) / scale()),
+  );
+  if (camera.x === nextCameraX && camera.y === nextCameraY) {
+    return;
+  }
+  camera.x = nextCameraX;
+  camera.y = nextCameraY;
+  mapStateVersion += 1;
+  refreshMap();
+  invalidateAirLanesCache();
+  scheduleViewportPublish();
+}
+
+function reconcileSelectedFeatures() {
+  const available = new Map(
+    selectableLiveFeatures().map(({ service, feature }) => [selectionKey(service, feature), { service, feature }]),
+  );
+  for (const key of selectedFeatures.keys()) {
+    const current = available.get(key);
+    if (current) {
+      selectedFeatures.set(key, current);
+    } else {
+      selectedFeatures.delete(key);
+    }
+  }
+  centerOnSelectedFeature();
+  renderSelectedFeatures();
+}
+
+function toggleSelectableFeaturesAt(point) {
+  for (const { service, feature } of selectableLiveFeatures()) {
+    const [longitude, latitude] = feature.geometry.coordinates;
+    const featurePoint = screenPoint(longitude, latitude);
+    if (Math.hypot(featurePoint.x - point.x, featurePoint.y - point.y) > SELECTION_CAPTURE_RADIUS_PIXELS) {
+      continue;
+    }
+    const key = selectionKey(service, feature);
+    if (selectedFeatures.has(key)) {
+      selectedFeatures.delete(key);
+    } else {
+      selectedFeatures.set(key, { service, feature });
+    }
+  }
+  renderSelectedFeatures();
+}
+
+function toggleSelectableFeaturesInRectangle(start, end) {
+  const left = Math.min(start.x, end.x);
+  const right = Math.max(start.x, end.x);
+  const top = Math.min(start.y, end.y);
+  const bottom = Math.max(start.y, end.y);
+  for (const { service, feature } of selectableLiveFeatures()) {
+    const [longitude, latitude] = feature.geometry.coordinates;
+    const featurePoint = screenPoint(longitude, latitude);
+    if (
+      featurePoint.x < left || featurePoint.x > right
+      || featurePoint.y < top || featurePoint.y > bottom
+    ) {
+      continue;
+    }
+    const key = selectionKey(service, feature);
+    if (selectedFeatures.has(key)) {
+      selectedFeatures.delete(key);
+    } else {
+      selectedFeatures.set(key, { service, feature });
+    }
+  }
+  renderSelectedFeatures();
+}
+
+function drawSelectedFeatureMarkers() {
+  context.save();
+  context.strokeStyle = "#8df2ff";
+  context.lineWidth = 2;
+  for (const { feature } of selectedFeatures.values()) {
+    const [longitude, latitude] = feature.geometry.coordinates;
+    const point = screenPoint(longitude, latitude);
+    context.beginPath();
+    context.arc(point.x, point.y, 10, 0, 2 * Math.PI);
+    context.stroke();
+  }
+  if (selectionPointer) {
+    context.setLineDash([3, 3]);
+    context.beginPath();
+    if (selectionPointer.isDragging) {
+      context.rect(
+        Math.min(selectionPointer.start.x, selectionPointer.current.x),
+        Math.min(selectionPointer.start.y, selectionPointer.current.y),
+        Math.abs(selectionPointer.current.x - selectionPointer.start.x),
+        Math.abs(selectionPointer.current.y - selectionPointer.start.y),
+      );
+    } else {
+      context.arc(
+        selectionPointer.start.x,
+        selectionPointer.start.y,
+        SELECTION_CAPTURE_RADIUS_PIXELS,
+        0,
+        2 * Math.PI,
+      );
+    }
+    context.stroke();
+  }
+  context.restore();
+}
+
+function showDisplayPanel(panel) {
+  const showSelection = panel === "selection";
+  layersTab.setAttribute("aria-selected", String(!showSelection));
+  selectionTab.setAttribute("aria-selected", String(showSelection));
+  layersPanel.hidden = showSelection;
+  selectionPanel.hidden = !showSelection;
 }
 
 function rebuildOverlayFeatures() {
@@ -1002,6 +1299,7 @@ function rebuildOverlayFeatures() {
     airLanesCacheRevision = nextAirLanesRevision;
     invalidateAirLanesCache({ immediate: true });
   }
+  reconcileSelectedFeatures();
 }
 
 function overlayDisplayName(service) {
@@ -2346,6 +2644,7 @@ function zoomAt(pointerX, pointerY, amount) {
   camera.x = Math.max(0, Math.min(1, worldX - (pointerX - canvas.clientWidth / 2) / nextScale));
   camera.y = Math.max(0, Math.min(1, worldY - (pointerY - canvas.clientHeight / 2) / nextScale));
   mapStateVersion += 1;
+  centerOnSelectedFeature();
   refreshMap();
   invalidateAirLanesCache();
   scheduleViewportPublish();
@@ -2377,9 +2676,7 @@ async function loadConfiguration(restoreMapView = true) {
   overlayServices = runningServices
     .filter((item) => ["shapes", "geojson", "adsb", "ais", "airlanes"].includes(item.type))
     .map((item) => ({
-      id: item.id,
-      type: item.type,
-      url: item.url,
+      ...item,
       endpoint: item.type === "shapes" ? "/api/shapes" : "/api/geojson",
       enabled: true,
     }));
@@ -2575,6 +2872,15 @@ tileWorker.addEventListener("message", (event) => {
       rasterTileCache.set(key, bitmap);
     }
     requestVisibleTiles();
+  } else if (type === "raster-missing") {
+    if (key.startsWith(`${terrainServiceUrl}/`)) {
+      requestedTerrainTileKeys.delete(key);
+    } else if (key.startsWith(`${copernicusServiceUrl}/`)) {
+      requestedCopernicusTileKeys.delete(key);
+    } else {
+      requestedRasterTileKeys.delete(key);
+    }
+    window.setTimeout(requestVisibleTiles, 5000);
   } else if (type === "raster-error") {
     if (key.startsWith(`${terrainServiceUrl}/`)) {
       requestedTerrainTileKeys.delete(key);
@@ -2595,6 +2901,17 @@ canvas.addEventListener("pointerdown", (event) => {
     return;
   }
   closeContextMenu();
+  if (event.shiftKey) {
+    const bounds = canvas.getBoundingClientRect();
+    selectionPointer = {
+      pointerId: event.pointerId,
+      start: { x: event.clientX - bounds.left, y: event.clientY - bounds.top },
+      current: { x: event.clientX - bounds.left, y: event.clientY - bounds.top },
+      isDragging: false,
+    };
+    canvas.setPointerCapture(event.pointerId);
+    return;
+  }
   dragging = true;
   lastPointer = event;
   canvas.setPointerCapture(event.pointerId);
@@ -2608,8 +2925,25 @@ window.addEventListener("pointerdown", (event) => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
+  if (selectionPointer?.pointerId === event.pointerId) {
+    const bounds = canvas.getBoundingClientRect();
+    selectionPointer.current = {
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+    };
+    selectionPointer.isDragging = selectionPointer.isDragging
+      || Math.hypot(
+        selectionPointer.current.x - selectionPointer.start.x,
+        selectionPointer.current.y - selectionPointer.start.y,
+      ) > 4;
+    return;
+  }
   if (!dragging) {
     return;
+  }
+  if (centeredSelectionKey !== null) {
+    centeredSelectionKey = null;
+    renderSelectedFeatures();
   }
   camera.x = Math.max(0, Math.min(1, camera.x - (event.clientX - lastPointer.clientX) / scale()));
   camera.y = Math.max(0, Math.min(1, camera.y - (event.clientY - lastPointer.clientY) / scale()));
@@ -2620,7 +2954,16 @@ canvas.addEventListener("pointermove", (event) => {
   scheduleViewportPublish();
 });
 
-canvas.addEventListener("pointerup", () => {
+canvas.addEventListener("pointerup", (event) => {
+  if (selectionPointer?.pointerId === event.pointerId) {
+    if (selectionPointer.isDragging) {
+      toggleSelectableFeaturesInRectangle(selectionPointer.start, selectionPointer.current);
+    } else {
+      toggleSelectableFeaturesAt(selectionPointer.start);
+    }
+    selectionPointer = null;
+    return;
+  }
   dragging = false;
   lastPointer = null;
   invalidateAirLanesCache();
@@ -2657,6 +3000,9 @@ document.querySelector("#zoom-out").addEventListener("click", () => {
   const point = viewportCrosshairPoint();
   zoomAt(point.x, point.y, -0.5);
 });
+layersTab.addEventListener("click", () => showDisplayPanel("layers"));
+selectionTab.addEventListener("click", () => showDisplayPanel("selection"));
+renderSelectedFeatures();
 function saveLayerSelection() {
   mapStateVersion += 1;
   refreshMap();

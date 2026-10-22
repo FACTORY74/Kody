@@ -131,6 +131,7 @@ class FlightTrack:
             },
             {
                 "type": "Feature",
+                "id": f"track:{self.name}",
                 "properties": {
                     "name": self.name,
                     "color": self.colour,
@@ -138,6 +139,10 @@ class FlightTrack:
                     "symbol": self.symbol,
                     "bearingDegrees": (-self.phase - sample_time * self.angular_velocity) * 180 / pi % 360,
                     "speedMetresPerSecond": TRACK_SPEED_METRES_PER_SECOND,
+                    "kody": {
+                        "selectable": True,
+                        "selectionLabel": self.name,
+                    },
                 },
                 "geometry": {"type": "Point", "coordinates": trail[-1]},
             },

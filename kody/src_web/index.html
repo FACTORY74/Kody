@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kody map</title>
-    <link rel="stylesheet" href="/styles.css?v=20261020e">
+    <link rel="stylesheet" href="/styles.css?v=20261022b">
   </head>
   <body class="map-page">
     <header class="topbar">
@@ -33,34 +33,44 @@
           <div class="panel-heading">
             <div>
               <p class="eyebrow">Display controls</p>
-              <h2>Layers</h2>
+              <div class="panel-tabs" role="tablist" aria-label="Display controls">
+                <button id="layers-tab" type="button" role="tab" aria-selected="true" aria-controls="layers-panel">Layers</button>
+                <button id="selection-tab" type="button" role="tab" aria-selected="false" aria-controls="selection-panel">Selection</button>
+              </div>
             </div>
             <span class="live-indicator"><i aria-hidden="true"></i> Live</span>
           </div>
-          <section class="layer-group" aria-label="Map layers">
-            <p class="group-label">Map</p>
-            <div id="map-service-list"></div>
-            <div class="map-layer-row">
-              <label><input id="grid-layer" type="checkbox" checked> Lat/Lon Grid</label>
-              <div class="opacity-control" aria-label="Grid opacity">
-                <button type="button" data-opacity-layer="grid" data-opacity-change="-1" aria-label="Decrease grid opacity">−</button>
-                <output id="grid-opacity">10</output>
-                <button type="button" data-opacity-layer="grid" data-opacity-change="1" aria-label="Increase grid opacity">+</button>
+          <div id="layers-panel" role="tabpanel" aria-labelledby="layers-tab">
+            <section class="layer-group" aria-label="Map layers">
+              <p class="group-label">Map</p>
+              <div id="map-service-list"></div>
+              <div class="map-layer-row">
+                <label><input id="grid-layer" type="checkbox" checked> Lat/Lon Grid</label>
+                <div class="opacity-control" aria-label="Grid opacity">
+                  <button type="button" data-opacity-layer="grid" data-opacity-change="-1" aria-label="Decrease grid opacity">−</button>
+                  <output id="grid-opacity">10</output>
+                  <button type="button" data-opacity-layer="grid" data-opacity-change="1" aria-label="Increase grid opacity">+</button>
+                </div>
+                <button id="configure-grid" class="configure-service" type="button" aria-label="Configure Lat/Lon Grid">⚙</button>
               </div>
-              <button id="configure-grid" class="configure-service" type="button" aria-label="Configure Lat/Lon Grid">⚙</button>
-            </div>
-          </section>
-          <section class="layer-group" aria-labelledby="data-sources-heading">
-            <p class="group-label" id="data-sources-heading">Data</p>
-            <div id="data-source-list"></div>
-          </section>
-          <section class="layer-group" aria-labelledby="live-sources-heading">
-            <p class="group-label" id="live-sources-heading">Live</p>
-            <div id="live-source-list"></div>
-          </section>
-          <section class="layer-group" aria-labelledby="symbol-sources-heading">
-            <p class="group-label" id="symbol-sources-heading">Symbols</p>
-            <div id="symbol-source-list"></div>
+            </section>
+            <section class="layer-group" aria-labelledby="data-sources-heading">
+              <p class="group-label" id="data-sources-heading">Data</p>
+              <div id="data-source-list"></div>
+            </section>
+            <section class="layer-group" aria-labelledby="live-sources-heading">
+              <p class="group-label" id="live-sources-heading">Live</p>
+              <div id="live-source-list"></div>
+            </section>
+            <section class="layer-group" aria-labelledby="symbol-sources-heading">
+              <p class="group-label" id="symbol-sources-heading">Symbols</p>
+              <div id="symbol-source-list"></div>
+            </section>
+          </div>
+          <section id="selection-panel" role="tabpanel" aria-labelledby="selection-tab" hidden>
+            <p class="selection-help">Shift+click or Shift+drag live objects to select them.</p>
+            <p id="selection-empty" class="selection-empty">No live objects selected.</p>
+            <div id="selection-list"></div>
           </section>
         </div>
       </aside>
@@ -97,6 +107,6 @@
         </div>
       </form>
     </dialog>
-    <script type="module" src="/map.js?v=20261021g"></script>
+    <script type="module" src="/map.js?v=20261022e"></script>
   </body>
 </html>

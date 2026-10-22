@@ -378,7 +378,8 @@ class NativeTileStoreTests(unittest.TestCase):
             self.assertEqual(payload[:4], b"RIFF")
             self.assertEqual(payload[8:12], b"WEBP")
             self.assertLess(len(payload), 20_000)
-            self.assertTrue(cache.tile_path(0, 0, 0).is_file())
+            self.assertEqual(cache.read_tile(0, 0, 0), payload)
+            self.assertTrue((Path(directory) / "raster-tiles.sqlite").is_file())
 
     def test_raster_revision_ignores_geopackage_timestamp_but_tracks_imports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -543,8 +544,23 @@ class NativeTileStoreTests(unittest.TestCase):
                 )
 
             self.assertEqual(render_count, 1)
-            self.assertEqual(paths, [cache.tile_path(3, 4, 2)] * 4)
-            self.assertEqual(cache.tile_path(3, 4, 2).read_bytes(), b"rendered-webp")
+            self.assertEqual(paths, [b"rendered-webp"] * 4)
+            self.assertEqual(cache.read_tile(3, 4, 2), b"rendered-webp")
+
+    def test_legacy_raster_tiles_are_migrated_into_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            maps_directory = Path(directory)
+            legacy_path = maps_directory / "raster-tiles" / "revision" / "3" / "4" / "2.webp"
+            legacy_path.parent.mkdir(parents=True)
+            legacy_path.write_bytes(b"rendered-webp")
+
+            self.assertEqual(NaturalEarthRasterCache.migrate_legacy_files(maps_directory), 1)
+
+            self.assertFalse(legacy_path.exists())
+            self.assertEqual(
+                NaturalEarthRasterCache(maps_directory, "revision").read_tile(3, 4, 2),
+                b"rendered-webp",
+            )
 
     def test_raster_route_renders_and_persists_a_cold_tile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -581,12 +597,10 @@ class NativeTileStoreTests(unittest.TestCase):
                 first = get_raster_tile(0, 0, 0)
                 second = get_raster_tile(0, 0, 0)
 
-            path = Path(second.path)
             self.assertEqual(first.status_code, 202)
             self.assertEqual(second.media_type, "image/webp")
-            self.assertTrue(path.is_file())
-            self.assertEqual(path.read_bytes()[:4], b"RIFF")
-            self.assertEqual(path.read_bytes()[8:12], b"WEBP")
+            self.assertEqual(second.body[:4], b"RIFF")
+            self.assertEqual(second.body[8:12], b"WEBP")
 
     def test_tile_render_queue_deduplicates_and_reports_progress(self) -> None:
         queue = RasterTileRenderQueue()

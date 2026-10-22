@@ -332,6 +332,63 @@ For example, an elevation provider declares:
 
 `heightMetres` may be `null` when no local data covers the point.
 
+### 3.7 Editable scenario capability
+
+A service with a declarative collection of routes, units, or other scenario
+objects MAY expose the generic `scenarioEditor` capability:
+
+```json
+{
+  "capabilities": {
+    "scenarioEditor": {
+      "scenarioPath": "/api/scenario",
+      "updateMethod": "PUT",
+      "revisionHeader": "If-Match",
+      "route": {
+        "geometry": "LineString",
+        "completionPolicies": ["despawn", "restart", "loop", "hold", "reverse"],
+        "waypointFields": ["targetAltitudeMetres", "targetSpeedMetres"]
+      }
+    }
+  }
+}
+```
+
+`GET scenarioPath` returns a declarative scenario plus `revision`; the central
+map sends the complete edited scenario to `updateMethod` with the prior
+revision in `revisionHeader`. Services MUST atomically validate and persist the
+scenario and return `409 Conflict` for a stale revision. The generic map
+editor draws a `LineString` for a route, offers the declared completion policy
+and waypoint fields, and uses an explicit move mode for waypoint drags so
+ordinary panning never changes geometry.
+
+Services MAY add domain-specific read-only fields, but MUST NOT require a
+custom browser UI for route drawing, waypoint movement, or revision handling.
+
+### 3.8 Simulation controls capability
+
+A live simulation MAY expose deterministic runtime controls independently from
+its persisted scenario:
+
+```json
+{
+  "capabilities": {
+    "simulationControls": {
+      "readPath": "/api/simulation",
+      "writePath": "/api/simulation",
+      "resetPath": "/api/simulation/reset",
+      "revisionHeader": "If-Match"
+    }
+  }
+}
+```
+
+`GET readPath` returns `{"revision": "opaque", "running": true,
+"elapsedSeconds": 42.5}`. `PUT writePath` accepts `{"running": false}` with
+the prior revision in `revisionHeader`; `POST resetPath` resets non-persisted
+simulation state to the current declarative scenario. The simulation MUST
+advance only from its own clock, enabling repeatable paused and reset states.
+
 ## 4. Configuration contract
 
 `manifest.configuration` is optional. If provided, it MUST include:

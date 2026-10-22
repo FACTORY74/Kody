@@ -48,6 +48,18 @@ const shapeEditorList = document.querySelector("#shape-editor-list");
 const shapeDraw = document.querySelector("#shape-draw");
 const shapeDelete = document.querySelector("#shape-delete");
 const shapeCancel = document.querySelector("#shape-cancel");
+const trackEditorDialog = document.querySelector("#track-editor-dialog");
+const trackEditorForm = document.querySelector("#track-editor-form");
+const trackRouteSelect = document.querySelector("#track-route-select");
+const trackRouteFields = document.querySelector("#track-route-fields");
+const trackWaypointList = document.querySelector("#track-waypoint-list");
+const trackAircraftList = document.querySelector("#track-aircraft-list");
+const trackEditorStatus = document.querySelector("#track-editor-status");
+const trackNewRoute = document.querySelector("#track-new-route");
+const trackSimulationToggle = document.querySelector("#track-simulation-toggle");
+const trackSimulationReset = document.querySelector("#track-simulation-reset");
+const trackDeleteRoute = document.querySelector("#track-delete-route");
+const trackCancel = document.querySelector("#track-cancel");
 const mapContextMenu = document.querySelector("#map-context-menu");
 const gridLayer = document.querySelector("#grid-layer");
 const sidePanel = document.querySelector("#side-panel");
@@ -108,6 +120,9 @@ let selectionActionsKey = null;
 let centeredSelectionKey = null;
 let shapeEditorSession = null;
 let shapeDrawing = null;
+let trackEditorSession = null;
+let trackRouteDrawing = null;
+let trackWaypointMove = null;
 let measureStart = null;
 let measureEnd = null;
 let configurationSession = null;
@@ -926,7 +941,43 @@ function drawShapesLayer() {
   drawCachedAirLanes();
   drawFeatureGroups(liveShapeFeatureGroups, []);
   drawShapeFeatures(contextActionFeatures, []);
+  drawTrackEditorPreview();
   drawSelectedFeatureMarkers();
+}
+
+function drawTrackEditorPreview() {
+  const points = trackRouteDrawing
+    ? [...trackRouteDrawing.points, ...(trackRouteDrawing.preview ? [trackRouteDrawing.preview] : [])]
+    : [];
+  if (trackWaypointMove) {
+    const route = trackEditorSession?.scenario.routes.find((item) => item.id === trackWaypointMove.routeId);
+    if (route) {
+      points.push(...route.legs.map((leg) => (
+        leg.id === trackWaypointMove.legId ? trackWaypointMove.preview : leg.waypoint
+      )));
+    }
+  }
+  if (points.length === 0) return;
+  context.save();
+  context.strokeStyle = "#8df2ff";
+  context.fillStyle = "#8df2ff";
+  context.lineWidth = 2;
+  context.setLineDash([5, 4]);
+  context.beginPath();
+  points.forEach((coordinate, index) => {
+    const point = screenPoint(...coordinate);
+    if (index === 0) context.moveTo(point.x, point.y);
+    else context.lineTo(point.x, point.y);
+  });
+  context.stroke();
+  context.setLineDash([]);
+  for (const coordinate of points) {
+    const point = screenPoint(...coordinate);
+    context.beginPath();
+    context.arc(point.x, point.y, 4, 0, 2 * Math.PI);
+    context.fill();
+  }
+  context.restore();
 }
 
 function drawFeatureGroups(groups, liveTrackLabelBoxes = null) {
@@ -1811,6 +1862,212 @@ async function configureShapeEditor(service) {
   showShapeEditor();
 }
 
+function trackEditorInput(key, label, value, { type = "text", options = null } = {}) {
+  const field = document.createElement("label");
+  field.className = "service-config-field";
+  field.textContent = label;
+  const input = options ? document.createElement("select") : document.createElement("input");
+  input.dataset.trackKey = key;
+  if (options) {
+    for (const option of options) {
+      const element = document.createElement("option");
+      element.value = option.value;
+      element.textContent = option.label;
+      element.selected = option.value === value;
+      input.append(element);
+    }
+  } else {
+    input.type = type;
+    input.value = String(value);
+    if (type === "number") input.step = "any";
+  }
+  field.append(input);
+  return field;
+}
+
+function selectedTrackRoute() {
+  return trackEditorSession?.scenario.routes.find((route) => route.id === trackRouteSelect.value) ?? null;
+}
+
+function applyTrackRouteForm() {
+  const route = selectedTrackRoute();
+  if (!route) return;
+  route.name = trackRouteFields.querySelector('[data-track-key="name"]').value.trim();
+  route.color = trackRouteFields.querySelector('[data-track-key="color"]').value;
+  route.completionPolicy = trackRouteFields.querySelector('[data-track-key="completionPolicy"]').value;
+  for (const leg of route.legs) {
+    leg.targetAltitudeMetres = Number(trackWaypointList.querySelector(`[data-track-key="altitude:${leg.id}"]`).value);
+    leg.targetSpeedMetresPerSecond = Number(trackWaypointList.querySelector(`[data-track-key="speed:${leg.id}"]`).value);
+  }
+  for (const aircraft of trackEditorSession.scenario.aircraft) {
+    const assignment = trackAircraftList.querySelector(`[data-track-key="aircraft:${aircraft.id}"]`);
+    if (assignment) aircraft.routeId = assignment.value;
+  }
+}
+
+function renderTrackEditor() {
+  const { scenario, capability } = trackEditorSession;
+  const selectedRouteId = trackRouteSelect.value;
+  trackRouteSelect.replaceChildren();
+  for (const route of scenario.routes) {
+    const option = document.createElement("option");
+    option.value = route.id;
+    option.textContent = route.name;
+    option.selected = route.id === selectedRouteId;
+    trackRouteSelect.append(option);
+  }
+  if (!trackRouteSelect.value && scenario.routes.length > 0) trackRouteSelect.value = scenario.routes[0].id;
+  const route = selectedTrackRoute();
+  trackRouteFields.replaceChildren();
+  trackWaypointList.replaceChildren();
+  trackAircraftList.replaceChildren();
+  trackDeleteRoute.hidden = !route;
+  trackSimulationToggle.textContent = trackEditorSession.simulation.running
+    ? "Pause simulation"
+    : "Resume simulation";
+  if (!route) {
+    trackRouteFields.append(Object.assign(document.createElement("p"), {
+      className: "empty-config-state",
+      textContent: "Draw a route to begin this scenario.",
+    }));
+    return;
+  }
+  trackRouteFields.append(
+    trackEditorInput("name", "Route name", route.name),
+    trackEditorInput("color", "Route color", route.color, { type: "color" }),
+    trackEditorInput("completionPolicy", "Completion policy", route.completionPolicy, {
+      options: capability.completionPolicies.map((policy) => ({
+        value: policy,
+        label: policy[0].toUpperCase() + policy.slice(1),
+      })),
+    }),
+  );
+  for (const leg of route.legs) {
+    const item = document.createElement("div");
+    item.className = "track-editor-item";
+    const fields = document.createElement("div");
+    fields.className = "track-editor-item-fields";
+    fields.append(
+      trackEditorInput(`altitude:${leg.id}`, `${leg.id} altitude (m)`, leg.targetAltitudeMetres, { type: "number" }),
+      trackEditorInput(`speed:${leg.id}`, `${leg.id} speed (m/s)`, leg.targetSpeedMetresPerSecond, { type: "number" }),
+    );
+    const actions = document.createElement("div");
+    actions.className = "track-editor-item-actions";
+    const move = document.createElement("button");
+    move.type = "button";
+    move.textContent = "Move";
+    move.addEventListener("click", () => {
+      applyTrackRouteForm();
+      trackWaypointMove = { routeId: route.id, legId: leg.id, preview: [...leg.waypoint] };
+      trackEditorDialog.close();
+      status.textContent = `Move ${leg.id}: drag its waypoint to a new position, or press Escape to cancel.`;
+      refreshMap();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Delete";
+    remove.disabled = route.legs.length === 1;
+    remove.addEventListener("click", () => {
+      route.legs = route.legs.filter((candidate) => candidate.id !== leg.id);
+      renderTrackEditor();
+    });
+    actions.append(move, remove);
+    item.append(fields, actions);
+    trackWaypointList.append(item);
+  }
+  for (const aircraft of scenario.aircraft) {
+    const item = document.createElement("div");
+    item.className = "track-editor-item";
+    const assignment = trackEditorInput(`aircraft:${aircraft.id}`, aircraft.name, aircraft.routeId, {
+      options: scenario.routes.map((candidate) => ({ value: candidate.id, label: candidate.name })),
+    });
+    item.append(assignment);
+    trackAircraftList.append(item);
+  }
+}
+
+function trackRouteId() {
+  return `route-${crypto.randomUUID()}`;
+}
+
+function trackLegId(index) {
+  return `waypoint-${index + 1}`;
+}
+
+function finishTrackRouteDrawing() {
+  if (!trackRouteDrawing || trackRouteDrawing.points.length < 2) {
+    status.textContent = "A route needs at least two waypoints.";
+    return;
+  }
+  const route = {
+    id: trackRouteId(),
+    name: "New route",
+    color: "#38c8ec",
+    completionPolicy: "loop",
+    legs: trackRouteDrawing.points.map((waypoint, index) => ({
+      id: trackLegId(index),
+      waypoint,
+      targetAltitudeMetres: 1_000,
+      targetSpeedMetresPerSecond: 80,
+    })),
+  };
+  trackEditorSession.scenario.routes.push(route);
+  trackRouteDrawing = null;
+  trackRouteSelect.value = route.id;
+  renderTrackEditor();
+  trackEditorDialog.showModal();
+  status.textContent = "Route drawn. Set its details and save the scenario.";
+  refreshMap();
+}
+
+async function persistTrackScenario() {
+  const { service, capability, scenario, revision } = trackEditorSession;
+  const response = await fetch(`${service.url}${capability.scenarioPath}`, {
+    method: capability.updateMethod || "PUT",
+    headers: { "Content-Type": "application/json", [capability.revisionHeader]: revision },
+    body: JSON.stringify(scenario),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `scenario update returned ${response.status}`);
+  }
+  const updated = await response.json();
+  trackEditorSession.scenario = {
+    schemaVersion: updated.schemaVersion,
+    routes: updated.routes,
+    aircraft: updated.aircraft,
+  };
+  trackEditorSession.revision = updated.revision;
+  await refreshShapes();
+}
+
+async function configureTrackEditor(service) {
+  const capability = service.manifest.capabilities.scenarioEditor;
+  const simulationCapability = service.manifest.capabilities.simulationControls;
+  const [response, simulationResponse] = await Promise.all([
+    fetch(`${service.url}${capability.scenarioPath}`),
+    fetch(`${service.url}${simulationCapability.readPath}`),
+  ]);
+  if (!response.ok) throw new Error(`track scenario returned ${response.status}`);
+  if (!simulationResponse.ok) throw new Error(`simulation state returned ${simulationResponse.status}`);
+  const [scenario, simulation] = await Promise.all([response.json(), simulationResponse.json()]);
+  trackEditorSession = {
+    service,
+    capability,
+    revision: scenario.revision,
+    scenario: {
+      schemaVersion: scenario.schemaVersion,
+      routes: scenario.routes,
+      aircraft: scenario.aircraft,
+    },
+    simulationCapability,
+    simulation,
+  };
+  trackEditorStatus.textContent = "";
+  renderTrackEditor();
+  trackEditorDialog.showModal();
+}
+
 function mapPosition(event) {
   const point = mapPointFromEvent(event);
   return [point.longitude, point.latitude];
@@ -1904,7 +2161,9 @@ function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) 
     configure.addEventListener("click", () => {
       const open = service.manifest?.capabilities?.shapeEditor
         ? configureShapeEditor(service)
-        : configureService(service);
+        : service.manifest?.capabilities?.scenarioEditor
+          ? configureTrackEditor(service)
+          : configureService(service);
       open.catch((error) => {
         status.textContent = `Unable to configure ${overlayDisplayName(service)}: ${error.message}`;
       });
@@ -2037,6 +2296,77 @@ shapeEditorForm.addEventListener("submit", async (event) => {
     await refreshShapes();
   } catch (error) {
     shapeEditorStatus.textContent = `Unable to save shape: ${error.message}`;
+  }
+});
+
+trackRouteSelect.addEventListener("change", () => renderTrackEditor());
+trackNewRoute.addEventListener("click", () => {
+  trackRouteDrawing = { points: [], preview: null };
+  trackEditorDialog.close();
+  status.textContent = "Click route waypoints. Press Enter to finish the route, or Escape to cancel.";
+  refreshMap();
+});
+trackSimulationToggle.addEventListener("click", async () => {
+  try {
+    const { service, simulationCapability, simulation } = trackEditorSession;
+    const response = await fetch(`${service.url}${simulationCapability.writePath}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", [simulationCapability.revisionHeader]: simulation.revision },
+      body: JSON.stringify({ running: !simulation.running }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `simulation update returned ${response.status}`);
+    }
+    trackEditorSession.simulation = await response.json();
+    renderTrackEditor();
+    await refreshShapes();
+  } catch (error) {
+    trackEditorStatus.textContent = `Unable to update simulation: ${error.message}`;
+  }
+});
+trackSimulationReset.addEventListener("click", async () => {
+  try {
+    const { service, simulationCapability } = trackEditorSession;
+    const response = await fetch(`${service.url}${simulationCapability.resetPath}`, { method: "POST" });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `simulation reset returned ${response.status}`);
+    }
+    trackEditorSession.simulation = await response.json();
+    trackEditorStatus.textContent = "Simulation reset to each aircraft's initial state.";
+    renderTrackEditor();
+    await refreshShapes();
+  } catch (error) {
+    trackEditorStatus.textContent = `Unable to reset simulation: ${error.message}`;
+  }
+});
+trackDeleteRoute.addEventListener("click", () => {
+  const route = selectedTrackRoute();
+  if (!route) return;
+  if (trackEditorSession.scenario.aircraft.some((aircraft) => aircraft.routeId === route.id)) {
+    trackEditorStatus.textContent = "Reassign every aircraft before deleting this route.";
+    return;
+  }
+  trackEditorSession.scenario.routes = trackEditorSession.scenario.routes.filter((candidate) => candidate.id !== route.id);
+  trackRouteSelect.value = "";
+  renderTrackEditor();
+});
+trackCancel.addEventListener("click", () => {
+  trackRouteDrawing = null;
+  trackWaypointMove = null;
+  trackEditorDialog.close();
+  refreshMap();
+});
+trackEditorForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    applyTrackRouteForm();
+    await persistTrackScenario();
+    trackEditorStatus.textContent = "Scenario saved.";
+    renderTrackEditor();
+  } catch (error) {
+    trackEditorStatus.textContent = `Unable to save scenario: ${error.message}`;
   }
 });
 
@@ -3129,6 +3459,19 @@ canvas.addEventListener("pointerdown", (event) => {
     return;
   }
   closeContextMenu();
+  if (trackRouteDrawing) {
+    trackRouteDrawing.points.push(mapPosition(event));
+    trackRouteDrawing.preview = null;
+    refreshMap();
+    return;
+  }
+  if (trackWaypointMove) {
+    trackWaypointMove.pointerId = event.pointerId;
+    trackWaypointMove.preview = mapPosition(event);
+    canvas.setPointerCapture(event.pointerId);
+    refreshMap();
+    return;
+  }
   if (shapeDrawing) {
     const point = mapPosition(event);
     if (shapeDrawing.type === "polygon") {
@@ -3163,6 +3506,16 @@ window.addEventListener("pointerdown", (event) => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
+  if (trackRouteDrawing) {
+    trackRouteDrawing.preview = mapPosition(event);
+    refreshMap();
+    return;
+  }
+  if (trackWaypointMove?.pointerId === event.pointerId) {
+    trackWaypointMove.preview = mapPosition(event);
+    refreshMap();
+    return;
+  }
   if (selectionPointer?.pointerId === event.pointerId) {
     const bounds = canvas.getBoundingClientRect();
     selectionPointer.current = {
@@ -3192,7 +3545,29 @@ canvas.addEventListener("pointermove", (event) => {
   scheduleViewportPublish();
 });
 
-canvas.addEventListener("pointerup", (event) => {
+canvas.addEventListener("pointerup", async (event) => {
+  if (trackWaypointMove?.pointerId === event.pointerId) {
+    const move = trackWaypointMove;
+    const route = trackEditorSession.scenario.routes.find((item) => item.id === move.routeId);
+    const leg = route?.legs.find((item) => item.id === move.legId);
+    if (!leg) {
+      trackWaypointMove = null;
+      status.textContent = "Waypoint no longer exists.";
+      return;
+    }
+    leg.waypoint = move.preview;
+    trackWaypointMove = null;
+    try {
+      await persistTrackScenario();
+      status.textContent = `Moved ${leg.id}.`;
+      renderTrackEditor();
+      trackEditorDialog.showModal();
+    } catch (error) {
+      status.textContent = `Unable to move waypoint: ${error.message}`;
+    }
+    refreshMap();
+    return;
+  }
   if (shapeDrawing?.start) {
     finishShapeDrawing(mapPosition(event));
     return;
@@ -3220,6 +3595,20 @@ canvas.addEventListener("dblclick", (event) => {
   renderShapeGeometryFields({ type: "polygon", coordinates: shapeDrawing.points });
   shapeDrawing = null;
   shapeEditorDialog.showModal();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && (trackRouteDrawing || trackWaypointMove)) {
+    trackRouteDrawing = null;
+    trackWaypointMove = null;
+    status.textContent = "Track editing cancelled.";
+    refreshMap();
+    return;
+  }
+  if (event.key === "Enter" && trackRouteDrawing) {
+    event.preventDefault();
+    finishTrackRouteDrawing();
+  }
 });
 
 panelResizeHandle.addEventListener("pointerdown", (event) => {

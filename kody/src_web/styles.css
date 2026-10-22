@@ -305,7 +305,7 @@ input[type="checkbox"], input[type="radio"] {
 .map-status:empty { display: none; }
 .map-attribution { position: absolute; z-index: 2; right: 1rem; bottom: 1rem; margin: 0; padding: 0.26rem 0.5rem; border: 1px solid rgb(148 229 255 / 13%); border-radius: 0.35rem; color: #b7d1dd; background: rgb(6 18 30 / 76%); font-size: 0.66rem; }
 
-#service-config-dialog, #shape-editor-dialog {
+#service-config-dialog, #shape-editor-dialog, #track-editor-dialog {
   width: min(32rem, calc(100vw - 2rem));
   padding: 0;
   border: 1px solid rgb(120 219 255 / 28%);
@@ -314,13 +314,22 @@ input[type="checkbox"], input[type="radio"] {
   background: #10293d;
   box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 62%);
 }
-#service-config-dialog::backdrop, #shape-editor-dialog::backdrop { background: rgb(2 9 16 / 72%); backdrop-filter: blur(4px); }
+#service-config-dialog::backdrop, #shape-editor-dialog::backdrop, #track-editor-dialog::backdrop { background: rgb(2 9 16 / 72%); backdrop-filter: blur(4px); }
 #service-config-dialog.symbol-review-dialog { width: min(48rem, calc(100vw - 2rem)); }
 #service-config-form, #service-config-fields { display: grid; gap: 0.9rem; }
 #service-config-form { padding: 1.35rem; }
 #shape-editor-form, #shape-geometry-fields, #shape-editor-list { display: grid; gap: 0.7rem; }
 #shape-editor-form { padding: 1.35rem; }
 #shape-editor-list { max-height: 12rem; overflow-y: auto; }
+#track-editor-form, #track-route-fields, #track-waypoint-list, #track-aircraft-list { display: grid; gap: 0.7rem; }
+#track-editor-form { padding: 1.35rem; }
+.track-editor-section { display: grid; gap: 0.55rem; padding-top: 0.75rem; border-top: 1px solid rgb(146 223 255 / 13%); }
+.track-editor-section h3 { margin: 0; color: #cfeaf5; font-size: 0.82rem; }
+.track-editor-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.55rem; align-items: end; padding: 0.55rem; border: 1px solid rgb(137 214 246 / 19%); border-radius: 0.48rem; }
+.track-editor-item-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem; }
+.track-editor-item-actions { display: flex; gap: 0.35rem; }
+.track-editor-item button { padding: 0.35rem 0.5rem; }
+#track-editor-status { min-height: 1.1rem; margin: 0; color: #ffb9c0; font-size: 0.75rem; }
 .shape-editor-item { display: flex; gap: 0.5rem; align-items: center; justify-content: space-between; padding: 0.45rem; border: 1px solid rgb(137 214 246 / 19%); border-radius: 0.48rem; color: #cfe3ee; font-size: 0.75rem; }
 .shape-editor-item button { padding: 0.25rem 0.45rem; }
 .dialog-heading { padding-bottom: 0.85rem; border-bottom: 1px solid rgb(146 223 255 / 13%); }

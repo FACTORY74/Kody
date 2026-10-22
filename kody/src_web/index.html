@@ -134,6 +134,35 @@
         </div>
       </form>
     </dialog>
-    <script type="module" src="/map.js?v=20261022g"></script>
+    <dialog id="track-editor-dialog" aria-labelledby="track-editor-title">
+      <form id="track-editor-form" method="dialog">
+        <header class="dialog-heading">
+          <p class="eyebrow">Tracks</p>
+          <h2 id="track-editor-title">Scenario editor</h2>
+        </header>
+        <label class="service-config-field">Route
+          <select id="track-route-select"></select>
+        </label>
+        <div id="track-route-fields"></div>
+        <section class="track-editor-section" aria-labelledby="track-waypoints-title">
+          <h3 id="track-waypoints-title">Waypoints</h3>
+          <div id="track-waypoint-list"></div>
+        </section>
+        <section class="track-editor-section" aria-labelledby="track-aircraft-title">
+          <h3 id="track-aircraft-title">Aircraft assigned to this route</h3>
+          <div id="track-aircraft-list"></div>
+        </section>
+        <p id="track-editor-status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="track-new-route" type="button">Draw route</button>
+          <button id="track-simulation-toggle" type="button">Pause simulation</button>
+          <button id="track-simulation-reset" type="button">Reset simulation</button>
+          <button id="track-delete-route" class="danger-action" type="button">Delete route</button>
+          <button id="track-cancel" type="button">Cancel</button>
+          <button id="track-save" type="submit">Save route</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/map.js?v=20261022j"></script>
   </body>
 </html>

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kody map</title>
-    <link rel="stylesheet" href="/styles.css?v=20261022b">
+    <link rel="stylesheet" href="/styles.css?v=20261022c">
   </head>
   <body class="map-page">
     <header class="topbar">
@@ -107,6 +107,33 @@
         </div>
       </form>
     </dialog>
-    <script type="module" src="/map.js?v=20261022e"></script>
+    <dialog id="shape-editor-dialog" aria-labelledby="shape-editor-title">
+      <form id="shape-editor-form" method="dialog">
+        <header class="dialog-heading">
+          <p class="eyebrow">Shapes</p>
+          <h2 id="shape-editor-title">Draw shape</h2>
+        </header>
+        <label class="service-config-field">Shape type
+          <select id="shape-type">
+            <option value="circle">Circle</option>
+            <option value="rectangle">Rectangle</option>
+            <option value="annularSector">Annular sector</option>
+            <option value="polygon">Polygon</option>
+          </select>
+        </label>
+        <label class="service-config-field">Name <input id="shape-name" required></label>
+        <label class="service-config-field service-config-color">Color <input id="shape-color" type="color" value="#38c8ec"></label>
+        <div id="shape-geometry-fields"></div>
+        <p id="shape-editor-status" aria-live="polite"></p>
+        <div id="shape-editor-list"></div>
+        <div class="dialog-actions">
+          <button id="shape-draw" type="button">Draw on map</button>
+          <button id="shape-delete" type="button" hidden>Delete</button>
+          <button id="shape-cancel" type="button">Cancel</button>
+          <button id="shape-save" type="submit">Save shape</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/map.js?v=20261022g"></script>
   </body>
 </html>

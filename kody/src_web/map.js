@@ -36,6 +36,18 @@ const serviceConfigProgressValue = document.querySelector("#service-config-progr
 const serviceConfigProgressBar = document.querySelector("#service-config-progress-bar");
 const serviceConfigCancel = document.querySelector("#service-config-cancel");
 const serviceConfigSubmit = serviceConfigForm.querySelector('button[type="submit"]');
+const shapeEditorDialog = document.querySelector("#shape-editor-dialog");
+const shapeEditorForm = document.querySelector("#shape-editor-form");
+const shapeEditorTitle = document.querySelector("#shape-editor-title");
+const shapeType = document.querySelector("#shape-type");
+const shapeName = document.querySelector("#shape-name");
+const shapeColor = document.querySelector("#shape-color");
+const shapeGeometryFields = document.querySelector("#shape-geometry-fields");
+const shapeEditorStatus = document.querySelector("#shape-editor-status");
+const shapeEditorList = document.querySelector("#shape-editor-list");
+const shapeDraw = document.querySelector("#shape-draw");
+const shapeDelete = document.querySelector("#shape-delete");
+const shapeCancel = document.querySelector("#shape-cancel");
 const mapContextMenu = document.querySelector("#map-context-menu");
 const gridLayer = document.querySelector("#grid-layer");
 const sidePanel = document.querySelector("#side-panel");
@@ -94,6 +106,8 @@ const selectedFeatures = new Map();
 let selectionPointer = null;
 let selectionActionsKey = null;
 let centeredSelectionKey = null;
+let shapeEditorSession = null;
+let shapeDrawing = null;
 let measureStart = null;
 let measureEnd = null;
 let configurationSession = null;
@@ -836,11 +850,6 @@ function drawShapeFeatures(features, liveTrackLabelBoxes = null) {
           continue;
         }
         liveTrackLabelBoxes.push(labelBox);
-      }
-      if (!["track-position", "airlane-corridor", "airlane-sector-boundary", "controlled-airspace"].includes(properties.kind)) {
-        context.lineWidth = 3;
-        context.strokeStyle = "white";
-        context.strokeText(properties.name, label.x, labelY);
       }
       context.fillStyle = color;
       context.fillText(properties.name, label.x, labelY);
@@ -1679,6 +1688,163 @@ async function configureService(service) {
   startServiceActivityPolling(service, manifest);
 }
 
+function shapeNumberInput(key, label, value = 0) {
+  const field = document.createElement("label");
+  field.className = "service-config-field";
+  field.textContent = label;
+  const input = document.createElement("input");
+  input.type = "number";
+  input.step = "any";
+  input.dataset.shapeKey = key;
+  input.value = String(value);
+  field.append(input);
+  return field;
+}
+
+function shapeCoordinateFields(prefix, coordinate = [0, 0]) {
+  return [
+    shapeNumberInput(`${prefix}Longitude`, `${prefix} longitude`, coordinate[0]),
+    shapeNumberInput(`${prefix}Latitude`, `${prefix} latitude`, coordinate[1]),
+  ];
+}
+
+function shapeFieldValue(key) {
+  return Number(shapeGeometryFields.querySelector(`[data-shape-key="${key}"]`).value);
+}
+
+function renderShapeGeometryFields(shape = null) {
+  shapeGeometryFields.replaceChildren();
+  const type = shapeType.value;
+  if (type === "circle") {
+    shapeGeometryFields.append(
+      ...shapeCoordinateFields("Center", shape?.center),
+      shapeNumberInput("radius", "Radius (metres)", shape?.radius ?? 1000),
+    );
+  } else if (type === "rectangle") {
+    shapeGeometryFields.append(
+      ...shapeCoordinateFields("Origin", shape?.origin),
+      shapeNumberInput("width", "Width (metres)", shape?.width ?? 1000),
+      shapeNumberInput("height", "Height (metres)", shape?.height ?? 1000),
+      shapeNumberInput("angle", "Angle clockwise from north (degrees)", shape?.angle ?? 0),
+    );
+  } else if (type === "annularSector") {
+    shapeGeometryFields.append(
+      ...shapeCoordinateFields("Center", shape?.center),
+      shapeNumberInput("innerRadius", "Inner radius (metres)", shape?.innerRadius ?? 0),
+      shapeNumberInput("outerRadius", "Outer radius (metres)", shape?.outerRadius ?? 1000),
+      shapeNumberInput("startAngle", "Start bearing (degrees)", shape?.startAngle ?? 0),
+      shapeNumberInput("endAngle", "End bearing (degrees)", shape?.endAngle ?? 90),
+    );
+  } else {
+    const field = document.createElement("label");
+    field.className = "service-config-field";
+    field.textContent = "Coordinates ([longitude, latitude] entries)";
+    const input = document.createElement("textarea");
+    input.dataset.shapeKey = "coordinates";
+    input.rows = 5;
+    input.value = JSON.stringify(shape?.coordinates ?? [], null, 2);
+    field.append(input);
+    shapeGeometryFields.append(field);
+  }
+}
+
+function shapePayload() {
+  const payload = { type: shapeType.value, name: shapeName.value, color: shapeColor.value };
+  if (payload.type === "circle") {
+    payload.center = [shapeFieldValue("CenterLongitude"), shapeFieldValue("CenterLatitude")];
+    payload.radius = shapeFieldValue("radius");
+  } else if (payload.type === "rectangle") {
+    payload.origin = [shapeFieldValue("OriginLongitude"), shapeFieldValue("OriginLatitude")];
+    payload.width = shapeFieldValue("width");
+    payload.height = shapeFieldValue("height");
+    payload.angle = shapeFieldValue("angle");
+  } else if (payload.type === "annularSector") {
+    payload.center = [shapeFieldValue("CenterLongitude"), shapeFieldValue("CenterLatitude")];
+    payload.innerRadius = shapeFieldValue("innerRadius");
+    payload.outerRadius = shapeFieldValue("outerRadius");
+    payload.startAngle = shapeFieldValue("startAngle");
+    payload.endAngle = shapeFieldValue("endAngle");
+  } else {
+    payload.coordinates = JSON.parse(shapeGeometryFields.querySelector("[data-shape-key=\"coordinates\"]").value);
+  }
+  return payload;
+}
+
+function showShapeEditor(shape = null) {
+  shapeEditorSession.editing = shape;
+  shapeEditorTitle.textContent = shape ? `Edit ${shape.name}` : "Draw shape";
+  shapeType.value = shape?.type ?? "circle";
+  shapeType.disabled = Boolean(shape);
+  shapeName.value = shape?.name ?? "";
+  shapeColor.value = shape?.color ?? "#38c8ec";
+  shapeDelete.hidden = !shape;
+  shapeEditorStatus.textContent = "";
+  renderShapeGeometryFields(shape);
+  if (!shapeEditorDialog.open) {
+    shapeEditorDialog.showModal();
+  }
+}
+
+function renderShapeEditorList() {
+  shapeEditorList.replaceChildren();
+  for (const shape of shapeEditorSession.shapes) {
+    const row = document.createElement("div");
+    row.className = "shape-editor-item";
+    const label = document.createElement("span");
+    label.textContent = `${shape.name} (${shape.type})`;
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => showShapeEditor(shape));
+    row.append(label, edit);
+    shapeEditorList.append(row);
+  }
+}
+
+async function configureShapeEditor(service) {
+  const capability = service.manifest.capabilities.shapeEditor;
+  const response = await fetch(`${service.url}${capability.readPath}`);
+  if (!response.ok) throw new Error(`shape catalogue returned ${response.status}`);
+  const catalogue = await response.json();
+  shapeEditorSession = { service, capability, revision: catalogue.revision, shapes: catalogue.shapes, editing: null };
+  renderShapeEditorList();
+  showShapeEditor();
+}
+
+function mapPosition(event) {
+  const point = mapPointFromEvent(event);
+  return [point.longitude, point.latitude];
+}
+
+function metresBetween(first, second) {
+  return measureDistanceKilometres(
+    { longitude: first[0], latitude: first[1] },
+    { longitude: second[0], latitude: second[1] },
+  ) * 1000;
+}
+
+function finishShapeDrawing(end) {
+  const { type, start } = shapeDrawing;
+  if (type === "circle") {
+    shapeType.value = type;
+    renderShapeGeometryFields({ type, center: start, radius: metresBetween(start, end) });
+  } else if (type === "rectangle") {
+    shapeType.value = type;
+    renderShapeGeometryFields({
+      type,
+      origin: start,
+      width: metresBetween(start, [end[0], start[1]]) * 2,
+      height: metresBetween(start, [start[0], end[1]]) * 2,
+      angle: 0,
+    });
+  } else if (type === "annularSector") {
+    shapeType.value = type;
+    renderShapeGeometryFields({ type, center: start, innerRadius: 0, outerRadius: metresBetween(start, end), startAngle: 0, endAngle: 90 });
+  }
+  shapeDrawing = null;
+  shapeEditorDialog.showModal();
+}
+
 function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) {
   dataSourceList.replaceChildren();
   liveSourceList.replaceChildren();
@@ -1736,7 +1902,10 @@ function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) 
     configure.title = `Configure ${overlayDisplayName(service)}`;
     configure.setAttribute("aria-label", configure.title);
     configure.addEventListener("click", () => {
-      configureService(service).catch((error) => {
+      const open = service.manifest?.capabilities?.shapeEditor
+        ? configureShapeEditor(service)
+        : configureService(service);
+      open.catch((error) => {
         status.textContent = `Unable to configure ${overlayDisplayName(service)}: ${error.message}`;
       });
     });
@@ -1809,6 +1978,65 @@ serviceConfigForm.addEventListener("submit", async (event) => {
     await refreshShapes();
   } catch (error) {
     serviceConfigStatus.textContent = `Unable to save: ${error.message}`;
+  }
+});
+
+shapeType.addEventListener("change", () => renderShapeGeometryFields());
+shapeCancel.addEventListener("click", () => {
+  shapeDrawing = null;
+  shapeEditorDialog.close();
+});
+shapeDraw.addEventListener("click", () => {
+  shapeDrawing = { type: shapeType.value, points: [] };
+  shapeEditorDialog.close();
+  status.textContent = shapeDrawing.type === "polygon"
+    ? "Click polygon vertices, then double-click to finish."
+    : "Drag on the map to draw the shape.";
+});
+shapeDelete.addEventListener("click", async () => {
+  const { service, capability, editing, revision } = shapeEditorSession;
+  const response = await fetch(`${service.url}${capability.itemPath.replace("{id}", encodeURIComponent(editing.id))}`, {
+    method: capability.deleteMethod,
+    headers: { "If-Match": revision },
+  });
+  if (!response.ok) {
+    shapeEditorStatus.textContent = `Unable to delete shape: ${response.status}`;
+    return;
+  }
+  const catalogue = await response.json();
+  shapeEditorSession.revision = catalogue.revision;
+  shapeEditorSession.shapes = catalogue.shapes;
+  renderShapeEditorList();
+  showShapeEditor();
+  await refreshShapes();
+});
+shapeEditorForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const { service, capability, editing, revision } = shapeEditorSession;
+    const path = editing
+      ? capability.itemPath.replace("{id}", encodeURIComponent(editing.id))
+      : capability.createPath;
+    const response = await fetch(`${service.url}${path}`, {
+      method: editing ? capability.updateMethod : "POST",
+      headers: { "Content-Type": "application/json", "If-Match": revision },
+      body: JSON.stringify(shapePayload()),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `shape service returned ${response.status}`);
+    }
+    const result = await response.json();
+    shapeEditorSession.revision = result.revision;
+    const catalogueResponse = await fetch(`${service.url}${capability.readPath}`);
+    if (!catalogueResponse.ok) throw new Error(`shape catalogue returned ${catalogueResponse.status}`);
+    const catalogue = await catalogueResponse.json();
+    shapeEditorSession.shapes = catalogue.shapes;
+    renderShapeEditorList();
+    showShapeEditor();
+    await refreshShapes();
+  } catch (error) {
+    shapeEditorStatus.textContent = `Unable to save shape: ${error.message}`;
   }
 });
 
@@ -2901,6 +3129,16 @@ canvas.addEventListener("pointerdown", (event) => {
     return;
   }
   closeContextMenu();
+  if (shapeDrawing) {
+    const point = mapPosition(event);
+    if (shapeDrawing.type === "polygon") {
+      shapeDrawing.points.push(point);
+      return;
+    }
+    shapeDrawing.start = point;
+    canvas.setPointerCapture(event.pointerId);
+    return;
+  }
   if (event.shiftKey) {
     const bounds = canvas.getBoundingClientRect();
     selectionPointer = {
@@ -2955,6 +3193,10 @@ canvas.addEventListener("pointermove", (event) => {
 });
 
 canvas.addEventListener("pointerup", (event) => {
+  if (shapeDrawing?.start) {
+    finishShapeDrawing(mapPosition(event));
+    return;
+  }
   if (selectionPointer?.pointerId === event.pointerId) {
     if (selectionPointer.isDragging) {
       toggleSelectableFeaturesInRectangle(selectionPointer.start, selectionPointer.current);
@@ -2967,6 +3209,17 @@ canvas.addEventListener("pointerup", (event) => {
   dragging = false;
   lastPointer = null;
   invalidateAirLanesCache();
+});
+
+canvas.addEventListener("dblclick", (event) => {
+  if (shapeDrawing?.type !== "polygon" || shapeDrawing.points.length < 3) {
+    return;
+  }
+  event.preventDefault();
+  shapeType.value = "polygon";
+  renderShapeGeometryFields({ type: "polygon", coordinates: shapeDrawing.points });
+  shapeDrawing = null;
+  shapeEditorDialog.showModal();
 });
 
 panelResizeHandle.addEventListener("pointerdown", (event) => {

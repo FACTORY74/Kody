@@ -30,6 +30,11 @@ updates to prevent overwriting newer data. The service validates route/type
 references and all initial/target speed and altitude values against the
 assigned aircraft type before it persists a scenario.
 
+Opening the Tracks workspace reloads both catalogues from disk. This makes
+external edits available without restarting the service. If either catalogue
+changed, the service validates the pair and resets the live simulation to its
+initial state.
+
 The GeoJSON layer publishes routes, selectable waypoints, live selectable
 aircraft, and rolling trails. Routes support `despawn`, `restart`, `loop`,
 `hold`, and `reverse` completion policies. Speed and altitude move toward each
@@ -40,16 +45,17 @@ The manifest publishes the standard `scenarioEditor` capability. Kody's map
 uses it to draw and save routes, edit route names, colors, completion policies,
 and waypoint targets, assign aircraft, and move a waypoint only in an explicit
 drag mode. Normal map pans never alter a route. Heading/turn-rate-limited
-navigation remains a later phase described in
-[`TRACK_EDIT_DESIGN.md`](../../TRACK_EDIT_DESIGN.md).
+navigation is described in the [`Tracks workspace`](../../workspaces/tracks/README.md)
+and the [common workspace design](../../workspaces/README.md).
 
 ## Phase 3 simulation
 
 The service maintains a deterministic simulation clock that advances only
 while running. `GET` and `PUT /api/tracks/simulation` expose its running state
 and control revision; `POST /api/tracks/simulation/reset` returns every
-aircraft to its declared initial state. The map editor exposes Pause/Resume and
-Reset controls through the `simulationControls` capability.
+aircraft to its route's first waypoint, heading toward the second waypoint.
+The map editor exposes Pause/Resume and Reset controls through the
+`simulationControls` capability.
 
 Aircraft heading is constrained by `maximumTurnRateDegreesPerSecond`. Every
 leg reaches its exact waypoint before the active leg changes; the following
@@ -57,3 +63,25 @@ leg then starts with the aircraft's inbound heading and turns at the permitted
 rate. This produces a turn circle after each waypoint rather than an
 early-cut fly-by. Aircraft output includes actual and desired bearings, leg
 progress, distance, and estimated time to the active waypoint.
+
+## Workspace
+
+The manifest also publishes a `workspace` capability at `GET /api/workspace`.
+It supplies structured, text-only pane summaries for scenarios, aircraft
+types, routes, aircraft, and timeline state. Kody renders those summaries with
+its generic workspace cards and inspector, while this service remains
+authoritative for its data and simulation behavior.
+
+The workspace Timeline reads `simulationControls` to show the local running
+clock and provide Pause, Resume, and Reset. The clock is currently
+Tracks-local; the capability boundary permits a future shared simulation-time
+service to coordinate several simulation plugins.
+
+Aircraft types, routes, and aircraft are managed directly in their workspace
+panes. Each has Add, Edit, and guarded Remove controls; edits use the
+workspace inspector and retain the service's revision checks. Editing a route
+on the map closes the workspace only for that focused task: every cyan
+waypoint handle is draggable, each drop persists immediately, and Escape
+returns to the Routes workspace pane rather than reopening the former
+scenario dialog. Route editors also provide Add waypoint and Remove controls;
+every route keeps at least two waypoints.

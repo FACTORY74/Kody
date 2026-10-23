@@ -78,6 +78,8 @@ class TrackStoreTests(unittest.TestCase):
             self.assertEqual(features["route:route-1"]["geometry"]["type"], "LineString")
             self.assertEqual(features["waypoint:route-1:one"]["properties"]["kind"], "route-waypoint")
             self.assertEqual(features["track:aircraft-1"]["properties"]["kody"]["selectionLabel"], "Test aircraft")
+            self.assertEqual(features["track:aircraft-1"]["geometry"]["coordinates"], [0, 0])
+            self.assertEqual(features["track:aircraft-1"]["properties"]["activeLegId"], "two")
             self.assertEqual(features["track:aircraft-1"]["properties"]["altitudeBarometricFeet"], 0)
             self.assertEqual(features["trail:aircraft-1"]["geometry"]["type"], "LineString")
 
@@ -93,8 +95,8 @@ class TrackStoreTests(unittest.TestCase):
             response = store.response()
             aircraft = next(feature for feature in response["features"] if feature["id"] == "track:aircraft-1")
 
-            self.assertEqual(aircraft["properties"]["activeLegId"], "one")
-            self.assertEqual(aircraft["properties"]["speedMetresPerSecond"], 20)
+            self.assertEqual(aircraft["properties"]["activeLegId"], "two")
+            self.assertEqual(aircraft["properties"]["speedMetresPerSecond"], 30)
             self.assertEqual(aircraft["properties"]["altitudeBarometricFeet"], 20 * 3.28084)
 
     def test_rejects_invalid_references_limits_and_stale_revision(self) -> None:
@@ -131,6 +133,7 @@ class TrackStoreTests(unittest.TestCase):
             runtime.position = [-0.002, 0]
             runtime.legStartPosition = [-0.002, 0]
             runtime.headingDegrees = 0
+            runtime.activeLegIndex = 0
             clock[0] += 1
 
             response = store.response()
@@ -145,13 +148,14 @@ class TrackStoreTests(unittest.TestCase):
             response = store.response()
             feature = next(item for item in response["features"] if item["id"] == "track:aircraft-1")
             self.assertEqual(feature["properties"]["activeLegId"], "two")
-            self.assertEqual(feature["geometry"]["coordinates"], [0, 0])
-            self.assertEqual(feature["properties"]["bearingDegrees"], 90)
+            self.assertNotEqual(feature["geometry"]["coordinates"], [0, 0])
+            self.assertGreater(feature["properties"]["bearingDegrees"], 85)
+            self.assertLess(feature["properties"]["bearingDegrees"], 90)
 
             clock[0] += 1
             response = store.response()
             feature = next(item for item in response["features"] if item["id"] == "track:aircraft-1")
-            self.assertEqual(feature["properties"]["bearingDegrees"], 85)
+            self.assertLess(feature["properties"]["bearingDegrees"], 85)
             self.assertGreaterEqual(feature["properties"]["legProgress"], 0)
             self.assertLessEqual(feature["properties"]["legProgress"], 1)
             self.assertIsNotNone(feature["properties"]["estimatedSecondsToWaypoint"])
@@ -178,8 +182,34 @@ class TrackStoreTests(unittest.TestCase):
             store.reset_simulation()
             reset = store.response()
             reset_position = next(item for item in reset["features"] if item["id"] == "track:aircraft-1")["geometry"]["coordinates"]
-            self.assertEqual(reset_position, [-0.0005, 0])
+            self.assertEqual(reset_position, [0, 0])
             self.assertEqual(store.simulation_response()["elapsedSeconds"], 0)
+
+    def test_opening_workspace_reloads_catalogues_from_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = TrackStore(root / "types.json", root / "scenario.json")
+            self.configure_test_catalogues(store)
+            store.update_scenario(scenario(), None)
+            reloaded_types = aircraft_types()
+            reloaded_types.types[0].displayName = "Reloaded test plane"
+            store.aircraft_types_path.write_text(
+                reloaded_types.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(track_service, "track_store", store):
+                client = TestClient(track_service.app)
+                workspace = client.get("/api/workspace")
+                types     = client.get("/api/tracks/aircraft-types")
+
+            self.assertEqual(workspace.status_code, 200)
+            self.assertEqual(
+                workspace.json()["panes"][1]["summary"]["items"][0]["title"],
+                "Reloaded test plane",
+            )
+            self.assertEqual(types.status_code, 200)
+            self.assertEqual(types.json()["types"][0]["displayName"], "Reloaded test plane")
 
     def test_endpoints_expose_persisted_scenario_capability(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -198,6 +228,21 @@ class TrackStoreTests(unittest.TestCase):
                 self.assertEqual(
                     manifest["capabilities"]["simulationControls"]["resetPath"],
                     "/api/tracks/simulation/reset",
+                )
+                self.assertEqual(
+                    manifest["capabilities"]["workspace"]["openPath"],
+                    "/api/workspace",
+                )
+                workspace = client.get("/api/workspace")
+                self.assertEqual(workspace.status_code, 200)
+                self.assertEqual(workspace.json()["panes"][2]["id"], "routes")
+                self.assertEqual(
+                    workspace.json()["panes"][2]["summary"]["items"][0]["title"],
+                    "South coast patrol",
+                )
+                self.assertEqual(
+                    workspace.json()["panes"][4]["summary"]["metrics"][0]["value"],
+                    "Running",
                 )
                 types_response = client.get("/api/tracks/aircraft-types")
                 self.assertEqual(types_response.status_code, 200)

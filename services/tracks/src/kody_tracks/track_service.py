@@ -106,6 +106,7 @@ class RouteLeg(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1, max_length=200)
+    name: str = Field(default="", max_length=200)
     waypoint: Coordinate
     targetAltitudeMetres: float = Field(ge=-1_000, le=100_000)
     targetSpeedMetresPerSecond: float = Field(ge=0, le=1_000)
@@ -340,21 +341,49 @@ class TrackStore:
         routes = {route.id: route for route in self.scenario.routes}
         self.runtime = {}
         for aircraft in self.scenario.aircraft:
-            first_waypoint = routes[aircraft.routeId].legs[0].waypoint
-            _, initial_heading = self._distance_and_bearing(aircraft.initialPosition, first_waypoint)
+            route = routes[aircraft.routeId]
+            first_waypoint = route.legs[0].waypoint
+            active_leg_index = 1 if len(route.legs) > 1 else 0
+            next_waypoint = route.legs[active_leg_index].waypoint
+            _, initial_heading = self._distance_and_bearing(first_waypoint, next_waypoint)
             self.runtime[aircraft.id] = FlightRuntime(
-                position=list(aircraft.initialPosition),
-                legStartPosition=list(aircraft.initialPosition),
+                position=list(first_waypoint),
+                legStartPosition=list(first_waypoint),
                 altitudeMetres=aircraft.initialAltitudeMetres,
                 speedMetresPerSecond=aircraft.initialSpeedMetresPerSecond,
                 headingDegrees=initial_heading,
+                activeLegIndex=active_leg_index,
                 state=aircraft.state,
-                trail=[list(aircraft.initialPosition)],
+                trail=[list(first_waypoint)],
             )
 
     def apply_configuration(self, configuration: TracksConfiguration) -> None:
         with self.lock:
             self.configuration = configuration
+
+    def _reload_catalogues(self) -> None:
+        aircraft_types = self._load_catalogue(
+            self.aircraft_types_path,
+            AircraftTypeCatalogue,
+            default_aircraft_types(),
+        )
+        scenario = self._load_catalogue(
+            self.scenario_path,
+            ScenarioCatalogue,
+            default_scenario(),
+        )
+        self._validate_scenario(scenario, aircraft_types)
+        changed = (
+            self._revision(self.aircraft_types) != self._revision(aircraft_types)
+            or self._revision(self.scenario) != self._revision(scenario)
+        )
+        if not changed:
+            return
+        self.aircraft_types = aircraft_types
+        self.scenario       = scenario
+        self._reset_runtime()
+        self.last_tick           = self.clock()
+        self.simulation_seconds  = 0.0
 
     def aircraft_types_response(self) -> dict[str, object]:
         with self.lock:
@@ -398,6 +427,100 @@ class TrackStore:
                 "revision": str(self.simulation_control_revision),
                 "running": self.simulation_running,
                 "elapsedSeconds": self.simulation_seconds,
+            }
+
+    def workspace_response(self) -> dict[str, object]:
+        with self.lock:
+            self._reload_catalogues()
+            type_by_id = {aircraft_type.id: aircraft_type for aircraft_type in self.aircraft_types.types}
+            scenario = self.scenario
+            return {
+                "revision": self._revision(scenario),
+                "title": "Tracks simulation workspace",
+                "resources": {
+                    "aircraftTypes": "/api/tracks/aircraft-types",
+                    "scenario": "/api/tracks/scenario",
+                    "simulation": "/api/tracks/simulation",
+                },
+                "panes": [
+                    {
+                        "id": "scenarios",
+                        "label": "Scenarios",
+                        "description": "Scenario metadata, participating aircraft, and save state.",
+                        "summary": {
+                            "metrics": [
+                                {"label": "Routes", "value": str(len(scenario.routes))},
+                                {"label": "Aircraft", "value": str(len(scenario.aircraft))},
+                            ],
+                            "items": [{
+                                "id": "current-scenario",
+                                "title": "Current scenario",
+                                "description": "The persisted routes and aircraft currently driving the simulation.",
+                            }],
+                        },
+                    },
+                    {
+                        "id": "aircraftTypes",
+                        "label": "Aircraft types",
+                        "description": "Reusable platform performance catalogues and symbols.",
+                        "summary": {
+                            "metrics": [{"label": "Types", "value": str(len(self.aircraft_types.types))}],
+                            "items": [{
+                                "id": aircraft_type.id,
+                                "title": aircraft_type.displayName,
+                                "description": (
+                                    f"{aircraft_type.limits.minimumSpeedMetresPerSecond:g}"
+                                    f"–{aircraft_type.limits.maximumSpeedMetresPerSecond:g} m/s"
+                                    f" · {aircraft_type.limits.maximumTurnRateDegreesPerSecond:g}°/s turn"
+                                ),
+                            } for aircraft_type in self.aircraft_types.types],
+                        },
+                    },
+                    {
+                        "id": "routes",
+                        "label": "Routes",
+                        "description": "Route geometry, waypoint targets, completion policies, and map editing.",
+                        "summary": {
+                            "metrics": [{"label": "Routes", "value": str(len(scenario.routes))}],
+                            "items": [{
+                                "id": route.id,
+                                "title": route.name,
+                                "description": f"{len(route.legs)} legs · {route.completionPolicy}",
+                            } for route in scenario.routes],
+                        },
+                    },
+                    {
+                        "id": "aircraft",
+                        "label": "Aircraft",
+                        "description": "Aircraft instances, assignments, initial state, and live telemetry.",
+                        "summary": {
+                            "metrics": [{"label": "Aircraft", "value": str(len(scenario.aircraft))}],
+                            "items": [{
+                                "id": aircraft.id,
+                                "title": aircraft.name,
+                                "description": (
+                                    f"{type_by_id[aircraft.aircraftTypeId].displayName}"
+                                    f" · route {aircraft.routeId}"
+                                ),
+                            } for aircraft in scenario.aircraft],
+                        },
+                    },
+                    {
+                        "id": "timeline",
+                        "label": "Timeline",
+                        "description": "Deterministic simulation time and future scheduled scenario events.",
+                        "summary": {
+                            "metrics": [
+                                {"label": "State", "value": "Running" if self.simulation_running else "Paused"},
+                                {"label": "Elapsed", "value": f"{self.simulation_seconds:.1f} s"},
+                            ],
+                            "items": [],
+                        },
+                    },
+                ],
+                "timeline": {
+                    "description": "This Tracks-local clock controls the current simulation. A shared simulation-time service remains a future cross-plugin architecture.",
+                },
             }
 
     def update_simulation(self, controls: SimulationControls, expected_revision: str | None) -> None:
@@ -445,6 +568,8 @@ class TrackStore:
             return
         limits = next(item.limits for item in self.aircraft_types.types if item.id == aircraft.aircraftTypeId)
         leg = route.legs[runtime.activeLegIndex]
+        initial_speed = runtime.speedMetresPerSecond
+        initial_altitude = runtime.altitudeMetres
         runtime.speedMetresPerSecond = self._move_toward(
             runtime.speedMetresPerSecond, leg.targetSpeedMetresPerSecond,
             limits.maximumAccelerationMetresPerSecondSquared, limits.maximumDecelerationMetresPerSecondSquared, elapsed,
@@ -456,8 +581,25 @@ class TrackStore:
         distance, desired_bearing = self._distance_and_bearing(runtime.position, leg.waypoint)
         step = runtime.speedMetresPerSecond * elapsed
         if distance <= step:
+            travel_time = distance / runtime.speedMetresPerSecond if runtime.speedMetresPerSecond > 0 else 0
+            runtime.speedMetresPerSecond = self._move_toward(
+                initial_speed, leg.targetSpeedMetresPerSecond,
+                limits.maximumAccelerationMetresPerSecondSquared, limits.maximumDecelerationMetresPerSecondSquared, travel_time,
+            )
+            runtime.altitudeMetres = self._move_toward(
+                initial_altitude, leg.targetAltitudeMetres,
+                limits.maximumClimbRateMetresPerSecond, limits.maximumDescentRateMetresPerSecond, travel_time,
+            )
             runtime.position = list(leg.waypoint)
+            previous_leg_index = runtime.activeLegIndex
             self._complete_leg(runtime, route, aircraft)
+            remaining = elapsed - travel_time
+            if (
+                remaining > 0
+                and runtime.state == "running"
+                and runtime.activeLegIndex != previous_leg_index
+            ):
+                self._advance_leg(runtime, route, aircraft, remaining)
         else:
             heading_change = self._heading_difference(runtime.headingDegrees, desired_bearing)
             maximum_change = limits.maximumTurnRateDegreesPerSecond * elapsed
@@ -522,14 +664,15 @@ class TrackStore:
                         "properties": {"name": route.name, "color": route.color, "kind": "track-route"},
                         "geometry": {"type": "LineString", "coordinates": coordinates},
                     })
-                for leg in route.legs:
+                for index, leg in enumerate(route.legs, start=1):
+                    waypoint_name = leg.name or f"WP{index:02}"
                     features.append({
                         "type": "Feature", "id": f"waypoint:{route.id}:{leg.id}",
                         "properties": {
-                            "name": f"{route.name} - {leg.id}", "color": route.color, "kind": "route-waypoint",
+                            "name": f"{route.name} - {waypoint_name}", "color": route.color, "kind": "route-waypoint",
                             "routeId": route.id, "legId": leg.id, "targetAltitudeMetres": leg.targetAltitudeMetres,
                             "targetSpeedMetresPerSecond": leg.targetSpeedMetresPerSecond,
-                            "kody": {"selectable": True, "selectionLabel": f"{route.name} - {leg.id}"},
+                            "kody": {"selectable": True, "selectionLabel": f"{route.name} - {waypoint_name}"},
                         },
                         "geometry": {"type": "Point", "coordinates": leg.waypoint},
                     })
@@ -592,7 +735,7 @@ def get_manifest() -> dict[str, object]:
     return {
         "kodyApiVersion": "1",
         "serviceId": "tracks",
-        "displayName": "Live tracks",
+        "displayName": "TrackSim",
         "dataEndpoint": {"path": "/api/geojson", "format": "geojson"},
         "capabilities": {
             "scenarioEditor": {
@@ -610,6 +753,12 @@ def get_manifest() -> dict[str, object]:
                 "readPath": "/api/tracks/simulation",
                 "writePath": "/api/tracks/simulation",
                 "resetPath": "/api/tracks/simulation/reset",
+                "revisionHeader": "If-Match",
+            },
+            "workspace": {
+                "id": "platform-simulation",
+                "label": "Simulation workspace",
+                "openPath": "/api/workspace",
                 "revisionHeader": "If-Match",
             },
         },
@@ -631,6 +780,11 @@ def update_configuration(configuration: TracksConfiguration, if_match: str | Non
     configuration_store.update(configuration, if_match)
     track_store.apply_configuration(configuration)
     return configuration_store.response()
+
+
+@app.get("/api/workspace")
+def get_workspace() -> dict[str, object]:
+    return track_store.workspace_response()
 
 
 @app.get("/api/tracks/aircraft-types")
@@ -678,7 +832,7 @@ def reset_simulation() -> dict[str, object]:
 @app.post("/api/actions/clear-local-data")
 def clear_local_data() -> dict[str, str]:
     track_store.clear()
-    return {"message": "Cleared persisted Live tracks scenario data."}
+    return {"message": "Cleared persisted TrackSim scenario data."}
 
 
 @app.get("/api/geojson")

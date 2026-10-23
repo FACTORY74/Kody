@@ -17,6 +17,7 @@ let terrainLayer;
 const mapServiceList = document.querySelector("#map-service-list");
 const dataSourceList = document.querySelector("#data-source-list");
 const liveSourceList = document.querySelector("#live-source-list");
+const workspaceSourceList = document.querySelector("#workspace-source-list");
 const symbolSourceList = document.querySelector("#symbol-source-list");
 const layersTab = document.querySelector("#layers-tab");
 const selectionTab = document.querySelector("#selection-tab");
@@ -60,6 +61,17 @@ const trackSimulationToggle = document.querySelector("#track-simulation-toggle")
 const trackSimulationReset = document.querySelector("#track-simulation-reset");
 const trackDeleteRoute = document.querySelector("#track-delete-route");
 const trackCancel = document.querySelector("#track-cancel");
+const workspaceDialog = document.querySelector("#workspace-dialog");
+const workspaceEyebrow = document.querySelector("#workspace-eyebrow");
+const workspaceTitle = document.querySelector("#workspace-title");
+const workspaceClose = document.querySelector("#workspace-close");
+const workspaceContent = document.querySelector("#workspace-content");
+const workspaceNavigator = document.querySelector("#workspace-navigator");
+const workspacePrimary = document.querySelector("#workspace-primary");
+const workspaceInspector = document.querySelector("#workspace-inspector");
+const workspaceTimeline = document.querySelector("#workspace-timeline");
+const workspaceNavigatorResize = document.querySelector("#workspace-navigator-resize");
+const workspaceInspectorResize = document.querySelector("#workspace-inspector-resize");
 const mapContextMenu = document.querySelector("#map-context-menu");
 const gridLayer = document.querySelector("#grid-layer");
 const sidePanel = document.querySelector("#side-panel");
@@ -123,6 +135,11 @@ let shapeDrawing = null;
 let trackEditorSession = null;
 let trackRouteDrawing = null;
 let trackWaypointMove = null;
+let trackRouteEditing = null;
+let terrainProfileDrawing = null;
+let workspaceSession = null;
+let workspaceResize = null;
+let workspaceSimulationTimer = null;
 let measureStart = null;
 let measureEnd = null;
 let configurationSession = null;
@@ -224,6 +241,7 @@ function mapLayerDetails(type, layers) {
 
 function renderMapServiceControls(layers) {
   mapServiceList.replaceChildren();
+  workspaceSourceList.replaceChildren();
   for (const service of mapServices.values()) {
     const details = mapLayerDetails(service.type, layers);
     if (!details) {
@@ -246,7 +264,8 @@ function renderMapServiceControls(layers) {
         refreshTerrainRevision().catch((error) => { status.textContent = `Unable to refresh terrain: ${error.message}`; });
       }
     });
-    label.append(checkbox, ` ${service.displayName}`);
+    const workspace = service.manifest?.capabilities?.workspace;
+    label.append(checkbox, ` ${workspace ? workspace.label : service.displayName}`);
     const opacity = document.createElement("div");
     opacity.className = "opacity-control";
     const decrease = document.createElement("button");
@@ -269,11 +288,21 @@ function renderMapServiceControls(layers) {
     const configure = document.createElement("button");
     configure.type = "button";
     configure.className = "configure-service";
-    configure.textContent = "⚙";
-    configure.title = `Configure ${service.displayName}`;
-    configure.addEventListener("click", () => configureService(service).catch((error) => { status.textContent = `Unable to configure ${service.displayName}: ${error.message}`; }));
+    configure.dataset.symbol = workspace ? "rocket" : "gear";
+    configure.dataset.symbolFallback = workspace ? "🚀" : "⚙";
+    configure.textContent = workspace ? "🚀" : "⚙";
+    configure.title = workspace ? `Open ${workspace.label}` : `Configure ${service.displayName}`;
+    renderButtonSymbol(configure);
+    configure.addEventListener("click", () => {
+      const open = workspace ? configureWorkspace(service) : configureService(service);
+      open.catch((error) => {
+        status.textContent = workspace
+          ? `Unable to open ${workspace.label}: ${error.message}`
+          : `Unable to configure ${service.displayName}: ${error.message}`;
+      });
+    });
     row.append(label, opacity, configure);
-    mapServiceList.append(row);
+    (workspace ? workspaceSourceList : mapServiceList).append(row);
     if (details.control === "vectorLayer") vectorLayer = checkbox;
     if (details.control === "imageryLayer") imageryLayer = checkbox;
     if (details.control === "copernicusLayer") copernicusLayer = checkbox;
@@ -286,7 +315,7 @@ const layers = {
   imagery: { isVisible: () => imageryLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.satellite, drawImageryLayer) },
   copernicus: { isVisible: () => copernicusLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.copernicus, drawCopernicusLayer) },
   terrain: { isVisible: () => terrainLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.terrain, drawTerrainLayer) },
-  shapes: { isVisible: () => shapes.length > 0 || contextActionFeatures.length > 0, draw: drawShapesLayer },
+  shapes: { isVisible: () => shapes.length > 0 || contextActionFeatures.length > 0 || terrainProfileDrawing !== null, draw: drawShapesLayer },
   grid: { isVisible: () => gridLayer.checked, draw: () => drawWithOpacity(layerOpacity.grid, drawGridLayer) },
   measurement: { isVisible: () => measureStart !== null, draw: drawMeasurement },
 };
@@ -939,22 +968,45 @@ function invalidateAirLanesCache({ immediate = false } = {}) {
 
 function drawShapesLayer() {
   drawCachedAirLanes();
-  drawFeatureGroups(liveShapeFeatureGroups, []);
+  const movingRouteId = trackWaypointMove?.routeId;
+  const groups = movingRouteId
+    ? liveShapeFeatureGroups.map(({ features, opacity }) => ({
+      opacity,
+      features: features.filter((feature) => (
+        feature.properties?.routeId !== movingRouteId
+        && feature.id !== `route:${movingRouteId}`
+      )),
+    }))
+    : liveShapeFeatureGroups;
+  drawFeatureGroups(groups, []);
   drawShapeFeatures(contextActionFeatures, []);
   drawTrackEditorPreview();
+  drawTerrainProfilePreview();
   drawSelectedFeatureMarkers();
 }
 
 function drawTrackEditorPreview() {
-  const points = trackRouteDrawing
+  let points = trackRouteDrawing
     ? [...trackRouteDrawing.points, ...(trackRouteDrawing.preview ? [trackRouteDrawing.preview] : [])]
     : [];
   if (trackWaypointMove) {
     const route = trackEditorSession?.scenario.routes.find((item) => item.id === trackWaypointMove.routeId);
     if (route) {
-      points.push(...route.legs.map((leg) => (
+      points = route.legs.map((leg) => (
         leg.id === trackWaypointMove.legId ? trackWaypointMove.preview : leg.waypoint
-      )));
+      ));
+      if (route.completionPolicy === "loop" && points.length > 1) {
+        points = [...points, points[0]];
+      }
+    }
+    if (trackRouteEditing && !trackWaypointMove) {
+      const route = trackEditorSession?.scenario.routes.find((item) => item.id === trackRouteEditing.routeId);
+      if (route) {
+        points = route.legs.map((leg) => leg.waypoint);
+        if (route.completionPolicy === "loop" && points.length > 1) {
+          points = [...points, points[0]];
+        }
+      }
     }
   }
   if (points.length === 0) return;
@@ -971,10 +1023,39 @@ function drawTrackEditorPreview() {
   });
   context.stroke();
   context.setLineDash([]);
+  const markerPoints = trackWaypointMove && points.length > 1
+    ? points.slice(0, -1)
+    : points;
+  for (const coordinate of markerPoints) {
+    const point = screenPoint(...coordinate);
+    context.beginPath();
+    context.arc(point.x, point.y, trackRouteEditing ? 6 : 4, 0, 2 * Math.PI);
+    context.fill();
+  }
+  context.restore();
+}
+
+function drawTerrainProfilePreview() {
+  if (!terrainProfileDrawing?.start) return;
+  const points = [terrainProfileDrawing.start];
+  if (terrainProfileDrawing.preview) points.push(terrainProfileDrawing.preview);
+  context.save();
+  context.strokeStyle = "#ffbf69";
+  context.fillStyle = "#ffbf69";
+  context.lineWidth = 2;
+  context.setLineDash([6, 4]);
+  context.beginPath();
+  points.forEach((coordinate, index) => {
+    const point = screenPoint(...coordinate);
+    if (index === 0) context.moveTo(point.x, point.y);
+    else context.lineTo(point.x, point.y);
+  });
+  context.stroke();
+  context.setLineDash([]);
   for (const coordinate of points) {
     const point = screenPoint(...coordinate);
     context.beginPath();
-    context.arc(point.x, point.y, 4, 0, 2 * Math.PI);
+    context.arc(point.x, point.y, 5, 0, 2 * Math.PI);
     context.fill();
   }
   context.restore();
@@ -1363,6 +1444,9 @@ function rebuildOverlayFeatures() {
 }
 
 function overlayDisplayName(service) {
+  if (service.manifest?.capabilities?.workspace) {
+    return service.displayName;
+  }
   if (service.type === "adsb") {
     return "ADS-B live flights";
   }
@@ -2038,6 +2122,10 @@ async function persistTrackScenario() {
     aircraft: updated.aircraft,
   };
   trackEditorSession.revision = updated.revision;
+  if (workspaceSession?.service === service && workspaceSession.scenario === scenario) {
+    workspaceSession.scenarioRevision = updated.revision;
+    await refreshWorkspaceDefinition();
+  }
   await refreshShapes();
 }
 
@@ -2068,9 +2156,870 @@ async function configureTrackEditor(service) {
   trackEditorDialog.showModal();
 }
 
+function workspacePane(session) {
+  return session.definition.panes.find((pane) => pane.id === session.activePane)
+    ?? session.definition.panes[0];
+}
+
+function workspaceHeading(text) {
+  const heading = document.createElement("h3");
+  heading.className = "workspace-pane-heading";
+  heading.textContent = text;
+  return heading;
+}
+
+function workspaceSummary(pane) {
+  return pane.summary ?? { metrics: [], items: [] };
+}
+
+function renderWorkspaceMetrics(metrics) {
+  const container = document.createElement("div");
+  container.className = "workspace-metrics";
+  for (const metric of metrics) {
+    const item = document.createElement("div");
+    const value = document.createElement("strong");
+    value.textContent = metric.value;
+    const label = document.createElement("small");
+    label.textContent = metric.label;
+    item.append(value, label);
+    container.append(item);
+  }
+  return container;
+}
+
+function formatSimulationElapsed(seconds) {
+  const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  return `${String(Math.floor(totalSeconds / 60)).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`;
+}
+
+function workspaceButton(label, handler, className = "secondary-action") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = label;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function workspaceField(label, value, options = {}) {
+  const field = document.createElement("label");
+  field.className = "service-config-field";
+  field.textContent = label;
+  const input = options.options ? document.createElement("select") : document.createElement("input");
+  if (options.options) {
+    for (const option of options.options) {
+      const element = document.createElement("option");
+      element.value = option.value;
+      element.textContent = option.label;
+      element.selected = option.value === value;
+      input.append(element);
+    }
+  } else {
+    input.type = options.type ?? "text";
+    input.value = String(value);
+    if (input.type === "number") input.step = "any";
+  }
+  input.dataset.workspaceField = options.key;
+  input.disabled = Boolean(options.disabled);
+  field.append(input);
+  return field;
+}
+
+function workspaceManagementItems(pane) {
+  if (pane.id === "aircraftTypes") return workspaceSession.aircraftTypes.types;
+  if (pane.id === "routes") return workspaceSession.scenario.routes;
+  if (pane.id === "aircraft") return workspaceSession.scenario.aircraft;
+  return [];
+}
+
+function workspaceItemTitle(kind, item) {
+  return kind === "aircraftTypes" ? item.displayName : kind === "routes" ? item.name : item.name;
+}
+
+function workspaceItemDescription(kind, item) {
+  if (kind === "aircraftTypes") {
+    return `${item.limits.minimumSpeedMetresPerSecond}–${item.limits.maximumSpeedMetresPerSecond} m/s · ${item.limits.maximumTurnRateDegreesPerSecond}°/s turn`;
+  }
+  if (kind === "routes") return `${item.legs.length} waypoints · ${item.completionPolicy}`;
+  const aircraftType = workspaceSession.aircraftTypes.types.find((candidate) => candidate.id === item.aircraftTypeId);
+  const route = workspaceSession.scenario.routes.find((candidate) => candidate.id === item.routeId);
+  return `${aircraftType?.displayName ?? item.aircraftTypeId} · ${route?.name ?? item.routeId}`;
+}
+
+function waypointDefaultName(index) {
+  return `WP${String(index + 1).padStart(2, "0")}`;
+}
+
+function newRouteWaypointPosition(horizontalOffset) {
+  const crosshair = viewportCrosshairPoint();
+  const containerBounds = container.getBoundingClientRect();
+  const panelBounds = sidePanel.getBoundingClientRect();
+  const usableLeft = Math.max(0, panelBounds.right - containerBounds.left);
+  const usableWidth = canvas.clientWidth - usableLeft;
+  const point = MapMath.worldToLonLat(
+    camera.x + (crosshair.x + usableWidth * horizontalOffset - canvas.clientWidth / 2) / scale(),
+    camera.y + (crosshair.y - canvas.clientHeight / 2) / scale(),
+  );
+  return [point.longitude, point.latitude];
+}
+
+function workspaceCreateItem(kind) {
+  const id = `${kind === "aircraftTypes" ? "type" : kind === "routes" ? "route" : "aircraft"}-${crypto.randomUUID()}`;
+  if (kind === "aircraftTypes") {
+    return {
+      id,
+      displayName: "New aircraft type",
+      symbol: "plane",
+      limits: {
+        minimumSpeedMetresPerSecond: 40,
+        maximumSpeedMetresPerSecond: 120,
+        minimumAltitudeMetres: 0,
+        maximumAltitudeMetres: 10_000,
+        maximumClimbRateMetresPerSecond: 8,
+        maximumDescentRateMetresPerSecond: 8,
+        maximumTurnRateDegreesPerSecond: 3,
+        maximumBankAngleDegrees: 30,
+        maximumAccelerationMetresPerSecondSquared: 4,
+        maximumDecelerationMetresPerSecondSquared: 4,
+      },
+    };
+  }
+  if (kind === "routes") {
+    const left = newRouteWaypointPosition(-0.25);
+    const right = newRouteWaypointPosition(0.25);
+    return {
+      id,
+      name: "New route",
+      color: "#38c8ec",
+      completionPolicy: "loop",
+      legs: [
+        { id: "waypoint-1", name: "WP01", waypoint: left, targetAltitudeMetres: 1_000, targetSpeedMetresPerSecond: 80 },
+        { id: "waypoint-2", name: "WP02", waypoint: right, targetAltitudeMetres: 1_000, targetSpeedMetresPerSecond: 80 },
+      ],
+    };
+  }
+  const type = workspaceSession.aircraftTypes.types[0];
+  const route = workspaceSession.scenario.routes[0];
+  if (!type || !route) throw new Error("Create an aircraft type and route before adding an aircraft.");
+  return {
+    id,
+    name: "New aircraft",
+    aircraftTypeId: type.id,
+    routeId: route.id,
+    color: "#ff9d42",
+    initialPosition: [...route.legs[0].waypoint],
+    initialAltitudeMetres: route.legs[0].targetAltitudeMetres,
+    initialSpeedMetresPerSecond: Math.max(type.limits.minimumSpeedMetresPerSecond, route.legs[0].targetSpeedMetresPerSecond),
+    state: "running",
+  };
+}
+
+function workspaceEditItem(kind, item) {
+  workspaceSession.editing = { kind, id: item.id, draft: structuredClone(item), isNew: false };
+  renderWorkspace();
+}
+
+function workspaceAddItem(kind) {
+  try {
+    const item = workspaceCreateItem(kind);
+    workspaceSession.editing = { kind, id: item.id, draft: item, isNew: true };
+    renderWorkspace();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function removeWorkspaceItem(kind, item) {
+  if (kind === "aircraftTypes") {
+    if (workspaceSession.aircraftTypes.types.length === 1) throw new Error("At least one aircraft type is required.");
+    if (workspaceSession.scenario.aircraft.some((aircraft) => aircraft.aircraftTypeId === item.id)) {
+      throw new Error("Reassign or remove aircraft using this type before removing it.");
+    }
+    workspaceSession.aircraftTypes.types = workspaceSession.aircraftTypes.types.filter((candidate) => candidate.id !== item.id);
+    await persistWorkspaceAircraftTypes();
+  } else if (kind === "routes") {
+    if (workspaceSession.scenario.aircraft.some((aircraft) => aircraft.routeId === item.id)) {
+      throw new Error("Reassign or remove aircraft using this route before removing it.");
+    }
+    workspaceSession.scenario.routes = workspaceSession.scenario.routes.filter((candidate) => candidate.id !== item.id);
+    await persistWorkspaceScenario();
+  } else {
+    workspaceSession.scenario.aircraft = workspaceSession.scenario.aircraft.filter((candidate) => candidate.id !== item.id);
+    await persistWorkspaceScenario();
+  }
+  workspaceSession.editing = null;
+  status.textContent = `${workspaceItemTitle(kind, item)} removed.`;
+}
+
+async function persistWorkspaceAircraftTypes() {
+  const { service, aircraftTypes, aircraftTypesRevision } = workspaceSession;
+  const response = await fetch(`${service.url}${workspaceSession.definition.resources.aircraftTypes}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "If-Match": aircraftTypesRevision },
+    body: JSON.stringify(aircraftTypes),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `aircraft type update returned ${response.status}`);
+  }
+  const updated = await response.json();
+  workspaceSession.aircraftTypes = { schemaVersion: updated.schemaVersion, types: updated.types };
+  workspaceSession.aircraftTypesRevision = updated.revision;
+  await refreshWorkspaceDefinition();
+}
+
+async function persistWorkspaceScenario() {
+  const { service, scenario, scenarioRevision, scenarioCapability } = workspaceSession;
+  const response = await fetch(`${service.url}${scenarioCapability.scenarioPath}`, {
+    method: scenarioCapability.updateMethod || "PUT",
+    headers: { "Content-Type": "application/json", [scenarioCapability.revisionHeader]: scenarioRevision },
+    body: JSON.stringify(scenario),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `scenario update returned ${response.status}`);
+  }
+  const updated = await response.json();
+  workspaceSession.scenario = { schemaVersion: updated.schemaVersion, routes: updated.routes, aircraft: updated.aircraft };
+  workspaceSession.scenarioRevision = updated.revision;
+  await refreshWorkspaceDefinition();
+  await refreshShapes();
+}
+
+async function saveWorkspaceItem({ editRouteOnMap = false } = {}) {
+  const editing = workspaceSession.editing;
+  if (!editing) return;
+  const fields = workspaceInspector.querySelectorAll("[data-workspace-field]");
+  const values = Object.fromEntries([...fields].map((field) => [field.dataset.workspaceField, field.value]));
+  const { draft } = editing;
+  if (editing.kind === "aircraftTypes") {
+    draft.displayName = values.displayName.trim();
+    draft.symbol = values.symbol.trim();
+    for (const key of Object.keys(draft.limits)) draft.limits[key] = Number(values[`limits.${key}`]);
+    if (editing.isNew) workspaceSession.aircraftTypes.types.push(draft);
+    else Object.assign(workspaceSession.aircraftTypes.types.find((item) => item.id === editing.id), draft);
+    await persistWorkspaceAircraftTypes();
+  } else if (editing.kind === "routes") {
+    draft.name = values.name.trim();
+    draft.color = values.color;
+    draft.completionPolicy = values.completionPolicy;
+    for (const [index, leg] of draft.legs.entries()) {
+      leg.name = values[`name.${leg.id}`].trim();
+      const longitude = Number(values[`longitude.${leg.id}`]);
+      const latitude = Number(values[`latitude.${leg.id}`]);
+      if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+        throw new Error(`${leg.name || waypointDefaultName(index)} longitude must be between -180 and 180.`);
+      }
+      if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
+        throw new Error(`${leg.name || waypointDefaultName(index)} latitude must be between -90 and 90.`);
+      }
+      leg.waypoint = [longitude, latitude];
+      leg.targetAltitudeMetres = Number(values[`altitude.${leg.id}`]);
+      leg.targetSpeedMetresPerSecond = Number(values[`speed.${leg.id}`]);
+    }
+    if (editing.isNew) workspaceSession.scenario.routes.push(draft);
+    else Object.assign(workspaceSession.scenario.routes.find((item) => item.id === editing.id), draft);
+    await persistWorkspaceScenario();
+    if (editRouteOnMap) {
+      const route = workspaceSession.scenario.routes.find((item) => item.id === editing.id);
+      if (!route) throw new Error("Saved route is no longer available for map editing.");
+      workspaceSession.editing = null;
+      startWorkspaceRouteMapEditing(route);
+      return;
+    }
+  } else {
+    draft.name = values.name.trim();
+    draft.aircraftTypeId = values.aircraftTypeId;
+    draft.routeId = values.routeId;
+    draft.color = values.color;
+    draft.initialPosition = [Number(values.longitude), Number(values.latitude)];
+    draft.initialAltitudeMetres = Number(values.initialAltitudeMetres);
+    draft.initialSpeedMetresPerSecond = Number(values.initialSpeedMetresPerSecond);
+    draft.state = values.state;
+    if (editing.isNew) workspaceSession.scenario.aircraft.push(draft);
+    else Object.assign(workspaceSession.scenario.aircraft.find((item) => item.id === editing.id), draft);
+    await persistWorkspaceScenario();
+  }
+  workspaceSession.editing = null;
+  status.textContent = `${workspaceItemTitle(editing.kind, draft)} saved.`;
+  renderWorkspace();
+}
+
+function renderWorkspaceEditor() {
+  const editing = workspaceSession.editing;
+  if (!editing) return false;
+  const { kind, draft } = editing;
+  const editorPane = kind === "routes" ? workspacePrimary : workspaceInspector;
+  editorPane.replaceChildren(workspaceHeading(editing.isNew ? `Add ${kind === "aircraftTypes" ? "aircraft type" : kind.slice(0, -1)}` : `Edit ${workspaceItemTitle(kind, draft)}`));
+  const fields = document.createElement("div");
+  fields.className = "workspace-editor-fields";
+  if (kind === "aircraftTypes") {
+    fields.append(workspaceField("Name", draft.displayName, { key: "displayName" }), workspaceField("Symbol", draft.symbol, { key: "symbol" }));
+    for (const [key, value] of Object.entries(draft.limits)) fields.append(workspaceField(key.replace(/([A-Z])/g, " $1"), value, { key: `limits.${key}`, type: "number" }));
+  } else if (kind === "routes") {
+    const routeDetails = document.createElement("div");
+    routeDetails.className = "workspace-route-details";
+    routeDetails.append(
+      workspaceField("Route name", draft.name, { key: "name" }),
+      workspaceField("Route color", draft.color, { key: "color", type: "color" }),
+      workspaceField("Completion policy", draft.completionPolicy, { key: "completionPolicy", options: workspaceSession.scenarioCapability.completionPolicies.map((value) => ({ value, label: value })) }),
+    );
+    fields.append(routeDetails);
+    const mapEdit = workspaceButton("Edit waypoints on map", () => {
+      saveWorkspaceItem({ editRouteOnMap: true }).catch((error) => {
+        status.textContent = `Unable to save route for map editing: ${error.message}`;
+      });
+    });
+    fields.append(mapEdit);
+    for (const [index, leg] of draft.legs.entries()) {
+      const group = document.createElement("div");
+      group.className = "workspace-waypoint-fields";
+      const details = document.createElement("div");
+      details.className = "workspace-waypoint-fields-details";
+      details.append(
+        workspaceField("Waypoint name", leg.name || waypointDefaultName(index), { key: `name.${leg.id}` }),
+        workspaceField("Longitude", leg.waypoint[0], { key: `longitude.${leg.id}`, type: "number" }),
+        workspaceField("Latitude", leg.waypoint[1], { key: `latitude.${leg.id}`, type: "number" }),
+        workspaceField("Altitude (m)", leg.targetAltitudeMetres, { key: `altitude.${leg.id}`, type: "number" }),
+        workspaceField("Speed (m/s)", leg.targetSpeedMetresPerSecond, { key: `speed.${leg.id}`, type: "number" }),
+      );
+      const actions = document.createElement("div");
+      actions.className = "workspace-waypoint-actions";
+      const next = draft.legs[index + 1];
+      if (next) {
+        const insert = workspaceButton("Insert after", () => {
+          draft.legs.splice(index + 1, 0, {
+            id: `waypoint-${crypto.randomUUID()}`,
+            name: waypointDefaultName(index + 1),
+            waypoint: [(leg.waypoint[0] + next.waypoint[0]) / 2, (leg.waypoint[1] + next.waypoint[1]) / 2],
+            targetAltitudeMetres: leg.targetAltitudeMetres,
+            targetSpeedMetresPerSecond: leg.targetSpeedMetresPerSecond,
+          });
+          renderWorkspace();
+        });
+        actions.append(insert);
+      }
+      const remove = workspaceButton("Remove", () => {
+        if (draft.legs.length === 2) {
+          status.textContent = "A route needs at least two waypoints.";
+          return;
+        }
+        draft.legs = draft.legs.filter((candidate) => candidate.id !== leg.id);
+        renderWorkspace();
+      }, "danger-action");
+      actions.append(remove);
+      group.append(details, actions);
+      fields.append(group);
+    }
+  } else {
+    fields.append(
+      workspaceField("Name", draft.name, { key: "name" }),
+      workspaceField("Aircraft type", draft.aircraftTypeId, { key: "aircraftTypeId", options: workspaceSession.aircraftTypes.types.map((item) => ({ value: item.id, label: item.displayName })) }),
+      workspaceField("Route", draft.routeId, { key: "routeId", options: workspaceSession.scenario.routes.map((item) => ({ value: item.id, label: item.name })) }),
+      workspaceField("Color", draft.color, { key: "color", type: "color" }),
+      workspaceField("Longitude", draft.initialPosition[0], { key: "longitude", type: "number" }),
+      workspaceField("Latitude", draft.initialPosition[1], { key: "latitude", type: "number" }),
+      workspaceField("Initial altitude (m)", draft.initialAltitudeMetres, { key: "initialAltitudeMetres", type: "number" }),
+      workspaceField("Initial speed (m/s)", draft.initialSpeedMetresPerSecond, { key: "initialSpeedMetresPerSecond", type: "number" }),
+      workspaceField("State", draft.state, { key: "state", options: [{ value: "running", label: "Running" }, { value: "stopped", label: "Stopped" }] }),
+    );
+  }
+  const actions = document.createElement("div");
+  actions.className = "workspace-editor-actions";
+  actions.append(workspaceButton("Cancel", () => { workspaceSession.editing = null; renderWorkspace(); }), workspaceButton("Save", () => {
+    saveWorkspaceItem().catch((error) => { status.textContent = `Unable to save: ${error.message}`; });
+  }, "primary-action"));
+  editorPane.append(fields, actions);
+  return true;
+}
+
+function startWorkspaceRouteMapEditing(route) {
+  const savedRoute = workspaceSession.scenario.routes.find((candidate) => candidate.id === route.id);
+  if (!savedRoute) throw new Error("Save the route before editing its waypoints on the map.");
+  trackEditorSession = {
+    service: workspaceSession.service,
+    capability: workspaceSession.scenarioCapability,
+    revision: workspaceSession.scenarioRevision,
+    scenario: workspaceSession.scenario,
+  };
+  trackRouteEditing = { routeId: savedRoute.id };
+  workspaceDialog.close();
+  status.textContent = `Editing ${savedRoute.name}: drag any cyan waypoint handle. Press Escape when finished.`;
+  refreshMap();
+}
+
+function formatTerrainCoordinate(point) {
+  return `${point.latitude.toFixed(5)}°, ${point.longitude.toFixed(5)}°`;
+}
+
+function formatTerrainMetres(value) {
+  return value === null || value === undefined ? "No data" : `${Math.round(value)} m`;
+}
+
+function renderTerrainProfileChart(profile) {
+  const chart = document.createElement("canvas");
+  chart.className = "terrain-profile-chart";
+  chart.width = 720;
+  chart.height = 280;
+  chart.setAttribute("aria-label", "Vertical terrain elevation profile");
+  const chartContext = chart.getContext("2d");
+  const padding = { top: 22, right: 18, bottom: 34, left: 56 };
+  const width = chart.width - padding.left - padding.right;
+  const height = chart.height - padding.top - padding.bottom;
+  const samples = profile.samples;
+  const heights = samples
+    .map((sample) => sample.heightMetres)
+    .filter((height) => typeof height === "number");
+  chartContext.fillStyle = "#07111e";
+  chartContext.fillRect(0, 0, chart.width, chart.height);
+  if (heights.length === 0) {
+    chartContext.fillStyle = "#a8cbd9";
+    chartContext.font = "13px system-ui, sans-serif";
+    chartContext.textAlign = "center";
+    chartContext.fillText("No terrain coverage along this profile.", chart.width / 2, chart.height / 2);
+    return chart;
+  }
+  const minimum = Math.min(...heights);
+  const maximum = Math.max(...heights);
+  const span = Math.max(1, maximum - minimum);
+  const xFor = (sample) => padding.left + width * sample.distanceMetres / Math.max(1, profile.distanceMetres);
+  const yFor = (elevation) => padding.top + height * (1 - (elevation - minimum) / span);
+  chartContext.strokeStyle = "rgb(137 214 246 / 25%)";
+  chartContext.lineWidth = 1;
+  chartContext.beginPath();
+  chartContext.moveTo(padding.left, padding.top);
+  chartContext.lineTo(padding.left, padding.top + height);
+  chartContext.lineTo(padding.left + width, padding.top + height);
+  chartContext.stroke();
+  chartContext.fillStyle = "#8fbacb";
+  chartContext.font = "11px system-ui, sans-serif";
+  chartContext.textAlign = "right";
+  chartContext.fillText(`${Math.round(maximum)} m`, padding.left - 8, padding.top + 4);
+  chartContext.fillText(`${Math.round(minimum)} m`, padding.left - 8, padding.top + height);
+  chartContext.textAlign = "left";
+  chartContext.fillText("Start", padding.left, chart.height - 10);
+  chartContext.textAlign = "right";
+  chartContext.fillText(`${Math.round(profile.distanceMetres / 1000 * 10) / 10} km`, padding.left + width, chart.height - 10);
+  chartContext.strokeStyle = "#ffbf69";
+  chartContext.lineWidth = 2;
+  let drawing = false;
+  for (const sample of samples) {
+    if (typeof sample.heightMetres !== "number") {
+      drawing = false;
+      continue;
+    }
+    const x = xFor(sample);
+    const y = yFor(sample.heightMetres);
+    if (!drawing) {
+      chartContext.beginPath();
+      chartContext.moveTo(x, y);
+      drawing = true;
+    } else {
+      chartContext.lineTo(x, y);
+    }
+    chartContext.stroke();
+  }
+  return chart;
+}
+
+function startTerrainProfileDrawing() {
+  terrainProfileDrawing = { start: null, preview: null };
+  workspaceDialog.close();
+  status.textContent = "Choose the terrain-profile start point on the map.";
+  refreshMap();
+}
+
+async function finishTerrainProfileDrawing(end) {
+  const drawing = terrainProfileDrawing;
+  if (!drawing?.start || drawing.submitting || !workspaceSession) return;
+  drawing.submitting = true;
+  drawing.preview = null;
+  refreshMap();
+  try {
+    const response = await fetch(`${workspaceSession.service.url}${workspaceSession.definition.resources.profilePath}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        start: { longitude: drawing.start[0], latitude: drawing.start[1] },
+        end: { longitude: end[0], latitude: end[1] },
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `terrain profile returned ${response.status}`);
+    }
+    workspaceSession.terrainProfile = await response.json();
+    workspaceSession.activePane = "profiles";
+    terrainProfileDrawing = null;
+    renderWorkspace();
+    workspaceDialog.showModal();
+    status.textContent = "Terrain profile created.";
+  } catch (error) {
+    drawing.submitting = false;
+    throw error;
+  }
+  refreshMap();
+}
+
+function renderTerrainAnalysisWorkspace() {
+  const { definition } = workspaceSession;
+  const pane = workspacePane(workspaceSession);
+  workspaceContent.classList.remove("is-route-editing");
+  workspaceContent.classList.add("is-terrain-analysis");
+  workspaceNavigator.replaceChildren();
+  for (const item of definition.panes) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "workspace-nav-item";
+    button.textContent = item.label;
+    button.setAttribute("aria-current", String(item.id === pane.id ? "page" : false));
+    button.addEventListener("click", () => {
+      workspaceSession.activePane = item.id;
+      renderWorkspace();
+    });
+    workspaceNavigator.append(button);
+  }
+  workspacePrimary.replaceChildren(workspaceHeading(pane.label));
+  workspacePrimary.append(Object.assign(document.createElement("p"), {
+    className: "workspace-copy",
+    textContent: pane.description,
+  }));
+  const actions = document.createElement("div");
+  actions.className = "workspace-pane-toolbar";
+  actions.append(workspaceButton("Draw terrain profile", startTerrainProfileDrawing, "primary-action"));
+  workspacePrimary.append(actions);
+  const profile = workspaceSession.terrainProfile;
+  if (profile) {
+    const details = document.createElement("div");
+    details.className = "terrain-profile-details";
+    const statistics = [
+      ["Start", formatTerrainCoordinate(profile.start)],
+      ["End", formatTerrainCoordinate(profile.end)],
+      ["Distance", `${Math.round(profile.distanceMetres)} m`],
+      ["Minimum", formatTerrainMetres(profile.statistics.minimumMetres)],
+      ["Maximum", formatTerrainMetres(profile.statistics.maximumMetres)],
+      ["Gaps", String(profile.statistics.missingSampleCount)],
+    ];
+    for (const [label, value] of statistics) {
+      const item = document.createElement("div");
+      item.append(
+        Object.assign(document.createElement("small"), { textContent: label }),
+        Object.assign(document.createElement("strong"), { textContent: value }),
+      );
+      details.append(item);
+    }
+    workspacePrimary.append(details, renderTerrainProfileChart(profile));
+  } else {
+    workspacePrimary.append(Object.assign(document.createElement("p"), {
+      className: "workspace-placeholder",
+      textContent: "Draw a line on the map to create a vertical terrain profile.",
+    }));
+  }
+  workspaceInspector.replaceChildren();
+  workspaceTimeline.replaceChildren(Object.assign(document.createElement("p"), {
+    className: "workspace-copy",
+    textContent: profile
+      ? "Profile samples show local elevation coverage and preserve gaps where no terrain is available."
+      : "Choose a start point and an end point to begin terrain analysis.",
+  }));
+}
+
+function renderWorkspace() {
+  const { definition } = workspaceSession;
+  if (definition.kind === "terrain-analysis") {
+    renderTerrainAnalysisWorkspace();
+    return;
+  }
+  const pane = workspacePane(workspaceSession);
+  workspaceContent.classList.remove("is-terrain-analysis");
+  workspaceContent.classList.toggle("is-route-editing", workspaceSession.editing?.kind === "routes");
+  workspaceNavigator.replaceChildren();
+  for (const item of definition.panes) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "workspace-nav-item";
+    button.textContent = item.label;
+    button.setAttribute("aria-current", String(item.id === pane.id ? "page" : false));
+    button.addEventListener("click", () => {
+      workspaceSession.activePane = item.id;
+      renderWorkspace();
+    });
+    workspaceNavigator.append(button);
+  }
+
+  workspacePrimary.replaceChildren(workspaceHeading(pane.label));
+  const description = document.createElement("p");
+  description.className = "workspace-copy";
+  description.textContent = pane.description;
+  const summary = workspaceSummary(pane);
+  workspacePrimary.append(description, renderWorkspaceMetrics(summary.metrics));
+  const managedPane = ["aircraftTypes", "routes", "aircraft"].includes(pane.id);
+  if (managedPane) {
+    const toolbar = document.createElement("div");
+    toolbar.className = "workspace-pane-toolbar";
+    const singular = pane.id === "aircraftTypes" ? "aircraft type" : pane.id === "routes" ? "route" : "aircraft";
+    toolbar.append(workspaceButton(`Add ${singular}`, () => workspaceAddItem(pane.id), "primary-action"));
+    workspacePrimary.append(toolbar);
+    const cards = document.createElement("div");
+    cards.className = "workspace-summary-cards";
+    for (const item of workspaceManagementItems(pane)) {
+      const card = document.createElement("article");
+      card.className = "workspace-summary-card";
+      const title = document.createElement("strong");
+      title.textContent = workspaceItemTitle(pane.id, item);
+      const itemDescription = document.createElement("small");
+      itemDescription.textContent = workspaceItemDescription(pane.id, item);
+      const actions = document.createElement("div");
+      actions.className = "workspace-card-actions";
+      actions.append(
+        workspaceButton("Edit", () => workspaceEditItem(pane.id, item)),
+        workspaceButton("Remove", () => {
+          removeWorkspaceItem(pane.id, item).catch((error) => { status.textContent = `Unable to remove: ${error.message}`; });
+        }, "danger-action"),
+      );
+      card.append(title, itemDescription, actions);
+      cards.append(card);
+    }
+    if (cards.childElementCount > 0) workspacePrimary.append(cards);
+    else workspacePrimary.append(Object.assign(document.createElement("p"), { className: "workspace-placeholder", textContent: `No ${pane.label.toLowerCase()} yet.` }));
+  } else {
+    const cards = document.createElement("div");
+    cards.className = "workspace-summary-cards";
+    for (const item of summary.items) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "workspace-summary-card";
+      card.setAttribute("aria-pressed", String(workspaceSession.activeItem?.id === item.id));
+      const title = document.createElement("strong");
+      title.textContent = item.title;
+      const itemDescription = document.createElement("small");
+      itemDescription.textContent = item.description;
+      card.append(title, itemDescription);
+      card.addEventListener("click", () => {
+        workspaceSession.activeItem = item;
+        renderWorkspace();
+      });
+      cards.append(card);
+    }
+    if (summary.items.length > 0) workspacePrimary.append(cards);
+    if (summary.items.length === 0 && pane.id !== "timeline") {
+      workspacePrimary.append(Object.assign(document.createElement("p"), { className: "workspace-placeholder", textContent: "No items are currently published for this workspace region." }));
+    }
+  }
+
+  if (!renderWorkspaceEditor()) {
+    workspaceInspector.replaceChildren(workspaceHeading("Inspector"));
+    const inspectorCopy = document.createElement("p");
+    inspectorCopy.className = "workspace-copy";
+    inspectorCopy.textContent = workspaceSession.activeItem
+      ? workspaceSession.activeItem.description
+      : `Choose Edit on a ${pane.label.toLowerCase()} card to change it.`;
+    if (workspaceSession.activeItem) {
+      workspaceInspector.append(
+        Object.assign(document.createElement("h4"), {
+          className: "workspace-inspector-title",
+          textContent: workspaceSession.activeItem.title,
+        }),
+      );
+    }
+    const resources = document.createElement("ul");
+    resources.className = "workspace-resource-list";
+    for (const [name, path] of Object.entries(definition.resources)) {
+      const item = document.createElement("li");
+      const label = document.createTextNode(`${name}: `);
+      const code = document.createElement("code");
+      code.textContent = path;
+      item.append(label, code);
+      resources.append(item);
+    }
+    workspaceInspector.append(inspectorCopy, resources);
+  }
+
+  workspaceTimeline.replaceChildren();
+  const timelineRow = document.createElement("div");
+  timelineRow.className = "workspace-timeline-row";
+  const timelineCopy = document.createElement("div");
+  timelineCopy.append(
+    Object.assign(document.createElement("h3"), { textContent: "Timeline" }),
+    Object.assign(document.createElement("p"), { textContent: definition.timeline.description }),
+  );
+  timelineRow.append(timelineCopy);
+  if (workspaceSession.simulation) {
+    const controls = document.createElement("div");
+    controls.className = "workspace-timeline-controls";
+    const elapsed = document.createElement("output");
+    elapsed.textContent = formatSimulationElapsed(workspaceSession.simulation.elapsedSeconds);
+    elapsed.title = `${Number(workspaceSession.simulation.elapsedSeconds).toFixed(1)} simulation seconds`;
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.textContent = workspaceSession.simulation.running ? "Pause" : "Resume";
+    toggle.addEventListener("click", () => {
+      updateWorkspaceSimulation(!workspaceSession.simulation.running).catch((error) => {
+        status.textContent = `Unable to update workspace simulation: ${error.message}`;
+      });
+    });
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "Reset";
+    reset.addEventListener("click", () => {
+      resetWorkspaceSimulation().catch((error) => {
+        status.textContent = `Unable to reset workspace simulation: ${error.message}`;
+      });
+    });
+    controls.append(elapsed, toggle, reset);
+    timelineRow.append(controls);
+  }
+  workspaceTimeline.append(timelineRow);
+}
+
+async function refreshWorkspaceSimulation() {
+  if (!workspaceSession?.simulationCapability) return;
+  const { service, simulationCapability } = workspaceSession;
+  const response = await fetch(`${service.url}${simulationCapability.readPath}`);
+  if (!response.ok) throw new Error(`workspace simulation returned ${response.status}`);
+  workspaceSession.simulation = await response.json();
+  const timelinePane = workspaceSession.definition.panes.find((pane) => pane.id === "timeline");
+  if (timelinePane) {
+    timelinePane.summary.metrics = [
+      { label: "State", value: workspaceSession.simulation.running ? "Running" : "Paused" },
+      { label: "Elapsed", value: `${workspaceSession.simulation.elapsedSeconds.toFixed(1)} s` },
+    ];
+  }
+  if (!workspaceSession.editing) renderWorkspace();
+}
+
+async function updateWorkspaceSimulation(running) {
+  const { service, simulationCapability, simulation } = workspaceSession;
+  const response = await fetch(`${service.url}${simulationCapability.writePath}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", [simulationCapability.revisionHeader]: simulation.revision },
+    body: JSON.stringify({ running }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `workspace simulation update returned ${response.status}`);
+  }
+  workspaceSession.simulation = await response.json();
+  await refreshWorkspaceSimulation();
+  await refreshShapes();
+}
+
+async function resetWorkspaceSimulation() {
+  const { service, simulationCapability } = workspaceSession;
+  const response = await fetch(`${service.url}${simulationCapability.resetPath}`, { method: "POST" });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `workspace simulation reset returned ${response.status}`);
+  }
+  workspaceSession.simulation = await response.json();
+  await refreshWorkspaceSimulation();
+  await refreshShapes();
+}
+
+function startWorkspaceSimulationPolling() {
+  if (!workspaceSession?.simulationCapability) return;
+  if (workspaceSimulationTimer !== null) window.clearInterval(workspaceSimulationTimer);
+  workspaceSimulationTimer = window.setInterval(() => {
+    refreshWorkspaceSimulation().catch((error) => {
+      status.textContent = `Unable to refresh workspace simulation: ${error.message}`;
+    });
+  }, 1000);
+}
+
+function stopWorkspaceSimulationPolling() {
+  if (workspaceSimulationTimer !== null) window.clearInterval(workspaceSimulationTimer);
+  workspaceSimulationTimer = null;
+}
+
+function validateWorkspaceDefinition(definition) {
+  if (
+    !Array.isArray(definition.panes)
+    || definition.panes.some((pane) => (
+      typeof pane?.id !== "string"
+      || typeof pane.label !== "string"
+      || typeof pane.description !== "string"
+      || !Array.isArray(pane.summary?.metrics)
+      || !Array.isArray(pane.summary?.items)
+    ))
+    || !definition.resources
+    || typeof definition.resources !== "object"
+    || typeof definition.timeline?.description !== "string"
+  ) {
+    throw new Error("workspace returned an invalid definition");
+  }
+}
+
+async function refreshWorkspaceDefinition() {
+  const response = await fetch(`${workspaceSession.service.url}${workspaceSession.capability.openPath}`);
+  if (!response.ok) throw new Error(`workspace returned ${response.status}`);
+  const definition = await response.json();
+  validateWorkspaceDefinition(definition);
+  workspaceSession.definition = definition;
+}
+
+async function loadWorkspaceCatalogues() {
+  const { service, definition, scenarioCapability } = workspaceSession;
+  if (!scenarioCapability || !definition.resources.aircraftTypes || !definition.resources.scenario) return;
+  const [typesResponse, scenarioResponse] = await Promise.all([
+    fetch(`${service.url}${definition.resources.aircraftTypes}`),
+    fetch(`${service.url}${definition.resources.scenario}`),
+  ]);
+  if (!typesResponse.ok) throw new Error(`aircraft types returned ${typesResponse.status}`);
+  if (!scenarioResponse.ok) throw new Error(`scenario returned ${scenarioResponse.status}`);
+  const [types, scenario] = await Promise.all([typesResponse.json(), scenarioResponse.json()]);
+  workspaceSession.aircraftTypes = { schemaVersion: types.schemaVersion, types: types.types };
+  workspaceSession.aircraftTypesRevision = types.revision;
+  workspaceSession.scenario = { schemaVersion: scenario.schemaVersion, routes: scenario.routes, aircraft: scenario.aircraft };
+  workspaceSession.scenarioRevision = scenario.revision;
+}
+
+async function configureWorkspace(service) {
+  const capability = service.manifest.capabilities.workspace;
+  const response = await fetch(`${service.url}${capability.openPath}`);
+  if (!response.ok) throw new Error(`workspace returned ${response.status}`);
+  const definition = await response.json();
+  validateWorkspaceDefinition(definition);
+  const simulationCapability = service.manifest.capabilities?.simulationControls;
+  workspaceSession = {
+    service,
+    capability,
+    definition,
+    activePane: definition.panes[0]?.id,
+    activeItem: null,
+    simulationCapability,
+    simulation: null,
+    scenarioCapability: service.manifest.capabilities?.scenarioEditor,
+    aircraftTypes: { schemaVersion: 1, types: [] },
+    aircraftTypesRevision: null,
+    scenario: { schemaVersion: 1, routes: [], aircraft: [] },
+    scenarioRevision: null,
+    editing: null,
+    terrainProfile: null,
+  };
+  await loadWorkspaceCatalogues();
+  if (simulationCapability) await refreshWorkspaceSimulation();
+  workspaceEyebrow.textContent = service.displayName;
+  workspaceTitle.textContent = definition.title;
+  renderWorkspace();
+  workspaceDialog.showModal();
+  startWorkspaceSimulationPolling();
+}
+
 function mapPosition(event) {
   const point = mapPointFromEvent(event);
   return [point.longitude, point.latitude];
+}
+
+function waypointAtMapEvent(event) {
+  if (!trackRouteEditing || !trackEditorSession) return null;
+  const route = trackEditorSession.scenario.routes.find((item) => item.id === trackRouteEditing.routeId);
+  if (!route) return null;
+  const bounds = canvas.getBoundingClientRect();
+  const pointer = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+  return route.legs.find((leg) => {
+    const point = screenPoint(...leg.waypoint);
+    return Math.hypot(point.x - pointer.x, point.y - pointer.y) <= 28;
+  }) ?? null;
 }
 
 function metresBetween(first, second) {
@@ -2155,22 +3104,35 @@ function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) 
     const configure = document.createElement("button");
     configure.type = "button";
     configure.className = "configure-service";
-    configure.textContent = "⚙";
-    configure.title = `Configure ${overlayDisplayName(service)}`;
+    const workspace = service.manifest?.capabilities?.workspace;
+    configure.dataset.symbol = workspace ? "rocket" : "gear";
+    configure.dataset.symbolFallback = workspace ? "🚀" : "⚙";
+    configure.textContent = workspace ? "🚀" : "⚙";
+    configure.title = workspace
+      ? `Open ${workspace.label}`
+      : `Configure ${overlayDisplayName(service)}`;
     configure.setAttribute("aria-label", configure.title);
+    renderButtonSymbol(configure);
     configure.addEventListener("click", () => {
       const open = service.manifest?.capabilities?.shapeEditor
         ? configureShapeEditor(service)
-        : service.manifest?.capabilities?.scenarioEditor
-          ? configureTrackEditor(service)
-          : configureService(service);
+        : service.manifest?.capabilities?.workspace
+          ? configureWorkspace(service)
+          : service.manifest?.capabilities?.scenarioEditor
+            ? configureTrackEditor(service)
+            : configureService(service);
       open.catch((error) => {
         status.textContent = `Unable to configure ${overlayDisplayName(service)}: ${error.message}`;
       });
     });
     label.append(checkbox, ` ${overlayDisplayName(service)}`);
     row.append(label, opacity, configure);
-    (["shapes", "airlanes"].includes(service.type) ? dataSourceList : liveSourceList).append(row);
+    const destination = service.manifest?.capabilities?.workspace
+      ? workspaceSourceList
+      : ["shapes", "airlanes"].includes(service.type)
+        ? dataSourceList
+        : liveSourceList;
+    destination.append(row);
   }
 }
 
@@ -2187,6 +3149,7 @@ function renderSymbolSourceControls(savedSelections = {}) {
     checkbox.addEventListener("change", () => {
       service.enabled = checkbox.checked;
       symbolDefinitions.clear();
+      renderRegisteredButtonSymbols();
       saveLayerSelection();
       if (service.enabled) {
         refreshSymbols().catch((error) => {
@@ -2197,9 +3160,12 @@ function renderSymbolSourceControls(savedSelections = {}) {
     const configure = document.createElement("button");
     configure.type = "button";
     configure.className = "configure-service";
+    configure.dataset.symbol = "gear";
+    configure.dataset.symbolFallback = "⚙";
     configure.textContent = "⚙";
     configure.title = `Review Symbols: ${service.id}`;
     configure.setAttribute("aria-label", configure.title);
+    renderButtonSymbol(configure);
     configure.addEventListener("click", () => {
       configureService(service).catch((error) => {
         status.textContent = `Unable to review Symbols: ${error.message}`;
@@ -2213,6 +3179,37 @@ function renderSymbolSourceControls(savedSelections = {}) {
 
 serviceConfigCancel.addEventListener("click", () => {
   serviceConfigDialog.close();
+});
+
+workspaceClose.addEventListener("click", () => workspaceDialog.close());
+workspaceDialog.addEventListener("close", stopWorkspaceSimulationPolling);
+for (const [handle, side] of [
+  [workspaceNavigatorResize, "navigator"],
+  [workspaceInspectorResize, "inspector"],
+]) {
+  handle.addEventListener("pointerdown", (event) => {
+    workspaceResize = { pointerId: event.pointerId, side };
+    handle.classList.add("is-resizing");
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+}
+window.addEventListener("pointermove", (event) => {
+  if (!workspaceResize || workspaceResize.pointerId !== event.pointerId) return;
+  const bounds = workspaceContent.getBoundingClientRect();
+  if (workspaceResize.side === "navigator") {
+    const width = Math.max(144, Math.min(420, event.clientX - bounds.left));
+    workspaceContent.style.setProperty("--workspace-navigator-width", `${width}px`);
+  } else {
+    const width = Math.max(176, Math.min(480, bounds.right - event.clientX));
+    workspaceContent.style.setProperty("--workspace-inspector-width", `${width}px`);
+  }
+});
+window.addEventListener("pointerup", (event) => {
+  if (!workspaceResize || workspaceResize.pointerId !== event.pointerId) return;
+  workspaceNavigatorResize.classList.remove("is-resizing");
+  workspaceInspectorResize.classList.remove("is-resizing");
+  workspaceResize = null;
 });
 
 serviceConfigForm.addEventListener("submit", async (event) => {
@@ -3021,7 +4018,9 @@ function showContextMenu(event) {
 function loadSymbolImage(svg, color) {
   const image = new Image();
   const colouredSvg = color
-    ? svg.replace("<svg ", `<svg color="${color}" `)
+    ? svg
+      .replace("<svg ", `<svg color="${color}" `)
+      .replace(/\s(stroke|fill)="(?!none")[^"]*"/gi, ` $1="${color}"`)
     : svg;
   image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(colouredSvg)}`;
   return image;
@@ -3039,6 +4038,30 @@ function symbolImage(definition, featureColor) {
     definition.images.set(key, image);
   }
   return image;
+}
+
+function renderButtonSymbol(button) {
+  const fallback = button.dataset.symbolFallback;
+  const definition = symbolDefinitions.get(button.dataset.symbol);
+  if (!definition) {
+    button.textContent = fallback;
+    return;
+  }
+  const color = button.isConnected
+    ? getComputedStyle(button).color
+    : button.dataset.symbolColor || "#9bdff6";
+  const image = loadSymbolImage(
+    definition.svg,
+    definition.colorMode === "colorable" ? color : null,
+  );
+  const icon = document.createElement("img");
+  icon.src = image.src;
+  icon.alt = "";
+  button.replaceChildren(icon);
+}
+
+function renderRegisteredButtonSymbols() {
+  document.querySelectorAll("button[data-symbol]").forEach(renderButtonSymbol);
 }
 
 function validateSymbolDefinition(definition) {
@@ -3071,6 +4094,7 @@ async function refreshSymbols() {
       });
     }
   }
+  renderRegisteredButtonSymbols();
 }
 
 function missingTiles(zoom) {
@@ -3459,6 +4483,20 @@ canvas.addEventListener("pointerdown", (event) => {
     return;
   }
   closeContextMenu();
+  if (terrainProfileDrawing) {
+    const point = mapPosition(event);
+    if (!terrainProfileDrawing.start) {
+      terrainProfileDrawing.start = point;
+      terrainProfileDrawing.preview = null;
+      status.textContent = "Choose the terrain-profile end point on the map.";
+      refreshMap();
+    } else if (!terrainProfileDrawing.submitting) {
+      finishTerrainProfileDrawing(point).catch((error) => {
+        status.textContent = `Unable to create terrain profile: ${error.message}`;
+      });
+    }
+    return;
+  }
   if (trackRouteDrawing) {
     trackRouteDrawing.points.push(mapPosition(event));
     trackRouteDrawing.preview = null;
@@ -3471,6 +4509,20 @@ canvas.addEventListener("pointerdown", (event) => {
     canvas.setPointerCapture(event.pointerId);
     refreshMap();
     return;
+  }
+  if (trackRouteEditing) {
+    const waypoint = waypointAtMapEvent(event);
+    if (waypoint) {
+      trackWaypointMove = {
+        routeId: trackRouteEditing.routeId,
+        legId: waypoint.id,
+        preview: [...waypoint.waypoint],
+        pointerId: event.pointerId,
+      };
+      canvas.setPointerCapture(event.pointerId);
+      refreshMap();
+      return;
+    }
   }
   if (shapeDrawing) {
     const point = mapPosition(event);
@@ -3506,6 +4558,11 @@ window.addEventListener("pointerdown", (event) => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
+  if (terrainProfileDrawing?.start) {
+    terrainProfileDrawing.preview = mapPosition(event);
+    refreshMap();
+    return;
+  }
   if (trackRouteDrawing) {
     trackRouteDrawing.preview = mapPosition(event);
     refreshMap();
@@ -3555,17 +4612,24 @@ canvas.addEventListener("pointerup", async (event) => {
       status.textContent = "Waypoint no longer exists.";
       return;
     }
+    const previousWaypoint = [...leg.waypoint];
     leg.waypoint = move.preview;
-    trackWaypointMove = null;
     try {
       await persistTrackScenario();
-      status.textContent = `Moved ${leg.id}.`;
-      renderTrackEditor();
-      trackEditorDialog.showModal();
+      status.textContent = trackRouteEditing
+        ? `Moved ${leg.id}. Drag another cyan waypoint or press Escape to return to the route editor.`
+        : `Moved ${leg.id}.`;
+      if (!trackRouteEditing) {
+        renderTrackEditor();
+        trackEditorDialog.showModal();
+      }
     } catch (error) {
+      leg.waypoint = previousWaypoint;
       status.textContent = `Unable to move waypoint: ${error.message}`;
+    } finally {
+      trackWaypointMove = null;
+      refreshMap();
     }
-    refreshMap();
     return;
   }
   if (shapeDrawing?.start) {
@@ -3598,10 +4662,30 @@ canvas.addEventListener("dblclick", (event) => {
 });
 
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && (trackRouteDrawing || trackWaypointMove)) {
+  if (event.key === "Escape" && terrainProfileDrawing) {
+    terrainProfileDrawing = null;
+    renderWorkspace();
+    workspaceDialog.showModal();
+    status.textContent = "Terrain profile selection cancelled.";
+    refreshMap();
+    return;
+  }
+  if (event.key === "Escape" && (trackRouteDrawing || trackWaypointMove || trackRouteEditing)) {
+    const returnToWorkspace = trackRouteEditing !== null;
     trackRouteDrawing = null;
     trackWaypointMove = null;
-    status.textContent = "Track editing cancelled.";
+    trackRouteEditing = null;
+    if (returnToWorkspace && workspaceSession) {
+      workspaceSession.activePane = "routes";
+      workspaceSession.activeItem = null;
+      workspaceSession.editing = null;
+      renderWorkspace();
+      workspaceDialog.showModal();
+      startWorkspaceSimulationPolling();
+      status.textContent = "Finished map route editing.";
+    } else {
+      status.textContent = "Track editing cancelled.";
+    }
     refreshMap();
     return;
   }
@@ -3704,6 +4788,7 @@ loadConfiguration()
     status.textContent = `Unable to load configuration: ${error.message}`;
   })
   .finally(() => {
+    sidePanel.classList.add("is-ready");
     resizeCanvas();
     refreshMap();
   });

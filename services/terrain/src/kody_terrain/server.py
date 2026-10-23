@@ -140,6 +140,17 @@ class LosRosetteRequest(BaseModel):
     latitude: float = Field(ge=-MAX_MERCATOR_LATITUDE, le=MAX_MERCATOR_LATITUDE)
 
 
+class TerrainProfilePoint(BaseModel):
+    longitude: float = Field(ge=-180, le=180)
+    latitude: float = Field(ge=-MAX_MERCATOR_LATITUDE, le=MAX_MERCATOR_LATITUDE)
+
+
+class TerrainProfileRequest(BaseModel):
+    start: TerrainProfilePoint
+    end: TerrainProfilePoint
+    sample_count: int = Field(default=128, alias="sampleCount", ge=2, le=1_024)
+
+
 class ConfigurationStore:
     def __init__(self) -> None:
         self.configuration = TerrainConfiguration()
@@ -911,6 +922,46 @@ def destination_point(
     )
 
 
+def terrain_profile(request: TerrainProfileRequest) -> dict[str, object]:
+    start = request.start
+    end = request.end
+    latitude_delta = (end.latitude - start.latitude) * pi / 180
+    longitude_delta = (end.longitude - start.longitude) * pi / 180
+    start_latitude = start.latitude * pi / 180
+    end_latitude = end.latitude * pi / 180
+    haversine = sin(latitude_delta / 2) ** 2 + (
+        cos(start_latitude) * cos(end_latitude) * sin(longitude_delta / 2) ** 2
+    )
+    distance_metres = EARTH_RADIUS_METRES * 2 * atan2(
+        haversine**0.5, (1 - haversine) ** 0.5
+    )
+    samples: list[dict[str, object]] = []
+    for index in range(request.sample_count):
+        fraction = index / (request.sample_count - 1)
+        longitude = start.longitude + (end.longitude - start.longitude) * fraction
+        latitude = start.latitude + (end.latitude - start.latitude) * fraction
+        elevation = terrain_elevation(longitude, latitude)
+        samples.append({
+            "distanceMetres": distance_metres * fraction,
+            "longitude": longitude,
+            "latitude": latitude,
+            "heightMetres": elevation[0] if elevation else None,
+            "sourceId": elevation[1] if elevation else None,
+        })
+    known_heights = [sample["heightMetres"] for sample in samples if sample["heightMetres"] is not None]
+    return {
+        "start": start.model_dump(),
+        "end": end.model_dump(),
+        "distanceMetres": distance_metres,
+        "samples": samples,
+        "statistics": {
+            "minimumMetres": min(known_heights) if known_heights else None,
+            "maximumMetres": max(known_heights) if known_heights else None,
+            "missingSampleCount": request.sample_count - len(known_heights),
+        },
+    }
+
+
 def create_los_rosette(
     longitude: float,
     latitude: float,
@@ -1052,9 +1103,44 @@ def get_elevation(longitude: float, latitude: float) -> dict[str, object]:
     return {"heightMetres": height, "packageId": package_id}
 
 
+@app.get("/api/workspace")
+def get_workspace() -> dict[str, object]:
+    return {
+        "kind": "terrain-analysis",
+        "title": "TerrainAnalysis",
+        "resources": {"profilePath": "/api/terrain/profile"},
+        "panes": [
+            {
+                "id": "overview",
+                "label": "Overview",
+                "description": "Choose two map points to analyse the terrain between them.",
+                "summary": {"metrics": [], "items": []},
+            },
+            {
+                "id": "profiles",
+                "label": "Elevation profiles",
+                "description": "Draw a point-to-point terrain elevation profile.",
+                "summary": {"metrics": [], "items": []},
+            },
+        ],
+        "timeline": {"description": "Terrain analysis activity."},
+    }
+
+
+@app.post("/api/terrain/profile")
+def create_terrain_profile(request: TerrainProfileRequest) -> dict[str, object]:
+    return terrain_profile(request)
+
+
 @app.get("/api/kody/manifest")
 def get_manifest() -> dict[str, object]:
-    return {"kodyApiVersion": "1", "serviceId": "terrain", "displayName": "Terrain", "configuration": {
+    return {"kodyApiVersion": "1", "serviceId": "terrain", "displayName": "Terrain", "capabilities": {
+        "workspace": {
+            "id": "terrain-analysis",
+            "label": "TerrainAnalysis",
+            "openPath": "/api/workspace",
+        },
+    }, "configuration": {
         "readPath": "/api/config", "writePath": "/api/config",
         "fields": [
             {"key": "sourceFilename", "label": "Terrain filename in imports", "type": "string", "required": False},

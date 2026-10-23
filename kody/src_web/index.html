@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kody map</title>
-    <link rel="stylesheet" href="/styles.css?v=20261022c">
+    <link rel="stylesheet" href="/styles.css?v=20261023a">
   </head>
   <body class="map-page">
     <header class="topbar">
@@ -51,12 +51,16 @@
                   <output id="grid-opacity">10</output>
                   <button type="button" data-opacity-layer="grid" data-opacity-change="1" aria-label="Increase grid opacity">+</button>
                 </div>
-                <button id="configure-grid" class="configure-service" type="button" aria-label="Configure Lat/Lon Grid">⚙</button>
+                <button id="configure-grid" class="configure-service" type="button" aria-label="Configure Lat/Lon Grid" data-symbol="gear" data-symbol-fallback="⚙">⚙</button>
               </div>
             </section>
             <section class="layer-group" aria-labelledby="data-sources-heading">
               <p class="group-label" id="data-sources-heading">Data</p>
               <div id="data-source-list"></div>
+            </section>
+            <section class="layer-group" aria-labelledby="workspace-sources-heading">
+              <p class="group-label" id="workspace-sources-heading">Workspace</p>
+              <div id="workspace-source-list"></div>
             </section>
             <section class="layer-group" aria-labelledby="live-sources-heading">
               <p class="group-label" id="live-sources-heading">Live</p>
@@ -163,6 +167,25 @@
         </div>
       </form>
     </dialog>
-    <script type="module" src="/map.js?v=20261022j"></script>
+    <dialog id="workspace-dialog" aria-labelledby="workspace-title">
+      <section id="workspace-shell">
+        <header id="workspace-header">
+          <div>
+            <p id="workspace-eyebrow" class="eyebrow">Workspace</p>
+            <h2 id="workspace-title">Workspace</h2>
+          </div>
+          <button id="workspace-close" type="button">Close</button>
+        </header>
+        <div id="workspace-content">
+          <nav id="workspace-navigator" aria-label="Workspace navigator"></nav>
+          <div id="workspace-navigator-resize" class="workspace-resize" aria-hidden="true"></div>
+          <main id="workspace-primary"></main>
+          <div id="workspace-inspector-resize" class="workspace-resize" aria-hidden="true"></div>
+          <aside id="workspace-inspector" aria-label="Workspace inspector"></aside>
+          <section id="workspace-timeline" aria-label="Workspace timeline"></section>
+        </div>
+      </section>
+    </dialog>
+    <script type="module" src="/map.js?v=20261023a"></script>
   </body>
 </html>

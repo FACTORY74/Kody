@@ -389,6 +389,62 @@ the prior revision in `revisionHeader`; `POST resetPath` resets non-persisted
 simulation state to the current declarative scenario. The simulation MUST
 advance only from its own clock, enabling repeatable paused and reset states.
 
+### 3.9 Workspace capability
+
+Services with several related resources MAY request the core application's
+trusted workspace shell:
+
+```json
+{
+  "capabilities": {
+    "workspace": {
+      "id": "platform-simulation",
+      "label": "Simulation workspace",
+      "openPath": "/api/workspace",
+      "revisionHeader": "If-Match"
+    }
+  }
+}
+```
+
+`GET openPath` returns a structured workspace definition:
+
+```json
+{
+  "revision": "opaque",
+  "title": "Platform simulation",
+  "resources": {"scenario": "/api/scenario"},
+  "panes": [{
+    "id": "routes",
+    "label": "Routes",
+    "description": "Route geometry and waypoint targets.",
+    "summary": {
+      "metrics": [{"label": "Routes", "value": "4"}],
+      "items": [{
+        "id": "coastal-patrol",
+        "title": "Coastal patrol",
+        "description": "4 legs · loop"
+      }]
+    }
+  }],
+  "timeline": {"description": "Simulation time and events."}
+}
+```
+
+The core owns the workspace shell, navigator, primary editor region,
+inspector, timeline region, resizing, and safe text rendering. The service
+owns all resource schemas, values, validation, persistence, and domain logic.
+The definition MUST NOT contain HTML, scripts, styles, executable code, or
+arbitrary client component definitions. Resource writes use each declared
+resource's own revision contract.
+
+Each pane provides a `summary` with text-only `metrics` and selectable
+`items`. The core renders these with its standard cards and inspector; it
+never treats them as presentation code. A timeline may use
+[`simulationControls`](#38-simulation-controls-capability) for a local
+simulation clock. A future shared time service can expose the same capability
+for synchronized simulation plugins.
+
 ## 4. Configuration contract
 
 `manifest.configuration` is optional. If provided, it MUST include:

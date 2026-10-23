@@ -9,6 +9,8 @@ from PIL import Image
 from kody_terrain.server import (
     ElevationGrid,
     TerrainConfiguration,
+    TerrainProfilePoint,
+    TerrainProfileRequest,
     configuration_store,
     create_los_rosette,
     compose_parent_level,
@@ -22,12 +24,34 @@ from kody_terrain.server import (
     render_tile,
     native_tile_zoom,
     terrain_elevation,
+    terrain_profile,
     terrain_tile_image,
     terrain_packages,
 )
 
 
 class TerrainTests(unittest.TestCase):
+    def test_terrain_profile_samples_the_requested_line_and_reports_missing_coverage(self) -> None:
+        request = TerrainProfileRequest(
+            start=TerrainProfilePoint(longitude=-1, latitude=50),
+            end=TerrainProfilePoint(longitude=-0.5, latitude=50),
+            sampleCount=3,
+        )
+        with patch(
+            "kody_terrain.server.terrain_elevation",
+            side_effect=[(100.0, "base"), None, (300.0, "detail")],
+        ):
+            profile = terrain_profile(request)
+
+        self.assertEqual(profile["start"], {"longitude": -1.0, "latitude": 50.0})
+        self.assertEqual(profile["end"], {"longitude": -0.5, "latitude": 50.0})
+        self.assertEqual([sample["heightMetres"] for sample in profile["samples"]], [100.0, None, 300.0])
+        self.assertEqual(profile["statistics"], {
+            "minimumMetres": 100.0,
+            "maximumMetres": 300.0,
+            "missingSampleCount": 1,
+        })
+
     def test_import_source_accepts_an_absolute_terrain_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

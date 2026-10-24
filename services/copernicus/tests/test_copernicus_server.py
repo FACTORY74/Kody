@@ -12,8 +12,10 @@ from kody_copernicus.server import (
     COPERNICUS_NATIVE_TILE_ZOOM,
     CopernicusConfiguration,
     Viewport,
+    copernicus_mosaic_options,
     copernicus_request,
     copernicus_request_dimensions,
+    copernicus_tile_grid_batches,
     copernicus_tile_sections,
     download_current_viewport,
     import_georeferenced_png,
@@ -94,6 +96,52 @@ class SatelliteTileTests(unittest.TestCase):
         self.assertEqual(request["output"]["height"], 64)
         self.assertEqual(request["input"]["data"][0]["dataFilter"]["mosaickingOrder"], "mostRecent")
 
+    def test_process_request_can_target_a_selected_quarterly_mosaic(self) -> None:
+        request = copernicus_request(
+            (-1_000, -2_000, 1_000, 2_000),
+            128,
+            64,
+            "2026-04-01T00:00:00Z/2026-06-30T23:59:59Z",
+        )
+
+        self.assertEqual(
+            request["input"]["data"][0]["dataFilter"]["timeRange"],
+            {"from": "2026-04-01T00:00:00Z", "to": "2026-06-30T23:59:59Z"},
+        )
+
+    def test_selected_mosaic_period_must_be_an_iso_datetime_range(self) -> None:
+        with self.assertRaisesRegex(ValueError, "mosaicPeriod"):
+            CopernicusConfiguration(mosaicPeriod="summer")
+
+    def test_catalogue_mosaics_are_returned_as_select_options(self) -> None:
+        token_response = MagicMock()
+        token_response.json.return_value = {"access_token": "token"}
+        catalogue_response = MagicMock()
+        catalogue_response.json.return_value = {
+            "features": ["2026-04-01", "2026-01-01"],
+        }
+        session = MagicMock()
+        session.post.side_effect = [token_response, catalogue_response]
+
+        with patch("kody_copernicus.server.requests.Session", return_value=session):
+            options = copernicus_mosaic_options(
+                CopernicusConfiguration(clientId="client", clientSecret="secret")
+            )
+
+        self.assertEqual(options[0], {"value": "latest", "label": "Latest available mosaic"})
+        self.assertIn(
+            {
+                "value": "2026-04-01T00:00:00Z/2026-06-30T23:59:59Z",
+                "label": "2026 Q2 (2026-04-01 to 2026-06-30)",
+            },
+            options,
+        )
+        self.assertEqual(session.post.call_count, 2)
+        catalogue_request = session.post.call_args_list[1].kwargs["json"]
+        self.assertEqual(catalogue_request["bbox"], [-180, -85, 180, 85])
+        self.assertEqual(catalogue_request["distinct"], "date")
+        self.assertEqual(catalogue_request["limit"], 100)
+
     def test_large_area_request_uses_collection_resolution(self) -> None:
         dimensions = copernicus_request_dimensions(
             (-5_009_377.085697312, 8_659_174.417649025, -4_174_480.90474776, 10_018_754.171394626),
@@ -136,6 +184,20 @@ class SatelliteTileTests(unittest.TestCase):
         row_count = len({destination[1] for _, destination in sections})
 
         self.assertEqual(first_row_bottom, round(256 / row_count))
+
+    def test_viewport_tiles_are_grouped_into_bounded_contiguous_mosaic_requests(self) -> None:
+        tiles = [(x, y) for y in range(10, 20) for x in range(20, 31)]
+
+        grids = copernicus_tile_grid_batches(tiles)
+
+        self.assertEqual(len(grids), 4)
+        self.assertEqual({tile for grid in grids for tile in grid}, set(tiles))
+        self.assertTrue(
+            all(
+                len({x for x, _ in grid}) <= 9 and len({y for _, y in grid}) <= 9
+                for grid in grids
+            )
+        )
 
     def test_configuration_response_redacts_and_preserves_client_secret(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -188,6 +250,44 @@ class SatelliteTileTests(unittest.TestCase):
             with Image.open(BytesIO(tile_payload)) as tile:
                 self.assertEqual(tile.format, "WEBP")
             self.assertEqual(session.post.call_count, 2)
+
+    def test_download_crops_adjacent_tiles_from_one_process_mosaic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_bytes = BytesIO()
+            mosaic = Image.new("RGB", (512, 256), "red")
+            ImageDraw.Draw(mosaic).rectangle((256, 0, 511, 255), fill="blue")
+            mosaic.save(image_bytes, format="PNG")
+            mosaic.close()
+            token_response = MagicMock()
+            token_response.json.return_value = {"access_token": "token"}
+            process_response = MagicMock()
+            process_response.content = image_bytes.getvalue()
+            session = MagicMock()
+            session.post.side_effect = [token_response, process_response]
+            configuration = CopernicusConfiguration(
+                clientId="client",
+                clientSecret="secret",
+                rebuildPyramidWithDownload=False,
+            )
+
+            with (
+                patch("kody_copernicus.server.COPERNICUS_DIRECTORY", root),
+                patch(
+                    "kody_copernicus.server.viewport_from_configuration_service",
+                    return_value=Viewport(west=-1, south=-1, east=1, north=1, zoom=0),
+                ),
+                patch("kody_copernicus.server.viewport_tiles", return_value=(7, [(1, 1), (2, 1)])),
+                patch("kody_copernicus.server.requests.Session", return_value=session),
+            ):
+                download_current_viewport(configuration)
+
+            self.assertEqual(session.post.call_count, 2)
+            for x, color in [(1, (255, 0, 0, 255)), (2, (0, 0, 255, 255))]:
+                payload = tile_store(root).get(7, x, 1)
+                self.assertIsNotNone(payload)
+                with Image.open(BytesIO(payload)) as tile:
+                    self.assert_pixel_color_near(tile.getpixel((128, 128)), color)
 
     def test_missing_child_tile_is_cropped_from_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

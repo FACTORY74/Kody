@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Callable, Literal, TypeVar
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from fastapi import Body, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +23,7 @@ DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
 AIRCRAFT_TYPES_FILE = DATA_ROOT / "tracks" / "aircraft-types.json"
 SCENARIO_FILE = DATA_ROOT / "tracks" / "scenario.json"
 CONFIG_FILE = ROOT_DIRECTORY / "config" / "tracks.json"
+SIM_TIME_SERVICE_URL = os.environ.get("KODY_SIM_TIME_SERVICE_URL", "http://127.0.0.1:8012").rstrip("/")
 CatalogueModel = TypeVar("CatalogueModel", bound=BaseModel)
 
 
@@ -39,6 +42,18 @@ def _coordinate(value: list[float]) -> list[float]:
 Coordinate = Annotated[list[float], Field(min_length=2, max_length=2)]
 CompletionPolicy = Literal["despawn", "restart", "loop", "hold", "reverse"]
 AircraftState = Literal["running", "paused"]
+
+
+def shared_simulation_seconds() -> float:
+    try:
+        with urlopen(f"{SIM_TIME_SERVICE_URL}/api/sim-time", timeout=1) as response:
+            payload = json.load(response)
+    except (OSError, URLError, json.JSONDecodeError) as error:
+        raise HTTPException(status_code=503, detail="SimTimeControl is unavailable") from error
+    elapsed_seconds = payload.get("elapsedSeconds")
+    if not isinstance(elapsed_seconds, (int, float)) or isinstance(elapsed_seconds, bool) or elapsed_seconds < 0:
+        raise HTTPException(status_code=503, detail="SimTimeControl returned an invalid elapsed time")
+    return float(elapsed_seconds)
 
 
 class TracksConfiguration(BaseModel):
@@ -361,7 +376,7 @@ class TrackStore:
         with self.lock:
             self.configuration = configuration
 
-    def _reload_catalogues(self) -> None:
+    def _reload_catalogues(self, now: float | None = None) -> None:
         aircraft_types = self._load_catalogue(
             self.aircraft_types_path,
             AircraftTypeCatalogue,
@@ -382,7 +397,7 @@ class TrackStore:
         self.aircraft_types = aircraft_types
         self.scenario       = scenario
         self._reset_runtime()
-        self.last_tick           = self.clock()
+        self.last_tick           = self.clock() if now is None else now
         self.simulation_seconds  = 0.0
 
     def aircraft_types_response(self) -> dict[str, object]:
@@ -421,17 +436,21 @@ class TrackStore:
     def clear(self) -> None:
         self.update_scenario(ScenarioCatalogue(), None)
 
-    def simulation_response(self) -> dict[str, object]:
+    def simulation_response(self, now: float | None = None) -> dict[str, object]:
         with self.lock:
+            if now is not None:
+                self._tick(now)
             return {
                 "revision": str(self.simulation_control_revision),
                 "running": self.simulation_running,
                 "elapsedSeconds": self.simulation_seconds,
             }
 
-    def workspace_response(self) -> dict[str, object]:
+    def workspace_response(self, now: float | None = None) -> dict[str, object]:
         with self.lock:
-            self._reload_catalogues()
+            if now is not None:
+                self._tick(now)
+            self._reload_catalogues(now)
             type_by_id = {aircraft_type.id: aircraft_type for aircraft_type in self.aircraft_types.types}
             scenario = self.scenario
             return {
@@ -508,7 +527,7 @@ class TrackStore:
                     {
                         "id": "timeline",
                         "label": "Timeline",
-                        "description": "Deterministic simulation time and future scheduled scenario events.",
+                        "description": "Shared simulation time and future scheduled scenario events.",
                         "summary": {
                             "metrics": [
                                 {"label": "State", "value": "Running" if self.simulation_running else "Paused"},
@@ -519,7 +538,7 @@ class TrackStore:
                     },
                 ],
                 "timeline": {
-                    "description": "This Tracks-local clock controls the current simulation. A shared simulation-time service remains a future cross-plugin architecture.",
+                    "description": "SimTimeControl is the authoritative clock for TrackSim progression.",
                 },
             }
 
@@ -634,6 +653,12 @@ class TrackStore:
             runtime.legStartPosition = list(runtime.position)
 
     def _tick(self, now: float) -> None:
+        if now < self.last_tick:
+            self._reset_runtime()
+            self.simulation_seconds = 0.0
+            self.last_tick = now
+            self.simulation_control_revision += 1
+            return
         elapsed = min(max(now - self.last_tick, 0), 10)
         self.last_tick = now
         if not self.simulation_running:
@@ -648,9 +673,9 @@ class TrackStore:
             if len(runtime.trail) > maximum_samples:
                 del runtime.trail[:-maximum_samples]
 
-    def response(self) -> dict[str, object]:
+    def response(self, now: float | None = None) -> dict[str, object]:
         with self.lock:
-            self._tick(self.clock())
+            self._tick(self.clock() if now is None else now)
             routes = {route.id: route for route in self.scenario.routes}
             types = {item.id: item for item in self.aircraft_types.types}
             features: list[dict[str, object]] = []
@@ -737,7 +762,19 @@ def get_manifest() -> dict[str, object]:
         "serviceId": "tracks",
         "displayName": "TrackSim",
         "dataEndpoint": {"path": "/api/geojson", "format": "geojson"},
+        "dependencies": {
+            "simTimeControl": {
+                "serviceId": "sim-time",
+                "statePath": "/api/sim-time",
+                "eventStreamPath": "/api/sim-time/events",
+            },
+        },
         "capabilities": {
+            "dataLayer": {
+                "kind": "geojson",
+                "dataPath": "/api/geojson",
+                "refreshSeconds": 1,
+            },
             "scenarioEditor": {
                 "aircraftTypesPath": "/api/tracks/aircraft-types",
                 "scenarioPath": "/api/tracks/scenario",
@@ -749,15 +786,9 @@ def get_manifest() -> dict[str, object]:
                     "waypointFields": ["targetAltitudeMetres", "targetSpeedMetres"],
                 },
             },
-            "simulationControls": {
-                "readPath": "/api/tracks/simulation",
-                "writePath": "/api/tracks/simulation",
-                "resetPath": "/api/tracks/simulation/reset",
-                "revisionHeader": "If-Match",
-            },
             "workspace": {
                 "id": "platform-simulation",
-                "label": "Simulation workspace",
+                "label": "TrackSimControl",
                 "openPath": "/api/workspace",
                 "revisionHeader": "If-Match",
             },
@@ -784,7 +815,7 @@ def update_configuration(configuration: TracksConfiguration, if_match: str | Non
 
 @app.get("/api/workspace")
 def get_workspace() -> dict[str, object]:
-    return track_store.workspace_response()
+    return track_store.workspace_response(shared_simulation_seconds())
 
 
 @app.get("/api/tracks/aircraft-types")
@@ -811,7 +842,7 @@ def update_scenario(scenario: ScenarioCatalogue = Body(...), if_match: str | Non
 
 @app.get("/api/tracks/simulation")
 def get_simulation() -> dict[str, object]:
-    return track_store.simulation_response()
+    return track_store.simulation_response(shared_simulation_seconds())
 
 
 @app.put("/api/tracks/simulation")
@@ -819,14 +850,12 @@ def update_simulation(
     controls: SimulationControls = Body(...),
     if_match: str | None = Header(default=None),
 ) -> dict[str, object]:
-    track_store.update_simulation(controls, if_match)
-    return track_store.simulation_response()
+    raise HTTPException(status_code=409, detail="TrackSim simulation controls are owned by SimTimeControl")
 
 
 @app.post("/api/tracks/simulation/reset")
 def reset_simulation() -> dict[str, object]:
-    track_store.reset_simulation()
-    return track_store.simulation_response()
+    raise HTTPException(status_code=409, detail="TrackSim simulation reset is owned by SimTimeControl")
 
 
 @app.post("/api/actions/clear-local-data")
@@ -837,4 +866,4 @@ def clear_local_data() -> dict[str, str]:
 
 @app.get("/api/geojson")
 def get_track() -> dict[str, object]:
-    return track_store.response()
+    return track_store.response(shared_simulation_seconds())

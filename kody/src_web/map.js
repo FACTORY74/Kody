@@ -10,13 +10,17 @@ const zoomLevel = document.querySelector("#zoom-level");
 const upsLevel = document.querySelector("#ups-level");
 const status = document.querySelector("#map-status");
 const attribution = document.querySelector("#map-attribution");
+const miniTimeControl = document.querySelector("#mini-time-control");
+const miniTimePlay = document.querySelector("#mini-time-play");
+const miniTimePause = document.querySelector("#mini-time-pause");
+const miniTimeReadout = document.querySelector("#mini-time-readout");
+const miniTimeReset = document.querySelector("#mini-time-reset");
 let vectorLayer;
 let imageryLayer;
 let copernicusLayer;
 let terrainLayer;
 const mapServiceList = document.querySelector("#map-service-list");
 const dataSourceList = document.querySelector("#data-source-list");
-const liveSourceList = document.querySelector("#live-source-list");
 const workspaceSourceList = document.querySelector("#workspace-source-list");
 const symbolSourceList = document.querySelector("#symbol-source-list");
 const layersTab = document.querySelector("#layers-tab");
@@ -117,6 +121,7 @@ let terrainRevision = null;
 let terrainPalette = null;
 let viewportElevation = null;
 let overlayServices = [];
+let workspaceServices = [];
 let overlayRevision = null;
 const overlayCollections = new Map();
 let symbolServices = [];
@@ -140,6 +145,11 @@ let terrainProfileDrawing = null;
 let workspaceSession = null;
 let workspaceResize = null;
 let workspaceSimulationTimer = null;
+let workspaceSimulationEvents = null;
+let simTimeControlService = null;
+let simTimeControlState = null;
+let simTimeControlEvents = null;
+let displayMiniTimeControl = false;
 let measureStart = null;
 let measureEnd = null;
 let configurationSession = null;
@@ -190,7 +200,7 @@ async function registeredRunningServices(services) {
 }
 
 function activeServiceIds() {
-  return new Set([...mapServices.values(), ...overlayServices, ...symbolServices].map((service) => service.id));
+  return new Set([...mapServices.values(), ...overlayServices, ...symbolServices, ...workspaceServices].map((service) => service.id));
 }
 
 async function reconcileRegisteredServices() {
@@ -241,7 +251,6 @@ function mapLayerDetails(type, layers) {
 
 function renderMapServiceControls(layers) {
   mapServiceList.replaceChildren();
-  workspaceSourceList.replaceChildren();
   for (const service of mapServices.values()) {
     const details = mapLayerDetails(service.type, layers);
     if (!details) {
@@ -264,8 +273,7 @@ function renderMapServiceControls(layers) {
         refreshTerrainRevision().catch((error) => { status.textContent = `Unable to refresh terrain: ${error.message}`; });
       }
     });
-    const workspace = service.manifest?.capabilities?.workspace;
-    label.append(checkbox, ` ${workspace ? workspace.label : service.displayName}`);
+    label.append(checkbox, ` ${service.displayName}`);
     const opacity = document.createElement("div");
     opacity.className = "opacity-control";
     const decrease = document.createElement("button");
@@ -288,25 +296,50 @@ function renderMapServiceControls(layers) {
     const configure = document.createElement("button");
     configure.type = "button";
     configure.className = "configure-service";
-    configure.dataset.symbol = workspace ? "rocket" : "gear";
-    configure.dataset.symbolFallback = workspace ? "🚀" : "⚙";
-    configure.textContent = workspace ? "🚀" : "⚙";
-    configure.title = workspace ? `Open ${workspace.label}` : `Configure ${service.displayName}`;
+    configure.dataset.symbol = "gear";
+    configure.dataset.symbolFallback = "⚙";
+    configure.textContent = "⚙";
+    configure.title = `Configure ${service.displayName}`;
     renderButtonSymbol(configure);
     configure.addEventListener("click", () => {
-      const open = workspace ? configureWorkspace(service) : configureService(service);
-      open.catch((error) => {
-        status.textContent = workspace
-          ? `Unable to open ${workspace.label}: ${error.message}`
-          : `Unable to configure ${service.displayName}: ${error.message}`;
+      configureService(service).catch((error) => {
+        status.textContent = `Unable to configure ${service.displayName}: ${error.message}`;
       });
     });
     row.append(label, opacity, configure);
-    (workspace ? workspaceSourceList : mapServiceList).append(row);
+    mapServiceList.append(row);
     if (details.control === "vectorLayer") vectorLayer = checkbox;
     if (details.control === "imageryLayer") imageryLayer = checkbox;
     if (details.control === "copernicusLayer") copernicusLayer = checkbox;
     if (details.control === "terrainLayer") terrainLayer = checkbox;
+  }
+}
+
+function renderWorkspaceLaunchers() {
+  workspaceSourceList.replaceChildren();
+  const services = [...mapServices.values(), ...overlayServices, ...workspaceServices]
+    .filter((service) => service.manifest?.capabilities?.workspace);
+  for (const service of services) {
+    const workspace = service.manifest.capabilities.workspace;
+    const launcher = document.createElement("button");
+    launcher.type = "button";
+    launcher.className = "workspace-launcher";
+    launcher.dataset.symbol = "rocket";
+    launcher.dataset.symbolFallback = "🚀";
+    launcher.textContent = "🚀";
+    launcher.title = `Open ${workspace.label}`;
+    launcher.setAttribute("aria-label", launcher.title);
+    const label = document.createElement("span");
+    label.dataset.symbolLabel = "true";
+    label.textContent = workspace.label;
+    launcher.append(label);
+    renderButtonSymbol(launcher);
+    launcher.addEventListener("click", () => {
+      configureWorkspace(service).catch((error) => {
+        status.textContent = `Unable to open ${workspace.label}: ${error.message}`;
+      });
+    });
+    workspaceSourceList.append(launcher);
   }
 }
 
@@ -570,41 +603,43 @@ function drawCountryLayer(target) {
 function drawImageryLayer(target) {
   const baseZoom = Math.max(0, Math.min(18, Math.floor(camera.zoom)));
   const detailZoom = Math.min(18, Math.ceil(camera.zoom));
-  for (const tile of nearestCachedTiles(baseZoom, rasterTileCache, rasterTileKey)) {
-    drawTile(target, tile);
-  }
-
+  let tiles = nearestCachedTiles(baseZoom, rasterTileCache, rasterTileKey);
   if (detailZoom > baseZoom) {
-    for (const tile of exactCachedTiles(detailZoom, rasterTileCache, rasterTileKey)) {
-      drawTile(target, tile);
+    const visibleDetailTiles = visibleTiles(detailZoom);
+    const detailTiles = exactCachedTiles(detailZoom, rasterTileCache, rasterTileKey);
+    if (detailTiles.length === visibleDetailTiles.length) {
+      tiles = detailTiles;
     }
   }
+  for (const tile of tiles) drawTile(target, tile);
 }
 
 function drawCopernicusLayer(target) {
   const baseZoom = Math.max(0, Math.min(18, Math.floor(camera.zoom)));
   const detailZoom = Math.min(18, Math.ceil(camera.zoom));
-  for (const tile of nearestCachedTiles(baseZoom, copernicusTileCache, copernicusTileKey)) {
-    drawTile(target, tile);
-  }
+  let tiles = nearestCachedTiles(baseZoom, copernicusTileCache, copernicusTileKey);
   if (detailZoom > baseZoom) {
-    for (const tile of exactCachedTiles(detailZoom, copernicusTileCache, copernicusTileKey)) {
-      drawTile(target, tile);
+    const visibleDetailTiles = visibleTiles(detailZoom);
+    const detailTiles = exactCachedTiles(detailZoom, copernicusTileCache, copernicusTileKey);
+    if (detailTiles.length === visibleDetailTiles.length) {
+      tiles = detailTiles;
     }
   }
+  for (const tile of tiles) drawTile(target, tile);
 }
 
 function drawTerrainLayer(target) {
   const baseZoom = Math.max(0, Math.min(18, Math.floor(camera.zoom)));
   const detailZoom = Math.min(18, Math.ceil(camera.zoom));
-  for (const tile of nearestCachedTiles(baseZoom, terrainTileCache, terrainTileKey)) {
-    drawTerrainTile(target, tile);
-  }
+  let tiles = nearestCachedTiles(baseZoom, terrainTileCache, terrainTileKey);
   if (detailZoom > baseZoom) {
-    for (const tile of exactCachedTiles(detailZoom, terrainTileCache, terrainTileKey)) {
-      drawTerrainTile(target, tile);
+    const visibleDetailTiles = visibleTiles(detailZoom);
+    const detailTiles = exactCachedTiles(detailZoom, terrainTileCache, terrainTileKey);
+    if (detailTiles.length === visibleDetailTiles.length) {
+      tiles = detailTiles;
     }
   }
+  for (const tile of tiles) drawTerrainTile(target, tile);
 }
 
 function clipLineSegment(start, end, bounds) {
@@ -1511,6 +1546,18 @@ function configurationInput(field, value) {
       positionFields.append(input);
     }
     container.append(positionFields);
+  } else if (field.type === "select") {
+    const input = document.createElement("select");
+    input.dataset.configKey = field.key;
+    input.required = field.required !== false;
+    for (const option of field.options || []) {
+      const choice = document.createElement("option");
+      choice.value = option.value;
+      choice.textContent = option.label;
+      input.append(choice);
+    }
+    input.value = value ?? "";
+    container.append(input);
   } else {
     const input = document.createElement("input");
     input.type = field.type === "boolean" ? "checkbox" : field.type;
@@ -1742,19 +1789,33 @@ async function configureService(service) {
   setServiceConfigurationDialogMode();
   configurationSession = { service, manifest, revision: configuration.revision };
   serviceConfigTitle.textContent = `Configure ${manifest.displayName}`;
-  const fields = manifest.configuration.fields.map((field) => {
+  const fields = await Promise.all(manifest.configuration.fields.map(async (field) => {
+    let configuredField = field;
+    if (field.optionsPath) {
+      const optionsResponse = await fetch(`${service.url}${field.optionsPath}`);
+      if (!optionsResponse.ok) {
+        throw new Error(`${field.label} options returned ${optionsResponse.status}`);
+      }
+      const { options } = await optionsResponse.json();
+      if (!Array.isArray(options) || options.some((option) => (
+        typeof option?.value !== "string" || typeof option.label !== "string"
+      ))) {
+        throw new Error(`${field.label} options are invalid`);
+      }
+      configuredField = { ...field, options };
+    }
     if (field.secretStoredKey && configuration[field.secretStoredKey]) {
       return configurationInput(
         {
-          ...field,
-          label: `${field.label} (saved locally)`,
+          ...configuredField,
+          label: `${configuredField.label} (saved locally)`,
           placeholder: "******** (enter a replacement to change it)",
         },
         configuration[field.key],
       );
     }
-    return configurationInput(field, configuration[field.key]);
-  });
+    return configurationInput(configuredField, configuration[field.key]);
+  }));
   if (fields.length === 0) {
     const emptyState = document.createElement("p");
     emptyState.className = "empty-config-state";
@@ -2189,7 +2250,114 @@ function renderWorkspaceMetrics(metrics) {
 
 function formatSimulationElapsed(seconds) {
   const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
-  return `${String(Math.floor(totalSeconds / 60)).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`;
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`;
+}
+
+function formatWallClockUtc(value) {
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return "Unavailable";
+  return timestamp.toLocaleTimeString("en-GB", {
+    hour12: false,
+    timeZone: "UTC",
+  });
+}
+
+function renderMiniTimeControl() {
+  const simulation = simTimeControlState;
+  miniTimeControl.hidden = !displayMiniTimeControl || !simTimeControlService || !simulation;
+  if (miniTimeControl.hidden) return;
+  const simulationStatus = simulation.status || (simulation.running ? "running" : "paused");
+  miniTimeReadout.textContent = formatSimulationElapsed(simulation.elapsedSeconds);
+  miniTimePlay.disabled = simulationStatus === "running";
+  miniTimePause.disabled = simulationStatus !== "running";
+  miniTimeReset.disabled = simulationStatus === "stopped" && Number(simulation.elapsedSeconds) === 0;
+}
+
+function isSimTimeControlService(service) {
+  return service.manifest?.capabilities?.workspace?.id === "sim-time-control"
+    && Boolean(service.manifest?.capabilities?.simulationControls);
+}
+
+function setSimTimeControlState(service, simulation) {
+  if (!isSimTimeControlService(service)) return;
+  simTimeControlService = service;
+  simTimeControlState = simulation;
+  if (workspaceSession?.service === service) workspaceSession.simulation = simulation;
+  renderMiniTimeControl();
+}
+
+async function sendMiniTimeControlAction(action) {
+  if (!simTimeControlService || !simTimeControlState) {
+    throw new Error("SimTimeControl is unavailable");
+  }
+  const capability = simTimeControlService.manifest.capabilities.simulationControls;
+  const isReset = action === "reset";
+  const response = await fetch(
+    `${simTimeControlService.url}${isReset ? capability.resetPath : capability.writePath}`,
+    isReset
+      ? { method: "POST" }
+      : {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", [capability.revisionHeader]: simTimeControlState.revision },
+        body: JSON.stringify({ action }),
+      },
+  );
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `simulation-time ${action} returned ${response.status}`);
+  }
+  setSimTimeControlState(simTimeControlService, await response.json());
+  if (workspaceSession?.service === simTimeControlService) renderWorkspace();
+}
+
+function startMiniTimeControlUpdates() {
+  const service = workspaceServices.find(isSimTimeControlService) ?? null;
+  if (simTimeControlService !== service && simTimeControlEvents !== null) {
+    simTimeControlEvents.close();
+    simTimeControlEvents = null;
+    simTimeControlState = null;
+  }
+  simTimeControlService = service;
+  if (!service) {
+    renderMiniTimeControl();
+    return;
+  }
+  const capability = service.manifest.capabilities.simulationControls;
+  fetch(`${service.url}${capability.readPath}`)
+    .then((response) => {
+      if (!response.ok) throw new Error(`simulation time returned ${response.status}`);
+      return response.json();
+    })
+    .then((simulation) => setSimTimeControlState(service, simulation))
+    .catch((error) => {
+      if (displayMiniTimeControl) status.textContent = `Unable to load simulation time: ${error.message}`;
+    });
+  if (simTimeControlEvents !== null) return;
+  simTimeControlEvents = new EventSource(`${service.url}${capability.eventStreamPath}`);
+  for (const eventType of ["state", "sync", "started", "paused", "resumed", "stopped", "reset"]) {
+    simTimeControlEvents.addEventListener(eventType, (event) => {
+      try {
+        const simulation = JSON.parse(event.data);
+        if (
+          typeof simulation.running !== "boolean"
+          || typeof simulation.elapsedSeconds !== "number"
+          || typeof simulation.revision !== "string"
+          || typeof simulation.wallClockUtc !== "string"
+        ) {
+          throw new Error("event payload has an invalid simulation state");
+        }
+        setSimTimeControlState(service, simulation);
+        if (workspaceSession?.service === service && !workspaceSession.editing) renderWorkspace();
+      } catch (error) {
+        status.textContent = `Unable to process simulation-time event: ${error.message}`;
+      }
+    });
+  }
+  simTimeControlEvents.addEventListener("error", () => {
+    if (displayMiniTimeControl) status.textContent = "Simulation-time event stream disconnected; reconnecting.";
+  });
 }
 
 function workspaceButton(label, handler, className = "secondary-action") {
@@ -2724,14 +2892,96 @@ function renderTerrainAnalysisWorkspace() {
   }));
 }
 
+function renderSimTimeControlWorkspace() {
+  const { definition } = workspaceSession;
+  const pane = workspacePane(workspaceSession);
+  workspaceContent.classList.remove("is-route-editing", "is-terrain-analysis");
+  workspaceContent.classList.add("is-sim-time-control");
+  workspaceNavigator.replaceChildren();
+  for (const item of definition.panes) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "workspace-nav-item";
+    button.textContent = item.label;
+    button.setAttribute("aria-current", String(item.id === pane.id ? "page" : false));
+    button.addEventListener("click", () => {
+      workspaceSession.activePane = item.id;
+      renderWorkspace();
+    });
+    workspaceNavigator.append(button);
+  }
+  workspacePrimary.replaceChildren(
+    workspaceHeading(pane.label),
+    Object.assign(document.createElement("p"), { className: "workspace-copy", textContent: pane.description }),
+  );
+  const simulation = workspaceSession.simulation;
+  if (!simulation) {
+    workspacePrimary.append(Object.assign(document.createElement("p"), {
+      className: "workspace-placeholder",
+      textContent: "Loading simulation time controls.",
+    }));
+  } else {
+    const simulationStatus = simulation.status || (simulation.running ? "running" : "paused");
+    workspacePrimary.append(renderWorkspaceMetrics([
+      { label: "Wall clock (UTC)", value: formatWallClockUtc(simulation.wallClockUtc) },
+      { label: "Sim seconds", value: `${Number(simulation.elapsedSeconds).toFixed(3)} s` },
+      { label: "Sim time", value: formatSimulationElapsed(simulation.elapsedSeconds) },
+      { label: "State", value: simulationStatus },
+    ]));
+    const controls = document.createElement("div");
+    controls.className = "workspace-editor-actions";
+    for (const [label, action, enabled] of [
+      ["Start", "start", simulationStatus === "stopped"],
+      ["Pause", "pause", simulationStatus === "running"],
+      ["Resume", "resume", simulationStatus === "paused"],
+      ["Stop", "stop", simulationStatus !== "stopped"],
+    ]) {
+      const button = workspaceButton(label, () => {
+        updateSimTimeControl(action).catch((error) => {
+          status.textContent = `Unable to ${action} simulation time: ${error.message}`;
+        });
+      }, action === "start" || action === "resume" ? "primary-action" : "secondary-action");
+      button.disabled = !enabled;
+      controls.append(button);
+    }
+    const reset = workspaceButton("Reset", () => {
+        resetWorkspaceSimulation().catch((error) => {
+          status.textContent = `Unable to reset simulation time: ${error.message}`;
+        });
+      });
+    controls.append(reset);
+    const miniTimeToggle = document.createElement("label");
+    miniTimeToggle.className = "workspace-checkbox";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = displayMiniTimeControl;
+    checkbox.addEventListener("change", () => {
+      displayMiniTimeControl = checkbox.checked;
+      saveLayerSelection();
+      renderMiniTimeControl();
+    });
+    miniTimeToggle.append(checkbox, " Display Mini Time Control");
+    workspacePrimary.append(controls, miniTimeToggle);
+  }
+  workspaceInspector.replaceChildren();
+  workspaceTimeline.replaceChildren(Object.assign(document.createElement("p"), {
+    className: "workspace-copy",
+    textContent: definition.timeline.description,
+  }));
+}
+
 function renderWorkspace() {
   const { definition } = workspaceSession;
   if (definition.kind === "terrain-analysis") {
     renderTerrainAnalysisWorkspace();
     return;
   }
+  if (definition.kind === "sim-time-control") {
+    renderSimTimeControlWorkspace();
+    return;
+  }
   const pane = workspacePane(workspaceSession);
-  workspaceContent.classList.remove("is-terrain-analysis");
+  workspaceContent.classList.remove("is-terrain-analysis", "is-sim-time-control");
   workspaceContent.classList.toggle("is-route-editing", workspaceSession.editing?.kind === "routes");
   workspaceNavigator.replaceChildren();
   for (const item of definition.panes) {
@@ -2878,6 +3128,7 @@ async function refreshWorkspaceSimulation() {
   const response = await fetch(`${service.url}${simulationCapability.readPath}`);
   if (!response.ok) throw new Error(`workspace simulation returned ${response.status}`);
   workspaceSession.simulation = await response.json();
+  setSimTimeControlState(workspaceSession.service, workspaceSession.simulation);
   const timelinePane = workspaceSession.definition.panes.find((pane) => pane.id === "timeline");
   if (timelinePane) {
     timelinePane.summary.metrics = [
@@ -2904,6 +3155,22 @@ async function updateWorkspaceSimulation(running) {
   await refreshShapes();
 }
 
+async function updateSimTimeControl(action) {
+  const { service, simulationCapability, simulation } = workspaceSession;
+  const response = await fetch(`${service.url}${simulationCapability.writePath}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", [simulationCapability.revisionHeader]: simulation.revision },
+    body: JSON.stringify({ action }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `simulation-time ${action} returned ${response.status}`);
+  }
+  workspaceSession.simulation = await response.json();
+  setSimTimeControlState(service, workspaceSession.simulation);
+  renderWorkspace();
+}
+
 async function resetWorkspaceSimulation() {
   const { service, simulationCapability } = workspaceSession;
   const response = await fetch(`${service.url}${simulationCapability.resetPath}`, { method: "POST" });
@@ -2912,6 +3179,7 @@ async function resetWorkspaceSimulation() {
     throw new Error(error.detail || `workspace simulation reset returned ${response.status}`);
   }
   workspaceSession.simulation = await response.json();
+  setSimTimeControlState(workspaceSession.service, workspaceSession.simulation);
   await refreshWorkspaceSimulation();
   await refreshShapes();
 }
@@ -2919,6 +3187,37 @@ async function resetWorkspaceSimulation() {
 function startWorkspaceSimulationPolling() {
   if (!workspaceSession?.simulationCapability) return;
   if (workspaceSimulationTimer !== null) window.clearInterval(workspaceSimulationTimer);
+  if (workspaceSimulationEvents !== null) {
+    workspaceSimulationEvents.close();
+    workspaceSimulationEvents = null;
+  }
+  const { service, simulationCapability } = workspaceSession;
+  if (simulationCapability.eventStreamPath) {
+    workspaceSimulationEvents = new EventSource(`${service.url}${simulationCapability.eventStreamPath}`);
+    for (const eventType of ["state", "sync", "started", "paused", "resumed", "stopped", "reset"]) {
+      workspaceSimulationEvents.addEventListener(eventType, (event) => {
+        try {
+          const simulation = JSON.parse(event.data);
+          if (
+            typeof simulation.running !== "boolean"
+            || typeof simulation.elapsedSeconds !== "number"
+            || typeof simulation.revision !== "string"
+            || typeof simulation.wallClockUtc !== "string"
+          ) {
+            throw new Error("event payload has an invalid simulation state");
+          }
+          workspaceSession.simulation = simulation;
+          if (!workspaceSession.editing) renderWorkspace();
+        } catch (error) {
+          status.textContent = `Unable to process simulation-time event: ${error.message}`;
+        }
+      });
+    }
+    workspaceSimulationEvents.addEventListener("error", () => {
+      status.textContent = "Simulation-time event stream disconnected; reconnecting.";
+    });
+    return;
+  }
   workspaceSimulationTimer = window.setInterval(() => {
     refreshWorkspaceSimulation().catch((error) => {
       status.textContent = `Unable to refresh workspace simulation: ${error.message}`;
@@ -2929,6 +3228,10 @@ function startWorkspaceSimulationPolling() {
 function stopWorkspaceSimulationPolling() {
   if (workspaceSimulationTimer !== null) window.clearInterval(workspaceSimulationTimer);
   workspaceSimulationTimer = null;
+  if (workspaceSimulationEvents !== null) {
+    workspaceSimulationEvents.close();
+    workspaceSimulationEvents = null;
+  }
 }
 
 function validateWorkspaceDefinition(definition) {
@@ -3053,7 +3356,6 @@ function finishShapeDrawing(end) {
 
 function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) {
   dataSourceList.replaceChildren();
-  liveSourceList.replaceChildren();
   for (const service of overlayServices) {
     service.enabled = savedSelections[service.id] ?? true;
     service.opacity = savedOpacities[service.id] ?? 10;
@@ -3127,13 +3429,9 @@ function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) 
     });
     label.append(checkbox, ` ${overlayDisplayName(service)}`);
     row.append(label, opacity, configure);
-    const destination = service.manifest?.capabilities?.workspace
-      ? workspaceSourceList
-      : ["shapes", "airlanes"].includes(service.type)
-        ? dataSourceList
-        : liveSourceList;
-    destination.append(row);
+    dataSourceList.append(row);
   }
+  renderWorkspaceLaunchers();
 }
 
 function renderSymbolSourceControls(savedSelections = {}) {
@@ -4043,8 +4341,10 @@ function symbolImage(definition, featureColor) {
 function renderButtonSymbol(button) {
   const fallback = button.dataset.symbolFallback;
   const definition = symbolDefinitions.get(button.dataset.symbol);
+  const label = button.querySelector("[data-symbol-label]")?.cloneNode(true);
   if (!definition) {
     button.textContent = fallback;
+    if (label) button.append(label);
     return;
   }
   const color = button.isConnected
@@ -4058,6 +4358,7 @@ function renderButtonSymbol(button) {
   icon.src = image.src;
   icon.alt = "";
   button.replaceChildren(icon);
+  if (label) button.append(label);
 }
 
 function renderRegisteredButtonSymbols() {
@@ -4262,6 +4563,9 @@ async function loadConfiguration(restoreMapView = true) {
       endpoint: item.type === "shapes" ? "/api/shapes" : "/api/geojson",
       enabled: true,
     }));
+  workspaceServices = runningServices
+    .filter((item) => item.type === "workspace")
+    .filter((item) => item.manifest?.capabilities?.workspace);
   const activeOverlayKeys = new Set(
     overlayServices.map(overlayKey),
   );
@@ -4320,6 +4624,7 @@ async function loadConfiguration(restoreMapView = true) {
     camera.zoom = mapView.zoom;
     gridLayer.checked = mapView.layers?.grid ?? true;
     gridCrosshair = mapView.layers?.gridCrosshair ?? false;
+    displayMiniTimeControl = mapView.layers?.displayMiniTimeControl ?? false;
     layerOpacity.satellite = mapView.layers?.satelliteOpacity ?? 10;
     layerOpacity.copernicus = mapView.layers?.copernicusOpacity ?? 10;
     layerOpacity.terrain = mapView.layers?.terrainOpacity ?? 8;
@@ -4327,6 +4632,7 @@ async function loadConfiguration(restoreMapView = true) {
     layerOpacity.grid = mapView.layers?.gridOpacity ?? 10;
   }
   configurationLoaded = true;
+  startMiniTimeControlUpdates();
   renderMapServiceControls(mapView?.layers);
   if (vectorService) {
     await refreshVectorTileRevision();
@@ -4377,6 +4683,7 @@ async function saveMapView() {
           vectorMap: vectorLayer.checked,
           grid: gridLayer.checked,
           gridCrosshair,
+          displayMiniTimeControl,
           satelliteOpacity: layerOpacity.satellite,
           copernicusOpacity: layerOpacity.copernicus,
           terrainOpacity: layerOpacity.terrain,
@@ -4414,6 +4721,7 @@ function saveMapViewOnExit() {
       vectorMap: vectorLayer.checked,
       grid: gridLayer.checked,
       gridCrosshair,
+      displayMiniTimeControl,
       satelliteOpacity: layerOpacity.satellite,
       copernicusOpacity: layerOpacity.copernicus,
       terrainOpacity: layerOpacity.terrain,
@@ -4725,6 +5033,22 @@ document.querySelector("#zoom-in").addEventListener("click", () => {
 document.querySelector("#zoom-out").addEventListener("click", () => {
   const point = viewportCrosshairPoint();
   zoomAt(point.x, point.y, -0.5);
+});
+miniTimePlay.addEventListener("click", () => {
+  const action = simTimeControlState?.status === "paused" ? "resume" : "start";
+  sendMiniTimeControlAction(action).catch((error) => {
+    status.textContent = `Unable to ${action} simulation time: ${error.message}`;
+  });
+});
+miniTimePause.addEventListener("click", () => {
+  sendMiniTimeControlAction("pause").catch((error) => {
+    status.textContent = `Unable to pause simulation time: ${error.message}`;
+  });
+});
+miniTimeReset.addEventListener("click", () => {
+  sendMiniTimeControlAction("reset").catch((error) => {
+    status.textContent = `Unable to reset simulation time: ${error.message}`;
+  });
 });
 layersTab.addEventListener("click", () => showDisplayPanel("layers"));
 selectionTab.addEventListener("click", () => showDisplayPanel("selection"));

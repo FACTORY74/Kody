@@ -16,7 +16,7 @@ CONFIG_FILE = ROOT_DIRECTORY / "config" / "kody.json"
 
 class MapService(BaseModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$", max_length=64)
-    type: Literal["vecmap", "satmap", "copernicus", "terrain", "geojson", "shapes", "adsb", "ais", "airlanes", "symbols"]
+    type: Literal["vecmap", "satmap", "copernicus", "terrain", "geojson", "shapes", "adsb", "ais", "airlanes", "symbols", "workspace"]
     url: HttpUrl
 
 
@@ -63,6 +63,10 @@ class MapLayers(BaseModel):
     vector_map: bool = Field(default=True, alias="vectorMap")
     grid: bool = True
     grid_crosshair: bool = Field(default=False, alias="gridCrosshair")
+    display_mini_time_control: bool = Field(
+        default=False,
+        alias="displayMiniTimeControl",
+    )
     satellite_opacity: int = Field(default=10, alias="satelliteOpacity", ge=1, le=10)
     copernicus_opacity: int = Field(default=10, alias="copernicusOpacity", ge=1, le=10)
     terrain_opacity: int = Field(default=8, alias="terrainOpacity", ge=1, le=10)

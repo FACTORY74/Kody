@@ -284,7 +284,7 @@ class NativeTileStoreTests(unittest.TestCase):
             maps_directory = Path(directory)
             store = NativeTileStore(maps_directory)
             coordinates = [
-                [longitude, 20 + (longitude % 2) * 0.05]
+                [longitude, 20 + (longitude % 2) * 0.005]
                 for longitude in range(-80, 81)
             ]
             feature = {
@@ -308,6 +308,37 @@ class NativeTileStoreTests(unittest.TestCase):
             len(coordinates),
         )
         self.assertFalse((maps_directory / "tiles").exists())
+
+    def test_root_tile_uses_the_standard_overview_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = NativeTileStore(Path(directory))
+            coordinates = [
+                [longitude / 10, 20 + (longitude % 2) * 0.05]
+                for longitude in range(-1_000, 1_001)
+            ]
+            store.replace_source(
+                "natural-earth",
+                [
+                    {
+                        "properties": {
+                            "category": "physical",
+                            "layer": "ne-coastline",
+                            "minZoom": 0,
+                        },
+                        "geometry": mapping(LineString(coordinates)),
+                    }
+                ],
+            )
+
+            result = store.tile_collection(0, 0, 0, buffer_pixels=0)
+
+        self.assertIsNotNone(result)
+        collection, lod = result
+        self.assertEqual(lod, 0)
+        self.assertGreater(
+            len(collection["features"][0]["geometry"]["coordinates"]),
+            1_000,
+        )
 
     def test_repairs_invalid_geometry_for_root_tiles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

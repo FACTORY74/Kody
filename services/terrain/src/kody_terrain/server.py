@@ -1135,6 +1135,15 @@ def create_terrain_profile(request: TerrainProfileRequest) -> dict[str, object]:
 @app.get("/api/kody/manifest")
 def get_manifest() -> dict[str, object]:
     return {"kodyApiVersion": "1", "serviceId": "terrain", "displayName": "Terrain", "capabilities": {
+        "tileLayer": {
+            "kind": "raster-tile",
+            "tilePathTemplate": "/api/raster/{z}/{x}/{y}",
+            "revisionPath": "/api/raster/revision",
+            "contentTypes": ["image/png"],
+            "tileSizePixels": 256,
+            "minZoom": 0,
+            "maxZoom": 18,
+        },
         "workspace": {
             "id": "terrain-analysis",
             "label": "TerrainAnalysis",

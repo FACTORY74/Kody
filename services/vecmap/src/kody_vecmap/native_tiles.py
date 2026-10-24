@@ -21,8 +21,6 @@ GPKG_APPLICATION_ID = 0x47504B47
 OVERVIEW_MAXIMUM_ZOOM = 8
 OVERVIEW_TOLERANCE = 0.3515625
 BASE_OVERVIEW_TOLERANCE = 0.03
-WORLD_OVERVIEW_MAXIMUM_ZOOM = 1
-WORLD_OVERVIEW_TOLERANCE = 5.0
 logger = logging.getLogger(__name__)
 
 
@@ -163,8 +161,6 @@ class NativeTileStore:
                 SELECT
                     feature.properties_json,
                     CASE
-                        WHEN ? <= ? AND feature.world_geometry IS NOT NULL
-                        THEN feature.world_geometry
                         WHEN ? <= ? AND feature.overview_geometry IS NOT NULL
                         THEN feature.overview_geometry
                         ELSE feature.geometry
@@ -177,8 +173,6 @@ class NativeTileStore:
                   AND spatial.min_y <= ? AND spatial.max_y >= ?
                 """,
                 (
-                    requested_detail_zoom,
-                    WORLD_OVERVIEW_MAXIMUM_ZOOM,
                     requested_detail_zoom,
                     OVERVIEW_MAXIMUM_ZOOM,
                     requested_detail_zoom,
@@ -327,13 +321,6 @@ class NativeTileStore:
                 if minimum_zoom <= OVERVIEW_MAXIMUM_ZOOM
                 else None
             )
-            world_geometry = (
-                self._geopackage_geometry(
-                    geometry.simplify(WORLD_OVERVIEW_TOLERANCE, preserve_topology=True)
-                )
-                if minimum_zoom == 0
-                else None
-            )
             fingerprint = hashlib.sha256(
                 properties_json.encode("utf-8") + b"\x00" + geometry.wkb
             ).hexdigest()
@@ -360,7 +347,7 @@ class NativeTileStore:
                     minimum_zoom,
                     self._geopackage_geometry(geometry),
                     overview_geometry,
-                    world_geometry,
+                    None,
                 ),
             )
             feature_id = connection.execute(
@@ -378,41 +365,6 @@ class NativeTileStore:
             )
             count += 1
         return count
-
-    def build_world_overview(self, force: bool = False) -> None:
-        connection = self._connect()
-        try:
-            with connection:
-                rows = connection.execute(
-                    """
-                    SELECT id, geometry
-                    FROM kody_vector_features
-                    WHERE min_zoom = 0
-                    """
-                    + ("" if force else " AND world_geometry IS NULL") +
-                    """
-                    """
-                ).fetchall()
-                for feature_id, geometry_value in rows:
-                    geometry = self._geometry_from_geopackage(geometry_value)
-                    connection.execute(
-                        """
-                        UPDATE kody_vector_features
-                        SET world_geometry = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            self._geopackage_geometry(
-                                geometry.simplify(
-                                    WORLD_OVERVIEW_TOLERANCE,
-                                    preserve_topology=True,
-                                )
-                            ),
-                            feature_id,
-                        ),
-                    )
-        finally:
-            connection.close()
 
     def build_base_overview(self, force: bool = False) -> None:
         connection = self._connect()

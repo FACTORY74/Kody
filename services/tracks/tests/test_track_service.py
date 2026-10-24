@@ -185,6 +185,24 @@ class TrackStoreTests(unittest.TestCase):
             self.assertEqual(reset_position, [0, 0])
             self.assertEqual(store.simulation_response()["elapsedSeconds"], 0)
 
+    def test_clock_reset_rewinds_runtime_to_the_initial_scenario_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            clock = [10.0]
+            root = Path(directory)
+            store = TrackStore(root / "types.json", root / "scenario.json", clock=lambda: clock[0])
+            self.configure_test_catalogues(store)
+            store.update_scenario(scenario(), None)
+            clock[0] += 2
+            moved = store.response()
+            moved_position = next(item for item in moved["features"] if item["id"] == "track:aircraft-1")["geometry"]["coordinates"]
+            self.assertNotEqual(moved_position, [0, 0])
+
+            clock[0] = 0
+            reset = store.response()
+            reset_position = next(item for item in reset["features"] if item["id"] == "track:aircraft-1")["geometry"]["coordinates"]
+            self.assertEqual(reset_position, [0, 0])
+            self.assertEqual(store.simulation_response()["elapsedSeconds"], 0)
+
     def test_opening_workspace_reloads_catalogues_from_disk(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -225,9 +243,10 @@ class TrackStoreTests(unittest.TestCase):
                     capability["completionPolicies"],
                     ["despawn", "restart", "loop", "hold", "reverse"],
                 )
+                self.assertNotIn("simulationControls", manifest["capabilities"])
                 self.assertEqual(
-                    manifest["capabilities"]["simulationControls"]["resetPath"],
-                    "/api/tracks/simulation/reset",
+                    manifest["dependencies"]["simTimeControl"]["serviceId"],
+                    "sim-time",
                 )
                 self.assertEqual(
                     manifest["capabilities"]["workspace"]["openPath"],

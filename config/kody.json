@@ -31,6 +31,11 @@
       "url": "http://127.0.0.1:8003/"
     },
     {
+      "id": "local-sim-time",
+      "type": "workspace",
+      "url": "http://127.0.0.1:8012/"
+    },
+    {
       "id": "local-adsb",
       "type": "adsb",
       "url": "http://127.0.0.1:8005/"
@@ -52,21 +57,22 @@
     }
   ],
   "mapView": {
-    "longitude": -3.438103415682349,
-    "latitude": 53.127524528298835,
-    "zoom": 8.800000000000031,
+    "longitude": -1.205277670014226,
+    "latitude": 47.4518589425193,
+    "zoom": 5.799999999999979,
     "layers": {
       "satelliteImagery": false,
       "copernicus": true,
-      "terrain": true,
+      "terrain": false,
       "vectorMap": false,
       "grid": true,
       "gridCrosshair": true,
+      "displayMiniTimeControl": false,
       "satelliteOpacity": 2,
       "copernicusOpacity": 6,
       "terrainOpacity": 5,
-      "vectorOpacity": 9,
-      "gridOpacity": 2,
+      "vectorOpacity": 2,
+      "gridOpacity": 3,
       "dataSources": {
         "local-shapes": false,
         "local-track": true,
@@ -183,6 +189,14 @@
         "module": "kody_terrain.server:app",
         "workingDirectory": "services/terrain",
         "port": 8010,
+        "enabled": true
+      },
+      {
+        "id": "sim-time",
+        "displayName": "SimTimeControl service",
+        "module": "kody_sim_time.sim_time_service:app",
+        "workingDirectory": "services/sim-time",
+        "port": 8012,
         "enabled": true
       }
     ]

@@ -67,14 +67,16 @@ The response MUST contain these fields:
   "kodyApiVersion": "1",
   "serviceId": "example-imagery",
   "displayName": "Example imagery",
-  "layer": {
-    "kind": "raster-tile",
-    "tilePathTemplate": "/api/tiles/{z}/{x}/{y}",
-    "revisionPath": "/api/tiles/revision",
-    "contentTypes": ["image/webp"],
-    "tileSizePixels": 256,
-    "minZoom": 0,
-    "maxZoom": 14
+  "capabilities": {
+    "tileLayer": {
+      "kind": "raster-tile",
+      "tilePathTemplate": "/api/tiles/{z}/{x}/{y}",
+      "revisionPath": "/api/tiles/revision",
+      "contentTypes": ["image/webp"],
+      "tileSizePixels": 256,
+      "minZoom": 0,
+      "maxZoom": 14
+    }
   },
   "configuration": {
     "readPath": "/api/config",
@@ -89,8 +91,11 @@ The response MUST contain these fields:
 `^[a-z0-9][a-z0-9-]{0,63}$` and MUST NOT change when the user changes a
 display name. `displayName` is user-facing text.
 
-A service provides zero or one `layer` object. A service with no layer is a
-configuration or utility service and is not rendered on the map.
+A service may declare any combination of `tileLayer`, `dataLayer`,
+`symbolCatalog`, and `workspace`. A `workspace` is an operational UI
+capability, not a display layer: it never receives a visibility checkbox or
+opacity control. The legacy top-level `layer` member remains accepted only
+while existing services migrate to these capability names.
 
 The central runtime registration ID identifies a local process instance. It is
 not an API type and MUST NOT be used to choose custom endpoints or rendering
@@ -102,7 +107,11 @@ All optional manifest members have a fixed schema:
 
 | Member | Purpose |
 |---|---|
-| `layer` | Declares one rendered layer using a standard layer-kind contract. |
+| `capabilities.tileLayer` | Declares sparse Web-Mercator quadtree tiles using a standard tile contract. |
+| `capabilities.dataLayer` | Declares JSON drawing data, normally GeoJSON, and its refresh policy. |
+| `capabilities.symbolCatalog` | Declares a reusable SVG symbol catalogue. |
+| `capabilities.workspace` | Declares a trusted operator UI backed by further service endpoints. |
+| `dependencies` | Declares required capabilities published by another Kody service. |
 | `configuration` | Declares editable service configuration and user-triggered actions. |
 | `contextMenuActions` | Declares actions that receive a map longitude/latitude point. |
 | `featureActions` | Declares typed actions available for selected service features. |
@@ -113,7 +122,30 @@ Unknown members and unknown enum values MUST be ignored by the central map for
 forward compatibility. A service MUST NOT require a central-map change merely
 to consume an unknown custom manifest member.
 
-## 3. Layer contracts
+A service that consumes another service's capability SHOULD declare that
+dependency explicitly:
+
+```json
+{
+  "dependencies": {
+    "simTimeControl": {
+      "serviceId": "sim-time",
+      "statePath": "/api/sim-time",
+      "eventStreamPath": "/api/sim-time/events"
+    }
+  }
+}
+```
+
+The dependent service owns the server-to-server connection and MUST return a
+clear service-unavailable response when its required dependency cannot supply
+authoritative state.
+
+## 3. Render capability contracts
+
+`tileLayer` and `dataLayer` are independent capabilities. A service may
+declare either or both. Static, polling, and streaming data all use
+`dataLayer`; “live” is refresh metadata, not a separate layer category.
 
 All tile coordinates use the Web Mercator / slippy-map scheme:
 
@@ -123,15 +155,17 @@ All tile coordinates use the Web Mercator / slippy-map scheme:
 - Geographic feature coordinates are WGS 84 longitude/latitude in `[longitude,
   latitude]` order.
 
-### 3.1 `geojson`
+### 3.1 `dataLayer` (`geojson`)
 
 Use for static, live, or periodically refreshed feature overlays.
 
 ```json
 {
-  "kind": "geojson",
-  "dataPath": "/api/data",
-  "refreshSeconds": 2
+  "dataLayer": {
+    "kind": "geojson",
+    "dataPath": "/api/data",
+    "refreshSeconds": 2
+  }
 }
 ```
 
@@ -167,15 +201,16 @@ The central map sends `POST activityPath` with `{"active": true}` when the
 layer is enabled and `{"active": false}` when it is disabled. The response is
 `{"active": true}` or `{"active": false}`.
 
-### 3.2 `symbol-catalog`
+### 3.2 `symbolCatalog`
 
 Use for a reusable catalogue of SVG symbols. It is not itself a rendered
 feature layer.
 
 ```json
 {
-  "kind": "symbol-catalog",
-  "dataPath": "/api/symbols"
+  "symbolCatalog": {
+    "dataPath": "/api/symbols"
+  }
 }
 ```
 
@@ -199,21 +234,23 @@ feature layer.
 `orientation` is `orientable` or `alwaysup`; `colorMode` is `colorable` or
 `fixed`; and `scale` is a finite number greater than zero.
 
-### 3.3 `raster-tile`
+### 3.3 `tileLayer` (`raster-tile`)
 
 Use for server-rendered imagery, terrain shading, cached vector-cartography
 renders, and other image tiles.
 
 ```json
 {
-  "kind": "raster-tile",
-  "tilePathTemplate": "/api/tiles/{z}/{x}/{y}",
-  "revisionPath": "/api/tiles/revision",
-  "contentTypes": ["image/webp"],
-  "tileSizePixels": 256,
-  "minZoom": 0,
-  "maxZoom": 18,
-  "missingTileStatus": 404
+  "tileLayer": {
+    "kind": "raster-tile",
+    "tilePathTemplate": "/api/tiles/{z}/{x}/{y}",
+    "revisionPath": "/api/tiles/revision",
+    "contentTypes": ["image/webp"],
+    "tileSizePixels": 256,
+    "minZoom": 0,
+    "maxZoom": 18,
+    "missingTileStatus": 404
+  }
 }
 ```
 
@@ -238,18 +275,20 @@ The central map substitutes decimal `z`, `x`, and `y` values in
 standard alternative. A service MUST NOT invent a custom successful
 missing-tile payload.
 
-### 3.4 `vector-tile`
+### 3.4 `tileLayer` (`vector-tile`)
 
 Use for Mapbox Vector Tiles when the central renderer supports them.
 
 ```json
 {
-  "kind": "vector-tile",
-  "tilePathTemplate": "/api/tiles/{z}/{x}/{y}.pbf",
-  "revisionPath": "/api/tiles/revision",
-  "contentTypes": ["application/vnd.mapbox-vector-tile"],
-  "minZoom": 0,
-  "maxZoom": 14
+  "tileLayer": {
+    "kind": "vector-tile",
+    "tilePathTemplate": "/api/tiles/{z}/{x}/{y}.pbf",
+    "revisionPath": "/api/tiles/revision",
+    "contentTypes": ["application/vnd.mapbox-vector-tile"],
+    "minZoom": 0,
+    "maxZoom": 14
+  }
 }
 ```
 
@@ -377,6 +416,7 @@ its persisted scenario:
       "readPath": "/api/simulation",
       "writePath": "/api/simulation",
       "resetPath": "/api/simulation/reset",
+      "eventStreamPath": "/api/simulation/events",
       "revisionHeader": "If-Match"
     }
   }
@@ -388,6 +428,14 @@ its persisted scenario:
 the prior revision in `revisionHeader`; `POST resetPath` resets non-persisted
 simulation state to the current declarative scenario. The simulation MUST
 advance only from its own clock, enabling repeatable paused and reset states.
+
+`eventStreamPath`, when present, is a `text/event-stream` endpoint. It MUST
+send a `state` event when a subscriber connects, and events named `started`,
+`stopped`, and `reset` when those transitions occur. While running, it SHOULD
+send regular `sync` events, preferably on each wall-clock second boundary.
+Each event body is a simulation-control state object. Transition events MUST
+include a monotonic SSE event ID and services MUST honour the
+`Last-Event-ID` header when replay remains available.
 
 ### 3.9 Workspace capability
 
@@ -430,6 +478,12 @@ trusted workspace shell:
   "timeline": {"description": "Simulation time and events."}
 }
 ```
+
+Workspaces appear as launchers in the Workspaces area. A workspace is not a
+rendered layer and MUST NOT be coupled to a layer checkbox, opacity value, or
+tile/data refresh state. A service may independently declare `tileLayer`,
+`dataLayer`, `symbolCatalog`, and `workspace`; its workspace invokes the
+additional endpoints it declares.
 
 The core owns the workspace shell, navigator, primary editor region,
 inspector, timeline region, resizing, and safe text rendering. The service

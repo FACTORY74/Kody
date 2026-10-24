@@ -787,7 +787,6 @@ class VectorPatchService:
 
     def __init__(self, maps_directory: Path = MAPS_DIRECTORY) -> None:
         self.tile_store = NativeTileStore(maps_directory)
-        self.tile_store.build_world_overview()
 
     def patch(self, zoom: int, x: int, y: int, buffer_pixels: int = 0) -> dict[str, object]:
         try:

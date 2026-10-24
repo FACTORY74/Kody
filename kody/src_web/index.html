@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kody map</title>
-    <link rel="stylesheet" href="/styles.css?v=20261023a">
+    <link rel="stylesheet" href="/styles.css?v=20261024d">
   </head>
   <body class="map-page">
     <header class="topbar">
@@ -44,6 +44,18 @@
             <section class="layer-group" aria-label="Map layers">
               <p class="group-label">Map</p>
               <div id="map-service-list"></div>
+            </section>
+            <section class="layer-group" aria-labelledby="data-sources-heading">
+              <p class="group-label" id="data-sources-heading">Data</p>
+              <div id="data-source-list"></div>
+            </section>
+            <section class="layer-group" aria-labelledby="workspace-sources-heading">
+              <p class="group-label" id="workspace-sources-heading">Workspaces</p>
+              <div id="workspace-source-list"></div>
+            </section>
+            <section class="layer-group" aria-labelledby="symbol-sources-heading">
+              <p class="group-label" id="symbol-sources-heading">Display</p>
+              <div id="symbol-source-list"></div>
               <div class="map-layer-row">
                 <label><input id="grid-layer" type="checkbox" checked> Lat/Lon Grid</label>
                 <div class="opacity-control" aria-label="Grid opacity">
@@ -53,22 +65,6 @@
                 </div>
                 <button id="configure-grid" class="configure-service" type="button" aria-label="Configure Lat/Lon Grid" data-symbol="gear" data-symbol-fallback="⚙">⚙</button>
               </div>
-            </section>
-            <section class="layer-group" aria-labelledby="data-sources-heading">
-              <p class="group-label" id="data-sources-heading">Data</p>
-              <div id="data-source-list"></div>
-            </section>
-            <section class="layer-group" aria-labelledby="workspace-sources-heading">
-              <p class="group-label" id="workspace-sources-heading">Workspace</p>
-              <div id="workspace-source-list"></div>
-            </section>
-            <section class="layer-group" aria-labelledby="live-sources-heading">
-              <p class="group-label" id="live-sources-heading">Live</p>
-              <div id="live-source-list"></div>
-            </section>
-            <section class="layer-group" aria-labelledby="symbol-sources-heading">
-              <p class="group-label" id="symbol-sources-heading">Symbols</p>
-              <div id="symbol-source-list"></div>
             </section>
           </div>
           <section id="selection-panel" role="tabpanel" aria-labelledby="selection-tab" hidden>
@@ -88,6 +84,12 @@
           <output id="ups-level" aria-live="polite"><small>UPS</small> --</output>
         </div>
       </div>
+      <section id="mini-time-control" aria-label="Simulation time controls" hidden>
+        <button id="mini-time-play" type="button" aria-label="Start or resume simulation time">▶</button>
+        <button id="mini-time-pause" type="button" aria-label="Pause simulation time">❚❚</button>
+        <output id="mini-time-readout" aria-live="polite">00:00:00</output>
+        <button id="mini-time-reset" type="button" aria-label="Reset simulation time">↺</button>
+      </section>
       <p id="map-status" class="map-status" aria-live="polite"></p>
       <p id="map-attribution" class="map-attribution"></p>
       <div id="map-context-menu" class="map-context-menu" role="menu" hidden></div>
@@ -186,6 +188,6 @@
         </div>
       </section>
     </dialog>
-    <script type="module" src="/map.js?v=20261023a"></script>
+    <script type="module" src="/map.js?v=20261024d"></script>
   </body>
 </html>

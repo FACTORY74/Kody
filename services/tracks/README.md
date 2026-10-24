@@ -30,7 +30,7 @@ updates to prevent overwriting newer data. The service validates route/type
 references and all initial/target speed and altitude values against the
 assigned aircraft type before it persists a scenario.
 
-Opening the Tracks workspace reloads both catalogues from disk. This makes
+Opening TrackSimControl reloads both catalogues from disk. This makes
 external edits available without restarting the service. If either catalogue
 changed, the service validates the pair and resets the live simulation to its
 initial state.
@@ -45,17 +45,21 @@ The manifest publishes the standard `scenarioEditor` capability. Kody's map
 uses it to draw and save routes, edit route names, colors, completion policies,
 and waypoint targets, assign aircraft, and move a waypoint only in an explicit
 drag mode. Normal map pans never alter a route. Heading/turn-rate-limited
-navigation is described in the [`Tracks workspace`](../../workspaces/tracks/README.md)
+navigation is described in the [`TrackSimControl workspace`](../../workspaces/tracks/README.md)
 and the [common workspace design](../../workspaces/README.md).
 
-## Phase 3 simulation
+## Shared simulation time
 
-The service maintains a deterministic simulation clock that advances only
-while running. `GET` and `PUT /api/tracks/simulation` expose its running state
-and control revision; `POST /api/tracks/simulation/reset` returns every
-aircraft to its route's first waypoint, heading toward the second waypoint.
-The map editor exposes Pause/Resume and Reset controls through the
-`simulationControls` capability.
+TrackSimControl depends on SimTimeControl for its authoritative elapsed time.
+The Tracks service reads `GET /api/sim-time` from the configured
+`KODY_SIM_TIME_SERVICE_URL` (default `http://127.0.0.1:8012`) whenever it
+updates published data or opens its workspace. TrackSim advances only while
+that shared elapsed time increases. If SimTimeControl resets to an earlier
+elapsed value, TrackSim resets every aircraft to its route's initial state.
+
+The former Tracks-local `PUT /api/tracks/simulation` and
+`POST /api/tracks/simulation/reset` endpoints now return `409`; consumers
+must use SimTimeControl's lifecycle controls instead.
 
 Aircraft heading is constrained by `maximumTurnRateDegreesPerSecond`. Every
 leg reaches its exact waypoint before the active leg changes; the following
@@ -64,18 +68,18 @@ rate. This produces a turn circle after each waypoint rather than an
 early-cut fly-by. Aircraft output includes actual and desired bearings, leg
 progress, distance, and estimated time to the active waypoint.
 
-## Workspace
+## TrackSimControl workspace
 
-The manifest also publishes a `workspace` capability at `GET /api/workspace`.
+The manifest publishes the `TrackSimControl` `workspace` capability at
+`GET /api/workspace`.
 It supplies structured, text-only pane summaries for scenarios, aircraft
 types, routes, aircraft, and timeline state. Kody renders those summaries with
 its generic workspace cards and inspector, while this service remains
 authoritative for its data and simulation behavior.
 
-The workspace Timeline reads `simulationControls` to show the local running
-clock and provide Pause, Resume, and Reset. The clock is currently
-Tracks-local; the capability boundary permits a future shared simulation-time
-service to coordinate several simulation plugins.
+The workspace timeline reports progress driven by SimTimeControl. TrackSim's
+manifest declares this server-to-server dependency so operators configure the
+clock through the SimTimeControl workspace, not TrackSimControl.
 
 Aircraft types, routes, and aircraft are managed directly in their workspace
 panes. Each has Add, Edit, and guarded Remove controls; edits use the

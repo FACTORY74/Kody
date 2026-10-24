@@ -2,27 +2,34 @@
 
 ## Purpose
 
-Kody has two complementary extension surfaces:
+Kody has four independent extension capabilities:
 
-- **Layers** answer: "What should the map draw now?" A service publishes
-  raster tiles, vectors, symbols, or GeoJSON for the core map to compose.
+- **Tile layers** answer: "Which sparse quadtree tiles should the map draw?"
+  Services own tile generation and storage; the core composes the standard
+  Web-Mercator tile contract.
+- **Data layers** answer: "Which features should the map draw?" A service
+  publishes GeoJSON or a future constrained JSON drawing format. Static and
+  live data use the same capability; refresh is metadata.
+- **Symbol catalogues** answer: "Which named visual assets can map data and
+  trusted controls use?"
 - **Workspaces** answer: "How does an operator inspect, configure, analyse,
   and operate this domain?" A service declares structured resources and
   operations; Kody renders a trusted operational UI.
 
-When a workspace-capable service also publishes a display layer, it appears
-once in the map display pane's **Workspace** category. The standard enable
-and opacity controls govern visibility, and its action button opens the
-workspace.
+A service may declare any combination of these capabilities. A Workspace is
+not a display layer: the Workspaces area contains launchers only. Its
+declaring service's tile/data layers remain independently visible and
+opaque in Map or Data.
 
 This document defines the direction for a common workspace system and uses
 two deliberately different examples:
 
-1. **Tracks** is a stateful platform-simulation workspace with durable
+1. **TrackSimControl** is a stateful platform-simulation workspace with durable
    scenarios and a live clock.
 2. **Terrain Analysis** is an analytical workspace that queries one or more
    elevation sources, creates line-of-sight (LOS) rosettes, and presents
    point-to-point elevation profiles.
+3. **SimTimeControl** is a workspace-only monotonic clock with no map layer.
 
 The comparison prevents the workspace model from becoming an implicit Tracks
 frontend. It must be useful to both a simulation service and a stateless or
@@ -30,11 +37,11 @@ job-oriented analysis service.
 
 ## Status and scope
 
-The existing Tracks workspace shell, route editing, terrain elevation API,
-and LOS rosette operation are implemented. The common resource declarations,
-atomic workspace snapshots, Terrain Analysis workspace, and elevation-profile
-operation described below are design proposals until they are added to
-`API_SPEC.md` and implemented.
+The existing TrackSimControl workspace shell, route editing, TerrainAnalysis
+workspace, SimTimeControl workspace, terrain elevation API, LOS rosette
+operation, and elevation-profile operation are implemented. The common
+resource declarations and atomic workspace snapshots described below remain
+design proposals until they are implemented.
 
 This is an architecture and UX design. It does not grant a service the right
 to return HTML, JavaScript, CSS, arbitrary component trees, or arbitrary map
@@ -46,7 +53,9 @@ event handlers.
 |---|---|
 | **Core** | The Kody map client and its trusted rendering/interactions. |
 | **Service** | A Python microservice discovered through the Kody manifest. |
-| **Layer** | A service-published map representation such as raster tiles or GeoJSON. |
+| **Tile layer** | A service-published sparse Web-Mercator tile representation. |
+| **Data layer** | A service-published GeoJSON or constrained JSON drawing representation. |
+| **Symbol catalogue** | A service-published named SVG registry for map data and trusted controls. |
 | **Workspace** | A core-rendered, service-declared operational surface. |
 | **Resource** | Durable or live structured domain data with an API and revision contract. |
 | **View** | A core-owned presentation primitive, such as a collection, form, route editor, chart, or timeline. |

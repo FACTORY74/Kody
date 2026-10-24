@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 import hashlib
 from contextlib import contextmanager
@@ -21,7 +21,7 @@ from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import requests
 
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
@@ -38,6 +38,7 @@ COPERNICUS_TOKEN_URL = (
     "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 )
 COPERNICUS_PROCESS_URL = "https://sh.dataspace.copernicus.eu/api/v1/process"
+COPERNICUS_CATALOG_URL = "https://sh.dataspace.copernicus.eu/catalog/v1/search"
 GLOBAL_MOSAIC_COLLECTION = "byoc-5460de54-082e-473a-b6ea-d5cbe3c17cca"
 MAXIMUM_UNCONFIRMED_DOWNLOAD_TILES = 64
 MAXIMUM_PROCESS_REQUEST_DEGREES = 10
@@ -221,9 +222,25 @@ initialize_data_directory()
 class CopernicusConfiguration(BaseModel):
     client_id: str = Field(default="", alias="clientId", max_length=256)
     client_secret: str = Field(default="", alias="clientSecret", max_length=1024)
+    mosaic_period: str = Field(default="latest", alias="mosaicPeriod", max_length=128)
     rebuild_pyramid_with_download: bool = Field(
         default=True, alias="rebuildPyramidWithDownload"
     )
+
+    @field_validator("mosaic_period")
+    @classmethod
+    def validate_mosaic_period(cls, value: str) -> str:
+        if value == "latest":
+            return value
+        try:
+            start, end = value.split("/", maxsplit=1)
+            datetime.fromisoformat(start.replace("Z", "+00:00"))
+            datetime.fromisoformat(end.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError(
+                "mosaicPeriod must be 'latest' or an ISO 8601 date-time range"
+            ) from error
+        return value
 
 
 class ConfigurationStore:
@@ -477,9 +494,21 @@ def copernicus_request_dimensions(
 
 
 def copernicus_request(
-    bounds: tuple[float, float, float, float], width: int, height: int
+    bounds: tuple[float, float, float, float],
+    width: int,
+    height: int,
+    mosaic_period: str = "latest",
 ) -> dict[str, Any]:
     now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    if mosaic_period == "latest":
+        start, end = "2000-01-01T00:00:00Z", now
+    else:
+        try:
+            start, end = mosaic_period.split("/", maxsplit=1)
+            datetime.fromisoformat(start.replace("Z", "+00:00"))
+            datetime.fromisoformat(end.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("Copernicus mosaic period must be 'latest' or an ISO 8601 range") from error
     return {
         "input": {
             "bounds": {
@@ -488,7 +517,7 @@ def copernicus_request(
             },
             "data": [{
                 "dataFilter": {
-                    "timeRange": {"from": "2000-01-01T00:00:00Z", "to": now},
+                    "timeRange": {"from": start, "to": end},
                     "mosaickingOrder": "mostRecent",
                 },
                 "type": GLOBAL_MOSAIC_COLLECTION,
@@ -522,12 +551,81 @@ def process_response_bytes(
     return response.content
 
 
+def copernicus_mosaic_options(
+    configuration: CopernicusConfiguration,
+) -> list[dict[str, str]]:
+    if not configuration.client_id or not configuration.client_secret:
+        raise ValueError("Copernicus client ID and client secret are required")
+    session = requests.Session()
+    token_response = session.post(
+        COPERNICUS_TOKEN_URL,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": configuration.client_id,
+            "client_secret": configuration.client_secret,
+        },
+        timeout=30,
+    )
+    token_response.raise_for_status()
+    access_token = token_response.json().get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise RuntimeError("Copernicus token response did not include an access token")
+    response = session.post(
+        COPERNICUS_CATALOG_URL,
+        json={
+            "collections": [GLOBAL_MOSAIC_COLLECTION],
+            "bbox": [-180, -85, 180, 85],
+            "datetime": "2000-01-01T00:00:00Z/..",
+            "distinct": "date",
+            "limit": 100,
+        },
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    catalogue = response.json()
+    features = catalogue.get("features")
+    if not isinstance(features, list):
+        raise RuntimeError("Copernicus catalogue response did not include mosaic items")
+    periods: dict[str, str] = {}
+    for feature in features:
+        if not isinstance(feature, str):
+            continue
+        try:
+            start_date = date.fromisoformat(feature)
+        except ValueError:
+            continue
+        next_quarter = date(
+            start_date.year + (start_date.month == 10),
+            1 if start_date.month == 10 else start_date.month + 3,
+            1,
+        )
+        end_date = next_quarter - timedelta(days=1)
+        start = (
+            datetime.combine(start_date, datetime.min.time(), UTC)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        end = datetime.combine(
+            end_date, datetime.max.time(), UTC
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        quarter = (start_date.month - 1) // 3 + 1
+        periods[f"{start}/{end}"] = (
+            f"{start_date.year} Q{quarter} ({start_date.isoformat()} to {end_date.isoformat()})"
+        )
+    return [{"value": "latest", "label": "Latest available mosaic"}] + [
+        {"value": period, "label": label}
+        for period, label in sorted(periods.items(), reverse=True)
+    ]
+
+
 def download_copernicus_tile(
     session: requests.Session,
     headers: dict[str, str],
     tile_zoom: int,
     x: int,
     y: int,
+    mosaic_period: str = "latest",
 ) -> int:
     image = Image.new("RGB", (256, 256))
     sections = copernicus_tile_sections(tile_zoom, x, y)
@@ -539,7 +637,9 @@ def download_copernicus_tile(
             )
             response = session.post(
                 COPERNICUS_PROCESS_URL,
-                json=copernicus_request(bounds, request_width, request_height),
+                json=copernicus_request(
+                    bounds, request_width, request_height, mosaic_period
+                ),
                 headers=headers,
                 timeout=120,
             )
@@ -560,6 +660,92 @@ def download_copernicus_tile(
     return len(sections)
 
 
+def download_copernicus_tile_grid(
+    session: requests.Session,
+    headers: dict[str, str],
+    tile_zoom: int,
+    tiles: list[tuple[int, int]],
+    mosaic_period: str = "latest",
+) -> int:
+    """Download one contiguous tile grid as a single, consistently mosaicked image."""
+
+    if not tiles:
+        return 0
+    columns = sorted({x for x, _ in tiles})
+    rows = sorted({y for _, y in tiles})
+    if columns != list(range(columns[0], columns[-1] + 1)) or rows != list(
+        range(rows[0], rows[-1] + 1)
+    ):
+        raise ValueError("Copernicus tile grid must be rectangular and contiguous")
+    expected_tiles = {(x, y) for y in rows for x in columns}
+    if set(tiles) != expected_tiles:
+        raise ValueError("Copernicus tile grid must be rectangular and contiguous")
+    minimum_x, maximum_x = columns[0], columns[-1]
+    minimum_y, maximum_y = rows[0], rows[-1]
+    tile_span = 2 * WEB_MERCATOR_HALF_WORLD / 2**tile_zoom
+    bounds = (
+        -WEB_MERCATOR_HALF_WORLD + minimum_x * tile_span,
+        WEB_MERCATOR_HALF_WORLD - (maximum_y + 1) * tile_span,
+        -WEB_MERCATOR_HALF_WORLD + (maximum_x + 1) * tile_span,
+        WEB_MERCATOR_HALF_WORLD - minimum_y * tile_span,
+    )
+    width = len(columns) * 256
+    height = len(rows) * 256
+    response = session.post(
+        COPERNICUS_PROCESS_URL,
+        json=copernicus_request(bounds, width, height, mosaic_period),
+        headers=headers,
+        timeout=120,
+    )
+    with Image.open(
+        BytesIO(process_response_bytes(response, bounds, width, height))
+    ) as source:
+        mosaic = source.convert("RGB").resize(
+            (width, height), Image.Resampling.LANCZOS
+        )
+    try:
+        for y in rows:
+            for x in columns:
+                offset_x = (x - minimum_x) * 256
+                offset_y = (y - minimum_y) * 256
+                tile = mosaic.crop((offset_x, offset_y, offset_x + 256, offset_y + 256))
+                try:
+                    output = BytesIO()
+                    tile.save(output, format=LOCAL_TILE_FORMAT, **LOCAL_TILE_SAVE_OPTIONS)
+                    tile_store().put(tile_zoom, x, y, output.getvalue())
+                finally:
+                    tile.close()
+    finally:
+        mosaic.close()
+    return 1
+
+
+def copernicus_tile_grid_batches(
+    tiles: list[tuple[int, int]],
+) -> list[list[tuple[int, int]]]:
+    """Partition a rectangular viewport into Process API output-sized tile grids."""
+
+    maximum_tiles = MAXIMUM_PROCESS_OUTPUT_PIXELS // 256
+    columns = sorted({x for x, _ in tiles})
+    rows = sorted({y for _, y in tiles})
+    if columns != list(range(columns[0], columns[-1] + 1)) or rows != list(
+        range(rows[0], rows[-1] + 1)
+    ):
+        raise ValueError("Copernicus viewport tiles must be rectangular and contiguous")
+    expected_tiles = {(x, y) for y in rows for x in columns}
+    if set(tiles) != expected_tiles:
+        raise ValueError("Copernicus viewport tiles must be rectangular and contiguous")
+    return [
+        [
+            (x, y)
+            for y in rows[row_start:row_start + maximum_tiles]
+            for x in columns[column_start:column_start + maximum_tiles]
+        ]
+        for row_start in range(0, len(rows), maximum_tiles)
+        for column_start in range(0, len(columns), maximum_tiles)
+    ]
+
+
 def download_viewport(
     configuration: CopernicusConfiguration,
     requested_zoom: int | None = None,
@@ -569,7 +755,8 @@ def download_viewport(
         raise ValueError("Copernicus client ID and client secret are required")
     viewport = viewport_from_configuration_service()
     zoom, tiles = viewport_tiles(viewport, requested_zoom)
-    request_count = sum(len(copernicus_tile_sections(zoom, x, y)) for x, y in tiles)
+    tile_grids = copernicus_tile_grid_batches(tiles)
+    request_count = len(tile_grids)
     session = requests.Session()
     token_response = session.post(
         COPERNICUS_TOKEN_URL,
@@ -586,12 +773,14 @@ def download_viewport(
         raise RuntimeError("Copernicus token response did not include an access token")
     headers = {"Authorization": f"Bearer {access_token}"}
     completed_requests = 0
-    for index, (x, y) in enumerate(tiles, start=1):
+    for index, tile_grid in enumerate(tile_grids, start=1):
         import_state.update(
-            f"Downloading map tile {index} of {len(tiles)} "
+            f"Downloading map area {index} of {len(tile_grids)} "
             f"({completed_requests + 1} of {request_count} Copernicus requests)."
         )
-        completed_requests += download_copernicus_tile(session, headers, zoom, x, y)
+        completed_requests += download_copernicus_tile_grid(
+            session, headers, zoom, tile_grid, configuration.mosaic_period
+        )
     tile_store().set_revision()
     cached_raster_tile_bytes.cache_clear()
     message = (
@@ -941,6 +1130,13 @@ def get_manifest() -> dict[str, object]:
                     "secretStoredKey": "clientSecretSaved",
                 },
                 {
+                    "key": "mosaicPeriod",
+                    "label": "Quarterly mosaic",
+                    "type": "select",
+                    "optionsPath": "/api/mosaics",
+                    "required": True,
+                },
+                {
                     "key": "rebuildPyramidWithDownload",
                     "label": "Rebuild tile pyramid after download",
                     "type": "boolean",
@@ -991,6 +1187,16 @@ def update_configuration(
     return configuration_store.update(configuration, if_match)
 
 
+@app.get("/api/mosaics")
+def get_mosaics() -> dict[str, list[dict[str, str]]]:
+    try:
+        return {"options": copernicus_mosaic_options(configuration_store.configuration)}
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except requests.RequestException as error:
+        raise HTTPException(status_code=502, detail=f"could not query Copernicus mosaics: {error}") from error
+
+
 @app.get("/api/actions/assess-current-viewport")
 def assess_current_viewport() -> dict[str, object]:
     return assess_viewport_download()
@@ -998,7 +1204,7 @@ def assess_current_viewport() -> dict[str, object]:
 
 def assess_viewport_download(requested_zoom: int | None = None) -> dict[str, object]:
     zoom, tiles = viewport_tiles(viewport_from_configuration_service(), requested_zoom)
-    request_count = sum(len(copernicus_tile_sections(zoom, x, y)) for x, y in tiles)
+    request_count = len(copernicus_tile_grid_batches(tiles))
     return {
         "tileCount": len(tiles),
         "requestCount": request_count,
@@ -1038,7 +1244,7 @@ def download_current_viewport_action(background_tasks: BackgroundTasks) -> dict[
     if not configuration.client_id or not configuration.client_secret:
         raise HTTPException(status_code=422, detail="Copernicus client ID and client secret are required")
     zoom, tiles = viewport_tiles(viewport_from_configuration_service())
-    request_count = sum(len(copernicus_tile_sections(zoom, x, y)) for x, y in tiles)
+    request_count = len(copernicus_tile_grid_batches(tiles))
     import_state.start(
         f"Downloading {len(tiles)} map tiles with {request_count} Copernicus requests at zoom {zoom}."
     )
@@ -1072,7 +1278,7 @@ def download_viewport_at_10m_action(
     zoom, tiles = viewport_tiles(
         viewport_from_configuration_service(), COPERNICUS_NATIVE_TILE_ZOOM
     )
-    request_count = sum(len(copernicus_tile_sections(zoom, x, y)) for x, y in tiles)
+    request_count = len(copernicus_tile_grid_batches(tiles))
     import_state.start(
         f"Downloading {len(tiles)} 10m map tiles with {request_count} "
         f"Copernicus requests at zoom {zoom}."

@@ -1,12 +1,13 @@
-# Tracks Workspace
+# TrackSimControl workspace
 
-The Tracks workspace is the first implementation of the shared workspace
+TrackSimControl is the management workspace for the TrackSim Data layer and
+the first implementation of the shared workspace
 direction described in the [common workspace design](../README.md).
 
 It combines durable simulation resources with a live flight subsystem:
 
 ```text
-Tracks workspace
+TrackSimControl
 ├─ Aircraft types
 ├─ Routes
 ├─ Aircraft
@@ -30,7 +31,8 @@ The Tracks service owns:
 - revision validation and cross-resource validation;
 - route-completion policy;
 - flight progression, speed, altitude, and turn-rate behavior;
-- simulation time and published live GeoJSON.
+- flight progression from SimTimeControl's shared elapsed clock and published
+  live GeoJSON.
 
 ## Route editor
 

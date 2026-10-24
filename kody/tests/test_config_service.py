@@ -17,6 +17,7 @@ class MapViewTests(unittest.TestCase):
         self.assertFalse(defaults.layers.terrain)
         self.assertTrue(defaults.layers.vector_map)
         self.assertTrue(defaults.layers.grid)
+        self.assertFalse(defaults.layers.display_mini_time_control)
         self.assertEqual(defaults.layers.data_source_opacity, {})
 
         saved = MapView.model_validate(
@@ -31,6 +32,7 @@ class MapViewTests(unittest.TestCase):
                     "vectorMap": False,
                     "grid": False,
                     "gridCrosshair": True,
+                    "displayMiniTimeControl": True,
                     "satelliteOpacity": 5,
                     "copernicusOpacity": 7,
                     "terrainOpacity": 6,
@@ -46,6 +48,7 @@ class MapViewTests(unittest.TestCase):
         self.assertFalse(saved.layers.vector_map)
         self.assertFalse(saved.layers.grid)
         self.assertTrue(saved.layers.grid_crosshair)
+        self.assertTrue(saved.layers.display_mini_time_control)
         self.assertEqual(saved.layers.satellite_opacity, 5)
         self.assertEqual(saved.layers.copernicus_opacity, 7)
         self.assertEqual(saved.layers.terrain_opacity, 6)

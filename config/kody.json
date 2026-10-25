@@ -21,6 +21,11 @@
       "url": "http://127.0.0.1:8010/"
     },
     {
+      "id": "local-esa-dem",
+      "type": "esa-dem",
+      "url": "http://127.0.0.1:8013/"
+    },
+    {
       "id": "local-shapes",
       "type": "shapes",
       "url": "http://127.0.0.1:8002/"
@@ -57,22 +62,24 @@
     }
   ],
   "mapView": {
-    "longitude": -1.205277670014226,
-    "latitude": 47.4518589425193,
-    "zoom": 5.799999999999979,
+    "longitude": -70.18248609501315,
+    "latitude": 66.66104299299818,
+    "zoom": 3.8,
     "layers": {
       "satelliteImagery": false,
-      "copernicus": true,
+      "copernicus": false,
       "terrain": false,
-      "vectorMap": false,
+      "esaDem": false,
+      "vectorMap": true,
       "grid": true,
       "gridCrosshair": true,
-      "displayMiniTimeControl": false,
-      "satelliteOpacity": 2,
+      "displayMiniTimeControl": true,
+      "satelliteOpacity": 4,
       "copernicusOpacity": 6,
       "terrainOpacity": 5,
+      "esaDemOpacity": 8,
       "vectorOpacity": 2,
-      "gridOpacity": 3,
+      "gridOpacity": 2,
       "dataSources": {
         "local-shapes": false,
         "local-track": true,
@@ -197,6 +204,14 @@
         "module": "kody_sim_time.sim_time_service:app",
         "workingDirectory": "services/sim-time",
         "port": 8012,
+        "enabled": true
+      },
+      {
+        "id": "esa-dem",
+        "displayName": "ESA Download Terrain service",
+        "module": "kody_esa_dem.server:app",
+        "workingDirectory": "services/esa-dem",
+        "port": 8013,
         "enabled": true
       }
     ]

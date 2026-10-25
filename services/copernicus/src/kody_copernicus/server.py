@@ -222,7 +222,7 @@ initialize_data_directory()
 class CopernicusConfiguration(BaseModel):
     client_id: str = Field(default="", alias="clientId", max_length=256)
     client_secret: str = Field(default="", alias="clientSecret", max_length=1024)
-    mosaic_period: str = Field(default="latest", alias="mosaicPeriod", max_length=128)
+    mosaic_period: str = Field(default="", alias="mosaicPeriod", max_length=128)
     rebuild_pyramid_with_download: bool = Field(
         default=True, alias="rebuildPyramidWithDownload"
     )
@@ -230,15 +230,15 @@ class CopernicusConfiguration(BaseModel):
     @field_validator("mosaic_period")
     @classmethod
     def validate_mosaic_period(cls, value: str) -> str:
-        if value == "latest":
-            return value
+        if value in ("", "latest"):
+            return ""
         try:
             start, end = value.split("/", maxsplit=1)
             datetime.fromisoformat(start.replace("Z", "+00:00"))
             datetime.fromisoformat(end.replace("Z", "+00:00"))
         except ValueError as error:
             raise ValueError(
-                "mosaicPeriod must be 'latest' or an ISO 8601 date-time range"
+                "mosaicPeriod must be an ISO 8601 date-time range"
             ) from error
         return value
 
@@ -497,18 +497,16 @@ def copernicus_request(
     bounds: tuple[float, float, float, float],
     width: int,
     height: int,
-    mosaic_period: str = "latest",
+    mosaic_period: str = "",
 ) -> dict[str, Any]:
-    now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    if mosaic_period == "latest":
-        start, end = "2000-01-01T00:00:00Z", now
-    else:
-        try:
-            start, end = mosaic_period.split("/", maxsplit=1)
-            datetime.fromisoformat(start.replace("Z", "+00:00"))
-            datetime.fromisoformat(end.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise ValueError("Copernicus mosaic period must be 'latest' or an ISO 8601 range") from error
+    try:
+        start, end = mosaic_period.split("/", maxsplit=1)
+        datetime.fromisoformat(start.replace("Z", "+00:00"))
+        datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(
+            "Select a quarterly Copernicus mosaic before downloading"
+        ) from error
     return {
         "input": {
             "bounds": {
@@ -613,10 +611,44 @@ def copernicus_mosaic_options(
         periods[f"{start}/{end}"] = (
             f"{start_date.year} Q{quarter} ({start_date.isoformat()} to {end_date.isoformat()})"
         )
-    return [{"value": "latest", "label": "Latest available mosaic"}] + [
+    return [
         {"value": period, "label": label}
         for period, label in sorted(periods.items(), reverse=True)
     ]
+
+
+class MosaicOptionStore:
+    """Startup-loaded Copernicus mosaic options served without catalogue requests."""
+
+    def __init__(self) -> None:
+        self.lock = RLock()
+        self.options: list[dict[str, str]] = []
+        self.warning = ""
+
+    def load(self, configuration: CopernicusConfiguration) -> None:
+        if not configuration.client_id or not configuration.client_secret:
+            options = []
+            warning = (
+                "Quarterly mosaics are unavailable until Copernicus credentials are "
+                "saved and the service is restarted."
+            )
+        else:
+            try:
+                options = copernicus_mosaic_options(configuration)
+                warning = ""
+            except (requests.RequestException, RuntimeError, ValueError) as error:
+                options = []
+                warning = (
+                    "Quarterly mosaics could not be loaded at service startup: "
+                    f"{error}. Restart the service to retry."
+                )
+        with self.lock:
+            self.options = options
+            self.warning = warning
+
+    def response(self) -> dict[str, object]:
+        with self.lock:
+            return {"options": self.options, "warning": self.warning}
 
 
 def download_copernicus_tile(
@@ -753,6 +785,8 @@ def download_viewport(
 ) -> str:
     if not configuration.client_id or not configuration.client_secret:
         raise ValueError("Copernicus client ID and client secret are required")
+    if not configuration.mosaic_period:
+        raise ValueError("Select a quarterly Copernicus mosaic before downloading")
     viewport = viewport_from_configuration_service()
     zoom, tiles = viewport_tiles(viewport, requested_zoom)
     tile_grids = copernicus_tile_grid_batches(tiles)
@@ -1089,6 +1123,12 @@ app.add_middleware(
 )
 configuration_store = ConfigurationStore()
 import_state = ImportState()
+mosaic_option_store = MosaicOptionStore()
+
+
+@app.on_event("startup")
+def load_mosaic_options() -> None:
+    mosaic_option_store.load(configuration_store.configuration)
 
 
 @app.get("/api/raster/revision")
@@ -1131,9 +1171,10 @@ def get_manifest() -> dict[str, object]:
                 },
                 {
                     "key": "mosaicPeriod",
-                    "label": "Quarterly mosaic",
+                    "label": "Quarterly mosaic (loaded at startup)",
                     "type": "select",
                     "optionsPath": "/api/mosaics",
+                    "placeholder": "Select a quarterly mosaic",
                     "required": True,
                 },
                 {
@@ -1188,13 +1229,8 @@ def update_configuration(
 
 
 @app.get("/api/mosaics")
-def get_mosaics() -> dict[str, list[dict[str, str]]]:
-    try:
-        return {"options": copernicus_mosaic_options(configuration_store.configuration)}
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    except requests.RequestException as error:
-        raise HTTPException(status_code=502, detail=f"could not query Copernicus mosaics: {error}") from error
+def get_mosaics() -> dict[str, object]:
+    return mosaic_option_store.response()
 
 
 @app.get("/api/actions/assess-current-viewport")
@@ -1243,6 +1279,11 @@ def download_current_viewport_action(background_tasks: BackgroundTasks) -> dict[
     configuration = configuration_store.configuration
     if not configuration.client_id or not configuration.client_secret:
         raise HTTPException(status_code=422, detail="Copernicus client ID and client secret are required")
+    if not configuration.mosaic_period:
+        raise HTTPException(
+            status_code=422,
+            detail="Select a quarterly Copernicus mosaic before downloading",
+        )
     zoom, tiles = viewport_tiles(viewport_from_configuration_service())
     request_count = len(copernicus_tile_grid_batches(tiles))
     import_state.start(
@@ -1275,6 +1316,11 @@ def download_viewport_at_10m_action(
     configuration = configuration_store.configuration
     if not configuration.client_id or not configuration.client_secret:
         raise HTTPException(status_code=422, detail="Copernicus client ID and client secret are required")
+    if not configuration.mosaic_period:
+        raise HTTPException(
+            status_code=422,
+            detail="Select a quarterly Copernicus mosaic before downloading",
+        )
     zoom, tiles = viewport_tiles(
         viewport_from_configuration_service(), COPERNICUS_NATIVE_TILE_ZOOM
     )

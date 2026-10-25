@@ -11,9 +11,9 @@
         52.0
       ],
       "innerRadius": 3000.0,
-      "outerRadius": 30000.0,
-      "startAngle": 45.0,
-      "endAngle": 110.0
+      "outerRadius": 61130.13866451821,
+      "startAngle": 69.23113353482586,
+      "endAngle": 108.63467833290542
     },
     {
       "id": "b80e20df-2b86-4a6c-8bf5-0d07e0105e5d",
@@ -32,13 +32,13 @@
       "color": "#2eb267",
       "type": "annularSector",
       "center": [
-        0.0,
-        52.0
+        -0.017604427886539042,
+        51.9916027842593
       ],
       "innerRadius": 5000.0,
-      "outerRadius": 45000.0,
+      "outerRadius": 44311.72379770393,
       "startAngle": 110.0,
-      "endAngle": 160.0
+      "endAngle": 158.13806761693388
     },
     {
       "id": "2540532e-d458-4381-8b4d-3ab474dcdc6f",
@@ -46,12 +46,23 @@
       "color": "#38c8ec",
       "type": "rectangle",
       "origin": [
-        -0.5378676671728897,
-        51.761934399619626
+        -0.4233703140267835,
+        51.665361062898555
       ],
-      "width": 50000.0,
+      "width": 41089.449619796935,
       "height": 75000.0,
-      "angle": -45.0
+      "angle": -111.39660656368983
+    },
+    {
+      "id": "bddceb8b-340b-4ae2-9ce0-bda2f8a4cc49",
+      "name": "New shape",
+      "color": "#38c8ec",
+      "type": "circle",
+      "center": [
+        -0.9214635410476717,
+        50.82150746047022
+      ],
+      "radius": 17495.671056906234
     }
   ]
 }

@@ -328,7 +328,7 @@ input[type="checkbox"], input[type="radio"] {
 .map-status:empty { display: none; }
 .map-attribution { position: absolute; z-index: 2; right: 1rem; bottom: 1rem; margin: 0; padding: 0.26rem 0.5rem; border: 1px solid rgb(148 229 255 / 13%); border-radius: 0.35rem; color: #b7d1dd; background: rgb(6 18 30 / 76%); font-size: 0.66rem; }
 
-#service-config-dialog, #shape-editor-dialog, #track-editor-dialog, #workspace-dialog {
+#service-config-dialog, #track-editor-dialog, #workspace-dialog {
   width: min(32rem, calc(100vw - 2rem));
   padding: 0;
   border: 1px solid rgb(120 219 255 / 28%);
@@ -337,7 +337,7 @@ input[type="checkbox"], input[type="radio"] {
   background: #10293d;
   box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 62%);
 }
-#service-config-dialog::backdrop, #shape-editor-dialog::backdrop, #track-editor-dialog::backdrop, #workspace-dialog::backdrop { background: rgb(2 9 16 / 72%); backdrop-filter: blur(4px); }
+#service-config-dialog::backdrop, #track-editor-dialog::backdrop, #workspace-dialog::backdrop { background: rgb(2 9 16 / 72%); backdrop-filter: blur(4px); }
 #workspace-dialog { width: min(90rem, calc(100vw - 2rem)); height: min(48rem, calc(100vh - 2rem)); max-height: none; }
 #workspace-shell { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; }
 #workspace-header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; padding: 1.15rem 1.35rem 1rem; border-bottom: 1px solid rgb(146 223 255 / 13%); }
@@ -391,6 +391,7 @@ input[type="checkbox"], input[type="radio"] {
 #workspace-content.is-terrain-analysis #workspace-inspector, #workspace-content.is-terrain-analysis #workspace-inspector-resize { display: none; }
 #workspace-content.is-sim-time-control #workspace-primary { grid-column: 3 / -1; }
 #workspace-content.is-sim-time-control #workspace-inspector, #workspace-content.is-sim-time-control #workspace-inspector-resize { display: none; }
+#workspace-content.is-shapes-catalog #workspace-inspector { display: block; }
 .terrain-profile-details { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.55rem; margin: 0.35rem 0 0.7rem; }
 .terrain-profile-details > div { min-width: 0; padding: 0.55rem 0.6rem; border: 1px solid rgb(137 214 246 / 19%); border-radius: 0.48rem; background: rgb(4 20 32 / 38%); }
 .terrain-profile-details small, .terrain-profile-details strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -418,9 +419,6 @@ input[type="checkbox"], input[type="radio"] {
 #service-config-dialog.symbol-review-dialog { width: min(48rem, calc(100vw - 2rem)); }
 #service-config-form, #service-config-fields { display: grid; gap: 0.9rem; }
 #service-config-form { padding: 1.35rem; }
-#shape-editor-form, #shape-geometry-fields, #shape-editor-list { display: grid; gap: 0.7rem; }
-#shape-editor-form { padding: 1.35rem; }
-#shape-editor-list { max-height: 12rem; overflow-y: auto; }
 #track-editor-form, #track-route-fields, #track-waypoint-list, #track-aircraft-list { display: grid; gap: 0.7rem; }
 #track-editor-form { padding: 1.35rem; }
 .track-editor-section { display: grid; gap: 0.55rem; padding-top: 0.75rem; border-top: 1px solid rgb(146 223 255 / 13%); }
@@ -430,8 +428,6 @@ input[type="checkbox"], input[type="radio"] {
 .track-editor-item-actions { display: flex; gap: 0.35rem; }
 .track-editor-item button { padding: 0.35rem 0.5rem; }
 #track-editor-status { min-height: 1.1rem; margin: 0; color: #ffb9c0; font-size: 0.75rem; }
-.shape-editor-item { display: flex; gap: 0.5rem; align-items: center; justify-content: space-between; padding: 0.45rem; border: 1px solid rgb(137 214 246 / 19%); border-radius: 0.48rem; color: #cfe3ee; font-size: 0.75rem; }
-.shape-editor-item button { padding: 0.25rem 0.45rem; }
 .dialog-heading { padding-bottom: 0.85rem; border-bottom: 1px solid rgb(146 223 255 / 13%); }
 .dialog-heading h2 { margin: 0.22rem 0 0; font-size: 1.2rem; }
 .service-config-field { display: grid; gap: 0.42rem; color: #b9d6e3; font-size: 0.77rem; font-weight: 650; }

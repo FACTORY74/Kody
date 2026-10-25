@@ -11,6 +11,7 @@ from kody_copernicus.server import (
     ConfigurationStore,
     COPERNICUS_NATIVE_TILE_ZOOM,
     CopernicusConfiguration,
+    MosaicOptionStore,
     Viewport,
     copernicus_mosaic_options,
     copernicus_request,
@@ -85,8 +86,13 @@ class SatelliteTileTests(unittest.TestCase):
         self.assertAlmostEqual(web_mercator_latitude(bottom), 0)
         self.assertAlmostEqual(web_mercator_latitude(top), 5.61598582)
 
-    def test_process_request_uses_web_mercator_tile_bounds_and_latest_mosaic(self) -> None:
-        request = copernicus_request((-1_000, -2_000, 1_000, 2_000), 128, 64)
+    def test_process_request_uses_web_mercator_tile_bounds_and_selected_mosaic(self) -> None:
+        request = copernicus_request(
+            (-1_000, -2_000, 1_000, 2_000),
+            128,
+            64,
+            "2026-01-01T00:00:00Z/2026-03-31T23:59:59Z",
+        )
 
         self.assertEqual(
             request["input"]["bounds"]["properties"]["crs"],
@@ -113,6 +119,11 @@ class SatelliteTileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mosaicPeriod"):
             CopernicusConfiguration(mosaicPeriod="summer")
 
+    def test_legacy_latest_mosaic_is_migrated_to_an_unselected_period(self) -> None:
+        configuration = CopernicusConfiguration(mosaicPeriod="latest")
+
+        self.assertEqual(configuration.mosaic_period, "")
+
     def test_catalogue_mosaics_are_returned_as_select_options(self) -> None:
         token_response = MagicMock()
         token_response.json.return_value = {"access_token": "token"}
@@ -128,7 +139,6 @@ class SatelliteTileTests(unittest.TestCase):
                 CopernicusConfiguration(clientId="client", clientSecret="secret")
             )
 
-        self.assertEqual(options[0], {"value": "latest", "label": "Latest available mosaic"})
         self.assertIn(
             {
                 "value": "2026-04-01T00:00:00Z/2026-06-30T23:59:59Z",
@@ -141,6 +151,24 @@ class SatelliteTileTests(unittest.TestCase):
         self.assertEqual(catalogue_request["bbox"], [-180, -85, 180, 85])
         self.assertEqual(catalogue_request["distinct"], "date")
         self.assertEqual(catalogue_request["limit"], 100)
+
+    def test_mosaic_options_are_served_from_the_startup_cache(self) -> None:
+        store = MosaicOptionStore()
+        options = [
+            {"value": "2026-01-01T00:00:00Z/2026-03-31T23:59:59Z", "label": "2026 Q1"},
+        ]
+
+        with patch(
+            "kody_copernicus.server.copernicus_mosaic_options",
+            return_value=options,
+        ) as load_options:
+            store.load(CopernicusConfiguration(clientId="client", clientSecret="secret"))
+            first_response = store.response()
+            second_response = store.response()
+
+        self.assertEqual(first_response, {"options": options, "warning": ""})
+        self.assertEqual(second_response, first_response)
+        load_options.assert_called_once()
 
     def test_large_area_request_uses_collection_resolution(self) -> None:
         dimensions = copernicus_request_dimensions(
@@ -230,6 +258,7 @@ class SatelliteTileTests(unittest.TestCase):
             configuration = CopernicusConfiguration(
                 clientId="client",
                 clientSecret="secret",
+                mosaicPeriod="2026-01-01T00:00:00Z/2026-03-31T23:59:59Z",
                 rebuildPyramidWithDownload=False,
             )
 
@@ -268,6 +297,7 @@ class SatelliteTileTests(unittest.TestCase):
             configuration = CopernicusConfiguration(
                 clientId="client",
                 clientSecret="secret",
+                mosaicPeriod="2026-01-01T00:00:00Z/2026-03-31T23:59:59Z",
                 rebuildPyramidWithDownload=False,
             )
 

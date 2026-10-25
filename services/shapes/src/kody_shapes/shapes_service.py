@@ -254,7 +254,14 @@ def destination(center: list[float], bearing: float, distance: float) -> list[fl
 
 
 def shape_feature(shape: ShapeDefinition) -> dict[str, object]:
-    properties = {"name": shape.name, "color": shape.color, "shapeId": shape.id, "shapeType": shape.type}
+    properties = {
+        "name": shape.name,
+        "color": shape.color,
+        "shapeId": shape.id,
+        "shapeType": shape.type,
+        "kody": {"selectable": True, "selectionLabel": shape.name},
+        "kodyActions": ["edit-on-map"],
+    }
     if isinstance(shape, CircleDefinition):
         coordinates = [destination(shape.center, angle, shape.radius) for angle in range(0, 361, 360 // ARC_SEGMENTS)]
     elif isinstance(shape, RectangleDefinition):
@@ -384,6 +391,10 @@ def get_manifest() -> dict[str, object]:
         "displayName": "Shapes",
         "dataEndpoint": {"path": "/api/shapes", "format": "geojson"},
         "capabilities": {
+            "dataLayer": {
+                "kind": "geojson",
+                "dataPath": "/api/shapes",
+            },
             "shapeEditor": {
                 "readPath": "/api/shapes/definitions",
                 "createPath": "/api/shapes/definitions",
@@ -392,8 +403,24 @@ def get_manifest() -> dict[str, object]:
                 "deleteMethod": "DELETE",
                 "revisionHeader": "If-Match",
                 "types": ["circle", "rectangle", "annularSector", "polygon"],
-            }
+            },
+            "workspace": {
+                "id": "shapes-catalog",
+                "label": "Shapes",
+                "openPath": "/api/workspace",
+                "revisionHeader": "If-Match",
+            },
         },
+        "featureActions": [{
+            "id": "edit-on-map",
+            "label": "Edit on map",
+            "path": "/api/workspace",
+            "workspace": {
+                "mode": "edit-on-map",
+                "resource": "definitions",
+                "featureIdProperty": "shapeId",
+            },
+        }],
         "configuration": {
             "readPath": "/api/config",
             "writePath": "/api/config",
@@ -404,6 +431,27 @@ def get_manifest() -> dict[str, object]:
                 "method": "POST",
                 "confirmationMessage": "Clear all local Shapes data? This cannot be undone.",
             }],
+        },
+    }
+
+
+@app.get("/api/workspace")
+def get_workspace() -> dict[str, object]:
+    """Describe the trusted Shapes catalogue workspace."""
+    return {
+        "kind": "shapes-catalog",
+        "title": "Shapes catalog",
+        "resources": {
+            "definitions": "/api/shapes/definitions",
+        },
+        "panes": [{
+            "id": "catalog",
+            "label": "Catalog",
+            "description": "Create, select, and maintain declarative map shapes.",
+            "summary": {"metrics": [], "items": []},
+        }],
+        "timeline": {
+            "description": "Draw a shape on the map to populate its geometry, then save it from the inspector.",
         },
     }
 

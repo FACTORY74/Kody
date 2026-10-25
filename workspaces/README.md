@@ -30,6 +30,10 @@ two deliberately different examples:
    elevation sources, creates line-of-sight (LOS) rosettes, and presents
    point-to-point elevation profiles.
 3. **SimTimeControl** is a workspace-only monotonic clock with no map layer.
+4. **Shapes** is a declarative GeoJSON data layer with a catalog workspace:
+   its navigator lists shape definitions, its inspector edits type-specific
+   fields, and its map handoff supplies geometry without making the workspace
+   own the layer's visibility.
 
 The comparison prevents the workspace model from becoming an implicit Tracks
 frontend. It must be useful to both a simulation service and a stateless or

@@ -15,6 +15,7 @@ class MapViewTests(unittest.TestCase):
         self.assertFalse(defaults.layers.satellite_imagery)
         self.assertFalse(defaults.layers.copernicus)
         self.assertFalse(defaults.layers.terrain)
+        self.assertFalse(defaults.layers.esa_dem)
         self.assertTrue(defaults.layers.vector_map)
         self.assertTrue(defaults.layers.grid)
         self.assertFalse(defaults.layers.display_mini_time_control)
@@ -29,6 +30,7 @@ class MapViewTests(unittest.TestCase):
                     "satelliteImagery": True,
                     "copernicus": True,
                     "terrain": True,
+                    "esaDem": True,
                     "vectorMap": False,
                     "grid": False,
                     "gridCrosshair": True,
@@ -36,6 +38,7 @@ class MapViewTests(unittest.TestCase):
                     "satelliteOpacity": 5,
                     "copernicusOpacity": 7,
                     "terrainOpacity": 6,
+                    "esaDemOpacity": 5,
                     "dataSources": {"local-adsb": False},
                     "dataSourceOpacity": {"local-shapes": 4, "local-adsb": 8},
                 },
@@ -45,6 +48,7 @@ class MapViewTests(unittest.TestCase):
         self.assertTrue(saved.layers.satellite_imagery)
         self.assertTrue(saved.layers.copernicus)
         self.assertTrue(saved.layers.terrain)
+        self.assertTrue(saved.layers.esa_dem)
         self.assertFalse(saved.layers.vector_map)
         self.assertFalse(saved.layers.grid)
         self.assertTrue(saved.layers.grid_crosshair)
@@ -52,6 +56,7 @@ class MapViewTests(unittest.TestCase):
         self.assertEqual(saved.layers.satellite_opacity, 5)
         self.assertEqual(saved.layers.copernicus_opacity, 7)
         self.assertEqual(saved.layers.terrain_opacity, 6)
+        self.assertEqual(saved.layers.esa_dem_opacity, 5)
         self.assertFalse(saved.layers.data_sources["local-adsb"])
         self.assertEqual(saved.layers.data_source_opacity, {"local-shapes": 4, "local-adsb": 8})
         self.assertEqual(
@@ -104,6 +109,12 @@ class MapViewTests(unittest.TestCase):
             {"services": [{"id": "local-terrain", "type": "terrain", "url": "http://127.0.0.1:8010/"}]}
         )
         self.assertEqual(configuration.services[0].type, "terrain")
+
+    def test_accepts_esa_download_terrain_service(self) -> None:
+        configuration = ServiceConfiguration.model_validate(
+            {"services": [{"id": "local-esa-dem", "type": "esa-dem", "url": "http://127.0.0.1:8013/"}]}
+        )
+        self.assertEqual(configuration.services[0].type, "esa-dem")
 
     def test_accepts_independent_vector_and_satellite_map_services(self) -> None:
         configuration = ServiceConfiguration.model_validate(

@@ -15,8 +15,20 @@ north. Sectors use clockwise bearings from north.
 `DELETE /api/shapes/definitions/{id}` edit it and return the new revision.
 Supply the returned revision in
 an `If-Match` header to reject stale edits with `409`; omitting it preserves the
-service's existing optional-concurrency behaviour. The manifest advertises
-these endpoints as a `shapeEditor` capability.
+service's existing optional-concurrency behaviour. The manifest advertises the
+GeoJSON endpoint as a `dataLayer`, and exposes the trusted **Shapes** catalog
+workspace at `GET /api/workspace`; its catalog inspector uses the same
+revision-safe definition APIs.
+
+The workspace can hand a draft to the trusted map editor without persisting it:
+drag cyan controls for its centre/origin, dimensions, radii, angles, or
+polygon vertices, then press Escape to return to the inspector and save.
+Published shape features are selectable GeoJSON polygons; use Shift-click or
+Shift-drag and choose **Edit on map** from the Selection panel to edit a draft.
+Right-clicking a selectable polygon or edge exposes the same declared feature
+actions in the map context menu.
+Escaping that Selection-panel edit saves it through the revision-safe update
+API; a save failure remains visible on the map so it can be retried.
 
 On first run, the service writes the new catalogue atomically. If the new file
 does not exist, valid polygons from the legacy `data/shapes/shapes.geojson` are

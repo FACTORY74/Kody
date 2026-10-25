@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
 
 from kody_shapes import shapes_service
-from kody_shapes.shapes_service import ShapeDefinition, ShapesStore
+from kody_shapes.shapes_service import ShapeDefinition, ShapesStore, destination, shape_feature
 
 
 def make_definition(value: dict[str, object]):
@@ -17,6 +17,31 @@ def make_definition(value: dict[str, object]):
 
 
 class ShapesStoreTests(unittest.TestCase):
+    def test_rectangle_geometry_uses_clockwise_width_and_height_faces(self) -> None:
+        rectangle = make_definition({
+            "type": "rectangle",
+            "name": "Rotated rectangle",
+            "color": "#001122",
+            "origin": [0, 0],
+            "width": 100,
+            "height": 20,
+            "angle": 90,
+        })
+        ring = shape_feature(rectangle)["geometry"]["coordinates"][0]
+
+        width_face = [
+            (ring[1][index] + ring[2][index]) / 2
+            for index in range(2)
+        ]
+        height_face = [
+            (ring[2][index] + ring[3][index]) / 2
+            for index in range(2)
+        ]
+        for actual, expected in zip(width_face, destination([0, 0], 180, 50)):
+            self.assertAlmostEqual(actual, expected, places=7)
+        for actual, expected in zip(height_face, destination([0, 0], 90, 10)):
+            self.assertAlmostEqual(actual, expected, places=7)
+
     def test_initializes_missing_catalogue_and_renders_circle_as_geojson(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             catalogue_file = Path(directory) / "shapes" / "shapes.json"
@@ -107,6 +132,19 @@ class ShapesStoreTests(unittest.TestCase):
                 self.assertEqual(
                     manifest["capabilities"]["shapeEditor"]["revisionHeader"], "If-Match"
                 )
+                self.assertEqual(manifest["dataEndpoint"]["path"], "/api/shapes")
+                self.assertEqual(manifest["capabilities"]["dataLayer"]["kind"], "geojson")
+                self.assertEqual(manifest["capabilities"]["workspace"]["openPath"], "/api/workspace")
+                feature_action = manifest["featureActions"][0]
+                self.assertEqual(feature_action["id"], "edit-on-map")
+                self.assertEqual(feature_action["workspace"], {
+                    "mode": "edit-on-map",
+                    "resource": "definitions",
+                    "featureIdProperty": "shapeId",
+                })
+                workspace = client.get("/api/workspace").json()
+                self.assertEqual(workspace["kind"], "shapes-catalog")
+                self.assertEqual(workspace["resources"]["definitions"], "/api/shapes/definitions")
                 created = client.post("/api/shapes/definitions", json={
                     "type": "circle", "name": "Circle", "color": "#001122",
                     "center": [0, 0], "radius": 1,
@@ -130,7 +168,10 @@ class ShapesStoreTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(updated.status_code, 200)
-                self.assertEqual(client.get("/api/shapes").json()["features"][0]["properties"]["shapeType"], "polygon")
+                feature_properties = client.get("/api/shapes").json()["features"][0]["properties"]
+                self.assertEqual(feature_properties["shapeType"], "polygon")
+                self.assertTrue(feature_properties["kody"]["selectable"])
+                self.assertEqual(feature_properties["kodyActions"], ["edit-on-map"])
                 self.assertEqual(client.delete(
                     f"/api/shapes/definitions/{shape_id}",
                     headers={"If-Match": revision},

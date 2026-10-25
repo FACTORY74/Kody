@@ -19,6 +19,7 @@ let vectorLayer;
 let imageryLayer;
 let copernicusLayer;
 let terrainLayer;
+let esaDemLayer;
 const mapServiceList = document.querySelector("#map-service-list");
 const dataSourceList = document.querySelector("#data-source-list");
 const workspaceSourceList = document.querySelector("#workspace-source-list");
@@ -41,18 +42,6 @@ const serviceConfigProgressValue = document.querySelector("#service-config-progr
 const serviceConfigProgressBar = document.querySelector("#service-config-progress-bar");
 const serviceConfigCancel = document.querySelector("#service-config-cancel");
 const serviceConfigSubmit = serviceConfigForm.querySelector('button[type="submit"]');
-const shapeEditorDialog = document.querySelector("#shape-editor-dialog");
-const shapeEditorForm = document.querySelector("#shape-editor-form");
-const shapeEditorTitle = document.querySelector("#shape-editor-title");
-const shapeType = document.querySelector("#shape-type");
-const shapeName = document.querySelector("#shape-name");
-const shapeColor = document.querySelector("#shape-color");
-const shapeGeometryFields = document.querySelector("#shape-geometry-fields");
-const shapeEditorStatus = document.querySelector("#shape-editor-status");
-const shapeEditorList = document.querySelector("#shape-editor-list");
-const shapeDraw = document.querySelector("#shape-draw");
-const shapeDelete = document.querySelector("#shape-delete");
-const shapeCancel = document.querySelector("#shape-cancel");
 const trackEditorDialog = document.querySelector("#track-editor-dialog");
 const trackEditorForm = document.querySelector("#track-editor-form");
 const trackRouteSelect = document.querySelector("#track-route-select");
@@ -87,15 +76,18 @@ const tileCache = new Map();
 const rasterTileCache = new Map();
 const copernicusTileCache = new Map();
 const terrainTileCache = new Map();
+const esaDemTileCache = new Map();
 const requestedTileKeys = new Set();
 const requestedRasterTileKeys = new Set();
 const requestedCopernicusTileKeys = new Set();
 const requestedTerrainTileKeys = new Set();
+const requestedEsaDemTileKeys = new Set();
 const tileWorker = new Worker("/tile-worker.js?v=20261022a");
 let vectorMapServiceUrl = window.location.origin;
 let satelliteMapServiceUrl = window.location.origin;
 let copernicusServiceUrl = window.location.origin;
 let terrainServiceUrl = window.location.origin;
+let esaDemServiceUrl = window.location.origin;
 let configuredMapServices = [];
 let configuredServices = [];
 let serviceReconciliationInProgress = false;
@@ -118,6 +110,7 @@ let mapViewSaveInProgress = false;
 let rasterRevision = null;
 let copernicusRevision = null;
 let terrainRevision = null;
+let esaDemRevision = null;
 let terrainPalette = null;
 let viewportElevation = null;
 let overlayServices = [];
@@ -135,8 +128,9 @@ const selectedFeatures = new Map();
 let selectionPointer = null;
 let selectionActionsKey = null;
 let centeredSelectionKey = null;
-let shapeEditorSession = null;
 let shapeDrawing = null;
+let shapeMapEditing = null;
+let shapeMapMove = null;
 let trackEditorSession = null;
 let trackRouteDrawing = null;
 let trackWaypointMove = null;
@@ -158,7 +152,7 @@ let viewportPublishTimer = null;
 let viewportElevationTimer = null;
 let viewportElevationRequest = 0;
 const mapServices = new Map();
-const layerOpacity = { satellite: 10, copernicus: 10, terrain: 8, vector: 10, grid: 10 };
+const layerOpacity = { satellite: 10, copernicus: 10, terrain: 8, esaDem: 8, vector: 10, grid: 10 };
 let gridCrosshair = false;
 const airLanesCacheCanvas = document.createElement("canvas");
 const airLanesCacheContext = airLanesCacheCanvas.getContext("2d");
@@ -246,6 +240,7 @@ function mapLayerDetails(type, layers) {
     satmap: { control: "imageryLayer", visible: layers?.satelliteImagery ?? false, opacity: "satellite" },
     copernicus: { control: "copernicusLayer", visible: layers?.copernicus ?? false, opacity: "copernicus" },
     terrain: { control: "terrainLayer", visible: layers?.terrain ?? false, opacity: "terrain" },
+    "esa-dem": { control: "esaDemLayer", visible: layers?.esaDem ?? false, opacity: "esaDem" },
   }[type];
 }
 
@@ -271,6 +266,8 @@ function renderMapServiceControls(layers) {
         refreshCopernicusRevision().catch((error) => { status.textContent = `Unable to refresh Copernicus imagery: ${error.message}`; });
       } else if (service.type === "terrain") {
         refreshTerrainRevision().catch((error) => { status.textContent = `Unable to refresh terrain: ${error.message}`; });
+      } else if (service.type === "esa-dem") {
+        refreshEsaDemRevision().catch((error) => { status.textContent = `Unable to refresh ESA Download Terrain: ${error.message}`; });
       }
     });
     label.append(checkbox, ` ${service.displayName}`);
@@ -312,6 +309,7 @@ function renderMapServiceControls(layers) {
     if (details.control === "imageryLayer") imageryLayer = checkbox;
     if (details.control === "copernicusLayer") copernicusLayer = checkbox;
     if (details.control === "terrainLayer") terrainLayer = checkbox;
+    if (details.control === "esaDemLayer") esaDemLayer = checkbox;
   }
 }
 
@@ -348,7 +346,8 @@ const layers = {
   imagery: { isVisible: () => imageryLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.satellite, drawImageryLayer) },
   copernicus: { isVisible: () => copernicusLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.copernicus, drawCopernicusLayer) },
   terrain: { isVisible: () => terrainLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.terrain, drawTerrainLayer) },
-  shapes: { isVisible: () => shapes.length > 0 || contextActionFeatures.length > 0 || terrainProfileDrawing !== null, draw: drawShapesLayer },
+  esaDem: { isVisible: () => esaDemLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.esaDem, drawEsaDemLayer) },
+  shapes: { isVisible: () => shapes.length > 0 || contextActionFeatures.length > 0 || terrainProfileDrawing !== null || shapeMapEditing !== null, draw: drawShapesLayer },
   grid: { isVisible: () => gridLayer.checked, draw: () => drawWithOpacity(layerOpacity.grid, drawGridLayer) },
   measurement: { isVisible: () => measureStart !== null, draw: drawMeasurement },
 };
@@ -637,6 +636,18 @@ function drawTerrainLayer(target) {
     const detailTiles = exactCachedTiles(detailZoom, terrainTileCache, terrainTileKey);
     if (detailTiles.length === visibleDetailTiles.length) {
       tiles = detailTiles;
+    }
+
+    function drawEsaDemLayer(target) {
+      const baseZoom = Math.max(0, Math.min(18, Math.floor(camera.zoom)));
+      const detailZoom = Math.min(18, Math.ceil(camera.zoom));
+      let tiles = nearestCachedTiles(baseZoom, esaDemTileCache, esaDemTileKey);
+      if (detailZoom > baseZoom) {
+        const visibleDetailTiles = visibleTiles(detailZoom);
+        const detailTiles = exactCachedTiles(detailZoom, esaDemTileCache, esaDemTileKey);
+        if (detailTiles.length === visibleDetailTiles.length) tiles = detailTiles;
+      }
+      for (const tile of tiles) drawTerrainTile(target, tile);
     }
   }
   for (const tile of tiles) drawTerrainTile(target, tile);
@@ -1017,6 +1028,7 @@ function drawShapesLayer() {
   drawShapeFeatures(contextActionFeatures, []);
   drawTrackEditorPreview();
   drawTerrainProfilePreview();
+  drawShapeMapEditorPreview();
   drawSelectedFeatureMarkers();
 }
 
@@ -1066,6 +1078,34 @@ function drawTrackEditorPreview() {
     context.beginPath();
     context.arc(point.x, point.y, trackRouteEditing ? 6 : 4, 0, 2 * Math.PI);
     context.fill();
+  }
+  context.restore();
+}
+
+function drawShapeMapEditorPreview() {
+  const draft = shapeMapEditing?.draft;
+  if (!draft) return;
+  const geometry = shapeDraftGeometry(draft);
+  if (!geometry) return;
+  context.save();
+  context.strokeStyle = "#8df2ff";
+  context.fillStyle = "rgb(141 242 255 / 16%)";
+  context.lineWidth = 2;
+  context.setLineDash([6, 4]);
+  context.beginPath();
+  appendShapeGeometry(geometry);
+  context.fill("evenodd");
+  context.stroke();
+  context.setLineDash([]);
+  for (const control of shapeMapControlPoints(draft)) {
+    const point = screenPoint(...control.coordinate);
+    context.beginPath();
+    context.arc(point.x, point.y, control.id === shapeMapMove?.controlId ? 8 : 6, 0, 2 * Math.PI);
+    context.fillStyle = "#8df2ff";
+    context.fill();
+    context.lineWidth = 2;
+    context.strokeStyle = "#063849";
+    context.stroke();
   }
   context.restore();
 }
@@ -1133,10 +1173,6 @@ function enabledOverlayServices() {
   return overlayServices.filter((service) => service.enabled);
 }
 
-function isLiveOverlayService(service) {
-  return !["shapes", "airlanes"].includes(service.type);
-}
-
 function supportsLiveOverlayActivity(service) {
   return service.type === "adsb" || service.type === "ais";
 }
@@ -1171,13 +1207,11 @@ function selectionKey(service, feature) {
 
 function isSelectableFeature(feature) {
   return typeof feature?.id === "string"
-    && feature.geometry?.type === "Point"
     && feature.properties?.kody?.selectable === true;
 }
 
-function selectableLiveFeatures() {
+function selectableDataFeatures() {
   return enabledOverlayServices()
-    .filter(isLiveOverlayService)
     .flatMap((service) => {
       const features = overlayCollections.get(overlayKey(service))?.features;
       if (!Array.isArray(features)) {
@@ -1187,6 +1221,87 @@ function selectableLiveFeatures() {
         .filter(isSelectableFeature)
         .map((feature) => ({ service, feature }));
     });
+}
+
+function screenCoordinates(coordinates) {
+  return coordinates.map(([longitude, latitude]) => screenPoint(longitude, latitude));
+}
+
+function pointNearSegment(point, start, end, radius = SELECTION_CAPTURE_RADIUS_PIXELS) {
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const lengthSquared = deltaX ** 2 + deltaY ** 2;
+  const ratio = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1, (
+    (point.x - start.x) * deltaX + (point.y - start.y) * deltaY
+  ) / lengthSquared));
+  return Math.hypot(point.x - (start.x + ratio * deltaX), point.y - (start.y + ratio * deltaY)) <= radius;
+}
+
+function pointInRing(point, ring) {
+  let inside = false;
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
+    const currentPoint = ring[index];
+    const previousPoint = ring[previous];
+    if (pointNearSegment(point, previousPoint, currentPoint, 0.001)) return true;
+    if ((currentPoint.y > point.y) !== (previousPoint.y > point.y)
+      && point.x < (previousPoint.x - currentPoint.x) * (point.y - currentPoint.y)
+        / (previousPoint.y - currentPoint.y) + currentPoint.x) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function featureContainsScreenPoint(feature, point) {
+  if (feature.geometry?.type === "Point") {
+    const featurePoint = screenPoint(...feature.geometry.coordinates);
+    return Math.hypot(featurePoint.x - point.x, featurePoint.y - point.y) <= SELECTION_CAPTURE_RADIUS_PIXELS;
+  }
+  const rings = feature.geometry?.type === "Polygon" ? feature.geometry.coordinates
+    : feature.geometry?.type === "MultiPolygon" ? feature.geometry.coordinates.flat()
+      : [];
+  return rings.some((ring) => {
+    const points = screenCoordinates(ring);
+    return pointInRing(point, points)
+      || points.some((current, index) => pointNearSegment(point, current, points[(index + 1) % points.length]));
+  });
+}
+
+function segmentsIntersect(firstStart, firstEnd, secondStart, secondEnd) {
+  const cross = (start, end, point) => (
+    (end.x - start.x) * (point.y - start.y) - (end.y - start.y) * (point.x - start.x)
+  );
+  const first = cross(firstStart, firstEnd, secondStart);
+  const second = cross(firstStart, firstEnd, secondEnd);
+  const third = cross(secondStart, secondEnd, firstStart);
+  const fourth = cross(secondStart, secondEnd, firstEnd);
+  return first * second <= 0 && third * fourth <= 0;
+}
+
+function ringIntersectsRectangle(ring, rectangle) {
+  const points = screenCoordinates(ring);
+  if (points.some((point) => point.x >= rectangle.left && point.x <= rectangle.right
+    && point.y >= rectangle.top && point.y <= rectangle.bottom)) return true;
+  const corners = [
+    { x: rectangle.left, y: rectangle.top }, { x: rectangle.right, y: rectangle.top },
+    { x: rectangle.right, y: rectangle.bottom }, { x: rectangle.left, y: rectangle.bottom },
+  ];
+  if (corners.some((corner) => pointInRing(corner, points))) return true;
+  return points.some((point, index) => corners.some((corner, cornerIndex) => (
+    segmentsIntersect(point, points[(index + 1) % points.length], corner, corners[(cornerIndex + 1) % corners.length])
+  )));
+}
+
+function featureIntersectsScreenRectangle(feature, rectangle) {
+  if (feature.geometry?.type === "Point") {
+    const point = screenPoint(...feature.geometry.coordinates);
+    return point.x >= rectangle.left && point.x <= rectangle.right
+      && point.y >= rectangle.top && point.y <= rectangle.bottom;
+  }
+  const rings = feature.geometry?.type === "Polygon" ? feature.geometry.coordinates
+    : feature.geometry?.type === "MultiPolygon" ? feature.geometry.coordinates.flat()
+      : [];
+  return rings.some((ring) => ringIntersectsRectangle(ring, rectangle));
 }
 
 function selectionLabel(feature) {
@@ -1238,6 +1353,14 @@ function declaredFeatureActions(service, feature) {
     && typeof action.path === "string"
     && (allowedIds === null || allowedIds.has(action.id))
   ));
+}
+
+async function runSelectedFeatureAction(service, feature, action) {
+  if (action.workspace?.mode && service.manifest?.capabilities?.workspace) {
+    await configureWorkspace(service, { feature, action });
+    return;
+  }
+  throw new Error(`Unsupported feature action: ${action.id}`);
 }
 
 function renderSelectedFeatures() {
@@ -1304,6 +1427,18 @@ function renderSelectedFeatures() {
         const unavailable = document.createElement("small");
         unavailable.textContent = "No service actions are registered.";
         menu.append(unavailable);
+      } else {
+        for (const action of serviceActions) {
+          const actionButton = document.createElement("button");
+          actionButton.type = "button";
+          actionButton.textContent = action.label;
+          actionButton.addEventListener("click", () => {
+            runSelectedFeatureAction(service, feature, action).catch((error) => {
+              status.textContent = `Unable to run ${action.label}: ${error.message}`;
+            });
+          });
+          menu.append(actionButton);
+        }
       }
       row.append(menu);
     }
@@ -1319,7 +1454,7 @@ function centerOnSelectedFeature() {
     centeredSelectionKey = null;
     return;
   }
-  const [longitude, latitude] = selected.feature.geometry.coordinates;
+  const [longitude, latitude] = featureFocusCoordinate(selected.feature);
   const { x, y } = MapMath.lonLatToWorld(longitude, latitude);
   const center = viewportCrosshairPoint();
   const nextCameraX = Math.max(
@@ -1333,6 +1468,18 @@ function centerOnSelectedFeature() {
   if (camera.x === nextCameraX && camera.y === nextCameraY) {
     return;
   }
+
+  function featureFocusCoordinate(feature) {
+    if (feature.geometry?.type === "Point") return feature.geometry.coordinates;
+    const ring = feature.geometry?.type === "Polygon" ? feature.geometry.coordinates[0]
+      : feature.geometry?.type === "MultiPolygon" ? feature.geometry.coordinates[0]?.[0]
+        : null;
+    if (!Array.isArray(ring) || ring.length === 0) return [0, 0];
+    return [
+      ring.reduce((total, [longitude]) => total + longitude, 0) / ring.length,
+      ring.reduce((total, [, latitude]) => total + latitude, 0) / ring.length,
+    ];
+  }
   camera.x = nextCameraX;
   camera.y = nextCameraY;
   mapStateVersion += 1;
@@ -1343,7 +1490,7 @@ function centerOnSelectedFeature() {
 
 function reconcileSelectedFeatures() {
   const available = new Map(
-    selectableLiveFeatures().map(({ service, feature }) => [selectionKey(service, feature), { service, feature }]),
+    selectableDataFeatures().map(({ service, feature }) => [selectionKey(service, feature), { service, feature }]),
   );
   for (const key of selectedFeatures.keys()) {
     const current = available.get(key);
@@ -1358,12 +1505,8 @@ function reconcileSelectedFeatures() {
 }
 
 function toggleSelectableFeaturesAt(point) {
-  for (const { service, feature } of selectableLiveFeatures()) {
-    const [longitude, latitude] = feature.geometry.coordinates;
-    const featurePoint = screenPoint(longitude, latitude);
-    if (Math.hypot(featurePoint.x - point.x, featurePoint.y - point.y) > SELECTION_CAPTURE_RADIUS_PIXELS) {
-      continue;
-    }
+  for (const { service, feature } of selectableDataFeatures()) {
+    if (!featureContainsScreenPoint(feature, point)) continue;
     const key = selectionKey(service, feature);
     if (selectedFeatures.has(key)) {
       selectedFeatures.delete(key);
@@ -1379,15 +1522,8 @@ function toggleSelectableFeaturesInRectangle(start, end) {
   const right = Math.max(start.x, end.x);
   const top = Math.min(start.y, end.y);
   const bottom = Math.max(start.y, end.y);
-  for (const { service, feature } of selectableLiveFeatures()) {
-    const [longitude, latitude] = feature.geometry.coordinates;
-    const featurePoint = screenPoint(longitude, latitude);
-    if (
-      featurePoint.x < left || featurePoint.x > right
-      || featurePoint.y < top || featurePoint.y > bottom
-    ) {
-      continue;
-    }
+  for (const { service, feature } of selectableDataFeatures()) {
+    if (!featureIntersectsScreenRectangle(feature, { left, right, top, bottom })) continue;
     const key = selectionKey(service, feature);
     if (selectedFeatures.has(key)) {
       selectedFeatures.delete(key);
@@ -1403,10 +1539,13 @@ function drawSelectedFeatureMarkers() {
   context.strokeStyle = "#8df2ff";
   context.lineWidth = 2;
   for (const { feature } of selectedFeatures.values()) {
-    const [longitude, latitude] = feature.geometry.coordinates;
-    const point = screenPoint(longitude, latitude);
     context.beginPath();
-    context.arc(point.x, point.y, 10, 0, 2 * Math.PI);
+    if (feature.geometry.type === "Point") {
+      const point = screenPoint(...feature.geometry.coordinates);
+      context.arc(point.x, point.y, 10, 0, 2 * Math.PI);
+    } else {
+      appendShapeGeometry(feature.geometry);
+    }
     context.stroke();
   }
   if (selectionPointer) {
@@ -1550,7 +1689,21 @@ function configurationInput(field, value) {
     const input = document.createElement("select");
     input.dataset.configKey = field.key;
     input.required = field.required !== false;
-    for (const option of field.options || []) {
+    const options = field.options || [];
+    if (field.placeholder) {
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = field.placeholder;
+      placeholder.disabled = true;
+      input.append(placeholder);
+    }
+    if (value && !options.some((option) => option.value === value)) {
+      const savedChoice = document.createElement("option");
+      savedChoice.value = value;
+      savedChoice.textContent = "Saved selection (unavailable until service restart)";
+      input.append(savedChoice);
+    }
+    for (const option of options) {
       const choice = document.createElement("option");
       choice.value = option.value;
       choice.textContent = option.label;
@@ -1789,6 +1942,7 @@ async function configureService(service) {
   setServiceConfigurationDialogMode();
   configurationSession = { service, manifest, revision: configuration.revision };
   serviceConfigTitle.textContent = `Configure ${manifest.displayName}`;
+  const optionWarnings = [];
   const fields = await Promise.all(manifest.configuration.fields.map(async (field) => {
     let configuredField = field;
     if (field.optionsPath) {
@@ -1796,12 +1950,13 @@ async function configureService(service) {
       if (!optionsResponse.ok) {
         throw new Error(`${field.label} options returned ${optionsResponse.status}`);
       }
-      const { options } = await optionsResponse.json();
+      const { options, warning } = await optionsResponse.json();
       if (!Array.isArray(options) || options.some((option) => (
         typeof option?.value !== "string" || typeof option.label !== "string"
       ))) {
         throw new Error(`${field.label} options are invalid`);
       }
+      if (typeof warning === "string" && warning) optionWarnings.push(warning);
       configuredField = { ...field, options };
     }
     if (field.secretStoredKey && configuration[field.secretStoredKey]) {
@@ -1824,6 +1979,7 @@ async function configureService(service) {
   } else {
     serviceConfigFields.replaceChildren(...fields);
   }
+  serviceConfigStatus.textContent = optionWarnings.join(" ");
   serviceConfigActions.replaceChildren(
     ...(manifest.configuration.actions || []).map((action) => {
       const button = document.createElement("button");
@@ -1882,129 +2038,6 @@ async function configureService(service) {
   serviceConfigProgress.hidden = true;
   serviceConfigDialog.showModal();
   startServiceActivityPolling(service, manifest);
-}
-
-function shapeNumberInput(key, label, value = 0) {
-  const field = document.createElement("label");
-  field.className = "service-config-field";
-  field.textContent = label;
-  const input = document.createElement("input");
-  input.type = "number";
-  input.step = "any";
-  input.dataset.shapeKey = key;
-  input.value = String(value);
-  field.append(input);
-  return field;
-}
-
-function shapeCoordinateFields(prefix, coordinate = [0, 0]) {
-  return [
-    shapeNumberInput(`${prefix}Longitude`, `${prefix} longitude`, coordinate[0]),
-    shapeNumberInput(`${prefix}Latitude`, `${prefix} latitude`, coordinate[1]),
-  ];
-}
-
-function shapeFieldValue(key) {
-  return Number(shapeGeometryFields.querySelector(`[data-shape-key="${key}"]`).value);
-}
-
-function renderShapeGeometryFields(shape = null) {
-  shapeGeometryFields.replaceChildren();
-  const type = shapeType.value;
-  if (type === "circle") {
-    shapeGeometryFields.append(
-      ...shapeCoordinateFields("Center", shape?.center),
-      shapeNumberInput("radius", "Radius (metres)", shape?.radius ?? 1000),
-    );
-  } else if (type === "rectangle") {
-    shapeGeometryFields.append(
-      ...shapeCoordinateFields("Origin", shape?.origin),
-      shapeNumberInput("width", "Width (metres)", shape?.width ?? 1000),
-      shapeNumberInput("height", "Height (metres)", shape?.height ?? 1000),
-      shapeNumberInput("angle", "Angle clockwise from north (degrees)", shape?.angle ?? 0),
-    );
-  } else if (type === "annularSector") {
-    shapeGeometryFields.append(
-      ...shapeCoordinateFields("Center", shape?.center),
-      shapeNumberInput("innerRadius", "Inner radius (metres)", shape?.innerRadius ?? 0),
-      shapeNumberInput("outerRadius", "Outer radius (metres)", shape?.outerRadius ?? 1000),
-      shapeNumberInput("startAngle", "Start bearing (degrees)", shape?.startAngle ?? 0),
-      shapeNumberInput("endAngle", "End bearing (degrees)", shape?.endAngle ?? 90),
-    );
-  } else {
-    const field = document.createElement("label");
-    field.className = "service-config-field";
-    field.textContent = "Coordinates ([longitude, latitude] entries)";
-    const input = document.createElement("textarea");
-    input.dataset.shapeKey = "coordinates";
-    input.rows = 5;
-    input.value = JSON.stringify(shape?.coordinates ?? [], null, 2);
-    field.append(input);
-    shapeGeometryFields.append(field);
-  }
-}
-
-function shapePayload() {
-  const payload = { type: shapeType.value, name: shapeName.value, color: shapeColor.value };
-  if (payload.type === "circle") {
-    payload.center = [shapeFieldValue("CenterLongitude"), shapeFieldValue("CenterLatitude")];
-    payload.radius = shapeFieldValue("radius");
-  } else if (payload.type === "rectangle") {
-    payload.origin = [shapeFieldValue("OriginLongitude"), shapeFieldValue("OriginLatitude")];
-    payload.width = shapeFieldValue("width");
-    payload.height = shapeFieldValue("height");
-    payload.angle = shapeFieldValue("angle");
-  } else if (payload.type === "annularSector") {
-    payload.center = [shapeFieldValue("CenterLongitude"), shapeFieldValue("CenterLatitude")];
-    payload.innerRadius = shapeFieldValue("innerRadius");
-    payload.outerRadius = shapeFieldValue("outerRadius");
-    payload.startAngle = shapeFieldValue("startAngle");
-    payload.endAngle = shapeFieldValue("endAngle");
-  } else {
-    payload.coordinates = JSON.parse(shapeGeometryFields.querySelector("[data-shape-key=\"coordinates\"]").value);
-  }
-  return payload;
-}
-
-function showShapeEditor(shape = null) {
-  shapeEditorSession.editing = shape;
-  shapeEditorTitle.textContent = shape ? `Edit ${shape.name}` : "Draw shape";
-  shapeType.value = shape?.type ?? "circle";
-  shapeType.disabled = Boolean(shape);
-  shapeName.value = shape?.name ?? "";
-  shapeColor.value = shape?.color ?? "#38c8ec";
-  shapeDelete.hidden = !shape;
-  shapeEditorStatus.textContent = "";
-  renderShapeGeometryFields(shape);
-  if (!shapeEditorDialog.open) {
-    shapeEditorDialog.showModal();
-  }
-}
-
-function renderShapeEditorList() {
-  shapeEditorList.replaceChildren();
-  for (const shape of shapeEditorSession.shapes) {
-    const row = document.createElement("div");
-    row.className = "shape-editor-item";
-    const label = document.createElement("span");
-    label.textContent = `${shape.name} (${shape.type})`;
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.textContent = "Edit";
-    edit.addEventListener("click", () => showShapeEditor(shape));
-    row.append(label, edit);
-    shapeEditorList.append(row);
-  }
-}
-
-async function configureShapeEditor(service) {
-  const capability = service.manifest.capabilities.shapeEditor;
-  const response = await fetch(`${service.url}${capability.readPath}`);
-  if (!response.ok) throw new Error(`shape catalogue returned ${response.status}`);
-  const catalogue = await response.json();
-  shapeEditorSession = { service, capability, revision: catalogue.revision, shapes: catalogue.shapes, editing: null };
-  renderShapeEditorList();
-  showShapeEditor();
 }
 
 function trackEditorInput(key, label, value, { type = "text", options = null } = {}) {
@@ -2970,6 +3003,200 @@ function renderSimTimeControlWorkspace() {
   }));
 }
 
+
+function shapeWorkspaceField(label, key, value, options = {}) {
+  return workspaceField(label, value, { key: `shape:${key}`, ...options });
+}
+
+function defaultShapeDraft() {
+  const point = MapMath.worldToLonLat(camera.x, camera.y);
+  return {
+    type: "circle", name: "New shape", color: "#38c8ec",
+    center: [point.longitude, point.latitude], radius: 1000,
+  };
+}
+
+function setShapeDraftType(type) {
+  const previous = workspaceSession.shapeEditing.draft;
+  const next = { ...defaultShapeDraft(), type, name: previous.name, color: previous.color };
+  if (type === "rectangle") Object.assign(next, { origin: previous.origin ?? previous.center ?? next.center, width: 1000, height: 1000, angle: 0 });
+  if (type === "annularSector") Object.assign(next, { center: previous.center ?? previous.origin ?? next.center, innerRadius: 0, outerRadius: 1000, startAngle: 0, endAngle: 90 });
+  if (type === "polygon") Object.assign(next, { coordinates: previous.coordinates ?? [] });
+  workspaceSession.shapeEditing.draft = next;
+  renderWorkspace();
+}
+
+function shapeWorkspacePayload() {
+  const draft = structuredClone(workspaceSession.shapeEditing.draft);
+  const fields = workspaceInspector.querySelectorAll("[data-workspace-field^=\"shape:\"]");
+  for (const field of fields) {
+    const key = field.dataset.workspaceField.slice(6);
+    if (key === "type") continue;
+    draft[key] = field.type === "number" ? Number(field.value) : field.value;
+  }
+  if (draft.type === "circle" || draft.type === "annularSector") {
+    draft.center = [Number(draft.centerLongitude), Number(draft.centerLatitude)];
+    delete draft.centerLongitude; delete draft.centerLatitude;
+  }
+  if (draft.type === "rectangle") {
+    draft.origin = [Number(draft.originLongitude), Number(draft.originLatitude)];
+    delete draft.originLongitude; delete draft.originLatitude;
+  }
+  if (draft.type === "polygon") {
+    draft.coordinates = JSON.parse(draft.coordinates);
+  }
+  return draft;
+}
+
+function shapeInspectorFields(draft) {
+  const fields = [
+    shapeWorkspaceField("Shape type", "type", draft.type, { options: ["circle", "rectangle", "annularSector", "polygon"].map((value) => ({ value, label: value === "annularSector" ? "Annular sector" : value[0].toUpperCase() + value.slice(1) })) }),
+    shapeWorkspaceField("Name", "name", draft.name),
+    shapeWorkspaceField("Color", "color", draft.color, { type: "color" }),
+  ];
+  if (draft.type === "circle" || draft.type === "annularSector") {
+    fields.push(shapeWorkspaceField("Center longitude", "centerLongitude", draft.center?.[0] ?? 0, { type: "number" }), shapeWorkspaceField("Center latitude", "centerLatitude", draft.center?.[1] ?? 0, { type: "number" }));
+  }
+  if (draft.type === "rectangle") {
+    fields.push(shapeWorkspaceField("Origin longitude", "originLongitude", draft.origin?.[0] ?? 0, { type: "number" }), shapeWorkspaceField("Origin latitude", "originLatitude", draft.origin?.[1] ?? 0, { type: "number" }));
+  }
+  if (draft.type === "circle") fields.push(shapeWorkspaceField("Radius (metres)", "radius", draft.radius ?? 1000, { type: "number" }));
+  if (draft.type === "rectangle") fields.push(shapeWorkspaceField("Width (metres)", "width", draft.width ?? 1000, { type: "number" }), shapeWorkspaceField("Height (metres)", "height", draft.height ?? 1000, { type: "number" }), shapeWorkspaceField("Angle clockwise from north (degrees)", "angle", draft.angle ?? 0, { type: "number" }));
+  if (draft.type === "annularSector") fields.push(shapeWorkspaceField("Inner radius (metres)", "innerRadius", draft.innerRadius ?? 0, { type: "number" }), shapeWorkspaceField("Outer radius (metres)", "outerRadius", draft.outerRadius ?? 1000, { type: "number" }), shapeWorkspaceField("Start bearing (degrees)", "startAngle", draft.startAngle ?? 0, { type: "number" }), shapeWorkspaceField("End bearing (degrees)", "endAngle", draft.endAngle ?? 90, { type: "number" }));
+  if (draft.type === "polygon") {
+    const field = document.createElement("label");
+    field.className = "service-config-field";
+    field.textContent = "Coordinates ([longitude, latitude] entries)";
+    const input = document.createElement("textarea");
+    input.rows = 6; input.dataset.workspaceField = "shape:coordinates";
+    input.value = JSON.stringify(draft.coordinates ?? [], null, 2);
+    field.append(input); fields.push(field);
+  }
+  return fields;
+}
+
+async function refreshShapesWorkspaceCatalog() {
+  const { service, shapeCapability } = workspaceSession;
+  const response = await fetch(`${service.url}${shapeCapability.readPath}`);
+  if (!response.ok) throw new Error(`shape catalogue returned ${response.status}`);
+  workspaceSession.shapeCatalog = await response.json();
+}
+
+async function persistShapeDraft(editing) {
+  const { service, shapeCapability, shapeCatalog } = workspaceSession;
+  const path = editing.isNew
+    ? shapeCapability.createPath
+    : shapeCapability.itemPath.replace("{id}", encodeURIComponent(editing.id));
+  const response = await fetch(`${service.url}${path}`, {
+    method: editing.isNew ? "POST" : shapeCapability.updateMethod,
+    headers: {
+      "Content-Type": "application/json",
+      [shapeCapability.revisionHeader]: shapeCatalog.revision,
+    },
+    body: JSON.stringify(editing.draft),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `shape save returned ${response.status}`);
+  }
+  await refreshShapesWorkspaceCatalog();
+  await refreshShapes();
+}
+
+function renderShapesWorkspace() {
+  const catalog = workspaceSession.shapeCatalog;
+  const editing = workspaceSession.shapeEditing;
+  workspaceContent.classList.add("is-shapes-catalog");
+  workspaceContent.classList.remove("is-route-editing", "is-terrain-analysis", "is-sim-time-control");
+  workspaceNavigator.replaceChildren(workspaceHeading("Catalog"));
+  for (const shape of catalog.shapes) {
+    const navigatorItem = workspaceButton(shape.name, () => {
+      workspaceSession.shapeEditing = { id: shape.id, isNew: false, draft: structuredClone(shape) };
+      renderWorkspace();
+    }, "workspace-nav-item");
+    navigatorItem.setAttribute("aria-current", String(editing?.id === shape.id ? "page" : false));
+    workspaceNavigator.append(navigatorItem);
+  }
+  workspacePrimary.replaceChildren(workspaceHeading("Catalog"));
+  workspacePrimary.append(renderWorkspaceMetrics([{ label: "Shapes", value: String(catalog.shapes.length) }]));
+  const toolbar = document.createElement("div"); toolbar.className = "workspace-pane-toolbar";
+  toolbar.append(workspaceButton("New shape", () => { workspaceSession.shapeEditing = { isNew: true, draft: defaultShapeDraft() }; renderWorkspace(); }, "primary-action"));
+  workspacePrimary.append(toolbar);
+  const list = document.createElement("div"); list.className = "workspace-summary-cards";
+  for (const shape of catalog.shapes) {
+    const card = document.createElement("button"); card.type = "button"; card.className = "workspace-summary-card";
+    card.setAttribute("aria-pressed", String(editing?.id === shape.id));
+    card.append(Object.assign(document.createElement("strong"), { textContent: shape.name }), Object.assign(document.createElement("small"), { textContent: shape.type }));
+    card.addEventListener("click", () => { workspaceSession.shapeEditing = { id: shape.id, isNew: false, draft: structuredClone(shape) }; renderWorkspace(); });
+    list.append(card);
+  }
+  workspacePrimary.append(list);
+  if (catalog.shapes.length === 0) workspacePrimary.append(Object.assign(document.createElement("p"), { className: "workspace-placeholder", textContent: "No shapes yet. Create a shape or draw one on the map." }));
+  workspaceInspector.replaceChildren(workspaceHeading("Inspector"));
+  if (editing) {
+    const fields = document.createElement("div"); fields.className = "workspace-editor-fields"; fields.append(...shapeInspectorFields(editing.draft));
+    fields.querySelector('[data-workspace-field="shape:type"]').addEventListener("change", (event) => {
+      try {
+        workspaceSession.shapeEditing.draft = shapeWorkspacePayload();
+        setShapeDraftType(event.target.value);
+      } catch (error) {
+        status.textContent = `Unable to change shape type: ${error.message}`;
+      }
+    });
+    const actions = document.createElement("div"); actions.className = "workspace-editor-actions";
+    actions.append(workspaceButton("Draw on map", () => {
+      try {
+        workspaceSession.shapeEditing.draft = shapeWorkspacePayload();
+        shapeDrawing = { type: editing.draft.type, points: [] };
+        workspaceDialog.close();
+        status.textContent = editing.draft.type === "polygon"
+          ? "Click polygon vertices, then double-click to finish."
+          : "Drag on the map to draw the shape.";
+      } catch (error) {
+        status.textContent = `Unable to draw shape: ${error.message}`;
+      }
+    }, "primary-action"));
+    actions.append(workspaceButton("Edit on map", () => {
+      try {
+        workspaceSession.shapeEditing.draft = shapeWorkspacePayload();
+        workspaceSession.shapeEditing.mapEditOrigin = "workspace";
+        shapeMapEditing = workspaceSession.shapeEditing;
+        workspaceDialog.close();
+        status.textContent = "Drag cyan controls to edit this draft. Press Escape to return to the Shapes inspector.";
+        refreshMap();
+      } catch (error) {
+        status.textContent = `Unable to edit shape on map: ${error.message}`;
+      }
+    }));
+    if (!editing.isNew) actions.append(workspaceButton("Delete", () => {
+      (async () => {
+        const response = await fetch(`${workspaceSession.service.url}${workspaceSession.shapeCapability.itemPath.replace("{id}", encodeURIComponent(editing.id))}`, {
+          method: workspaceSession.shapeCapability.deleteMethod,
+          headers: { [workspaceSession.shapeCapability.revisionHeader]: catalog.revision },
+        });
+        if (!response.ok) throw new Error(`shape delete returned ${response.status}`);
+        await refreshShapesWorkspaceCatalog();
+        workspaceSession.shapeEditing = null;
+        renderWorkspace();
+        await refreshShapes();
+      })().catch((error) => { status.textContent = `Unable to delete shape: ${error.message}`; });
+    }, "danger-action"));
+    actions.append(
+      workspaceButton("Cancel", () => { workspaceSession.shapeEditing = null; renderWorkspace(); }),
+      workspaceButton("Save", () => {
+        (async () => {
+          editing.draft = shapeWorkspacePayload();
+          await persistShapeDraft(editing);
+          workspaceSession.shapeEditing = null;
+          renderWorkspace();
+        })().catch((error) => { status.textContent = `Unable to save shape: ${error.message}`; });
+      }, "primary-action"),
+    );
+    workspaceInspector.append(fields, actions);
+  } else workspaceInspector.append(Object.assign(document.createElement("p"), { className: "workspace-copy", textContent: "Select a shape to edit it, or create a new definition." }));
+  workspaceTimeline.replaceChildren(Object.assign(document.createElement("p"), { className: "workspace-copy", textContent: workspaceSession.definition.timeline.description }));
+}
+
 function renderWorkspace() {
   const { definition } = workspaceSession;
   if (definition.kind === "terrain-analysis") {
@@ -2980,8 +3207,12 @@ function renderWorkspace() {
     renderSimTimeControlWorkspace();
     return;
   }
+  if (definition.kind === "shapes-catalog") {
+    renderShapesWorkspace();
+    return;
+  }
   const pane = workspacePane(workspaceSession);
-  workspaceContent.classList.remove("is-terrain-analysis", "is-sim-time-control");
+  workspaceContent.classList.remove("is-terrain-analysis", "is-sim-time-control", "is-shapes-catalog");
   workspaceContent.classList.toggle("is-route-editing", workspaceSession.editing?.kind === "routes");
   workspaceNavigator.replaceChildren();
   for (const item of definition.panes) {
@@ -3276,7 +3507,7 @@ async function loadWorkspaceCatalogues() {
   workspaceSession.scenarioRevision = scenario.revision;
 }
 
-async function configureWorkspace(service) {
+async function configureWorkspace(service, selectedFeatureAction = null) {
   const capability = service.manifest.capabilities.workspace;
   const response = await fetch(`${service.url}${capability.openPath}`);
   if (!response.ok) throw new Error(`workspace returned ${response.status}`);
@@ -3300,11 +3531,38 @@ async function configureWorkspace(service) {
     terrainProfile: null,
   };
   await loadWorkspaceCatalogues();
+  if (definition.kind === "shapes-catalog") {
+    workspaceSession.shapeCapability = service.manifest.capabilities.shapeEditor;
+    await refreshShapesWorkspaceCatalog();
+    workspaceSession.shapeEditing = null;
+    const workspaceAction = selectedFeatureAction?.action.workspace;
+    if (workspaceAction?.resource === "definitions") {
+      const shapeId = selectedFeatureAction.feature.properties?.[workspaceAction.featureIdProperty];
+      const shape = workspaceSession.shapeCatalog.shapes.find((item) => item.id === shapeId);
+      if (!shape) throw new Error("Selected shape is no longer in the catalogue.");
+      workspaceSession.shapeEditing = {
+        id: shape.id,
+        isNew: false,
+        draft: structuredClone(shape),
+        mapEditOrigin: "selection",
+      };
+      if (workspaceAction.mode === "edit-on-map") {
+        shapeMapEditing = workspaceSession.shapeEditing;
+      }
+    }
+  }
   if (simulationCapability) await refreshWorkspaceSimulation();
   workspaceEyebrow.textContent = service.displayName;
   workspaceTitle.textContent = definition.title;
   renderWorkspace();
-  workspaceDialog.showModal();
+  if (shapeMapEditing?.mapEditOrigin !== "selection") {
+    workspaceDialog.showModal();
+  }
+  if (shapeMapEditing) {
+    if (workspaceDialog.open) workspaceDialog.close();
+    status.textContent = "Drag cyan controls to edit this draft. Press Escape to return to the Shapes inspector.";
+    refreshMap();
+  }
   startWorkspaceSimulationPolling();
 }
 
@@ -3332,26 +3590,155 @@ function metresBetween(first, second) {
   ) * 1000;
 }
 
+function destinationCoordinate(center, bearing, distance) {
+  const [longitude, latitude] = center.map((value) => value * Math.PI / 180);
+  const angularDistance = distance / (EARTH_RADIUS_KILOMETRES * 1000);
+  const angle = bearing * Math.PI / 180;
+  const destinationLatitude = Math.asin(
+    Math.sin(latitude) * Math.cos(angularDistance)
+    + Math.cos(latitude) * Math.sin(angularDistance) * Math.cos(angle),
+  );
+  const destinationLongitude = longitude + Math.atan2(
+    Math.sin(angle) * Math.sin(angularDistance) * Math.cos(latitude),
+    Math.cos(angularDistance) - Math.sin(latitude) * Math.sin(destinationLatitude),
+  );
+  return [
+    ((destinationLongitude * 180 / Math.PI + 540) % 360) - 180,
+    destinationLatitude * 180 / Math.PI,
+  ];
+}
+
+function bearingBetween(first, second) {
+  const [firstLongitude, firstLatitude] = first.map((value) => value * Math.PI / 180);
+  const [secondLongitude, secondLatitude] = second.map((value) => value * Math.PI / 180);
+  const longitudeDelta = secondLongitude - firstLongitude;
+  const bearing = Math.atan2(
+    Math.sin(longitudeDelta) * Math.cos(secondLatitude),
+    Math.cos(firstLatitude) * Math.sin(secondLatitude)
+      - Math.sin(firstLatitude) * Math.cos(secondLatitude) * Math.cos(longitudeDelta),
+  ) * 180 / Math.PI;
+  return (bearing + 360) % 360;
+}
+
+function shapeDraftGeometry(draft) {
+  if (draft.type === "circle") {
+    const coordinates = Array.from({ length: 65 }, (_, index) => (
+      destinationCoordinate(draft.center, index * 360 / 64, draft.radius)
+    ));
+    return { type: "Polygon", coordinates: [coordinates] };
+  }
+  if (draft.type === "rectangle") {
+    const radians = draft.angle * Math.PI / 180;
+    const coordinates = [];
+    for (const [east, north] of [
+      [-draft.width / 2, -draft.height / 2], [draft.width / 2, -draft.height / 2],
+      [draft.width / 2, draft.height / 2], [-draft.width / 2, draft.height / 2],
+    ]) {
+      const rotatedEast = east * Math.cos(radians) + north * Math.sin(radians);
+      const rotatedNorth = -east * Math.sin(radians) + north * Math.cos(radians);
+      coordinates.push(destinationCoordinate(
+        draft.origin,
+        Math.atan2(rotatedEast, rotatedNorth) * 180 / Math.PI,
+        Math.hypot(rotatedEast, rotatedNorth),
+      ));
+    }
+    coordinates.push(coordinates[0]);
+    return { type: "Polygon", coordinates: [coordinates] };
+  }
+  if (draft.type === "annularSector") {
+    const sweep = (draft.endAngle - draft.startAngle + 360) % 360 || 360;
+    const angles = Array.from({ length: 65 }, (_, index) => draft.startAngle + sweep * index / 64);
+    const outer = angles.map((angle) => destinationCoordinate(draft.center, angle, draft.outerRadius));
+    const inner = [...angles].reverse().map((angle) => destinationCoordinate(draft.center, angle, draft.innerRadius));
+    return { type: "Polygon", coordinates: [[...outer, ...inner, outer[0]]] };
+  }
+  if (draft.type === "polygon" && draft.coordinates.length >= 3) {
+    return { type: "Polygon", coordinates: [[...draft.coordinates, draft.coordinates[0]]] };
+  }
+  return null;
+}
+
+function shapeMapControlPoints(draft) {
+  if (draft.type === "circle") {
+    return [
+      { id: "center", coordinate: draft.center },
+      { id: "radius", coordinate: destinationCoordinate(draft.center, 90, draft.radius) },
+    ];
+  }
+  if (draft.type === "rectangle") {
+    const widthBearing = 90 + draft.angle;
+    const heightBearing = draft.angle;
+    return [
+      { id: "origin", coordinate: draft.origin },
+      { id: "width", coordinate: destinationCoordinate(draft.origin, widthBearing, draft.width / 2) },
+      { id: "height", coordinate: destinationCoordinate(draft.origin, heightBearing, draft.height / 2) },
+      { id: "angle", coordinate: destinationCoordinate(draft.origin, widthBearing, draft.width / 2 + Math.max(100, draft.width * 0.2)) },
+    ];
+  }
+  if (draft.type === "annularSector") {
+    const sweep = (draft.endAngle - draft.startAngle + 360) % 360 || 360;
+    const midpoint = draft.startAngle + sweep / 2;
+    return [
+      { id: "center", coordinate: draft.center },
+      { id: "innerRadius", coordinate: destinationCoordinate(draft.center, midpoint, draft.innerRadius) },
+      { id: "outerRadius", coordinate: destinationCoordinate(draft.center, midpoint, draft.outerRadius) },
+      { id: "startAngle", coordinate: destinationCoordinate(draft.center, draft.startAngle, draft.outerRadius) },
+      { id: "endAngle", coordinate: destinationCoordinate(draft.center, draft.endAngle, draft.outerRadius) },
+    ];
+  }
+  return draft.coordinates.map((coordinate, index) => ({ id: `vertex:${index}`, coordinate }));
+}
+
+function shapeControlPointAtMapEvent(event) {
+  const bounds = canvas.getBoundingClientRect();
+  const pointer = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+  return shapeMapControlPoints(shapeMapEditing.draft).find((control) => {
+    const point = screenPoint(...control.coordinate);
+    return Math.hypot(point.x - pointer.x, point.y - pointer.y) <= 16;
+  }) ?? null;
+}
+
+function updateShapeMapControl(controlId, coordinate) {
+  const draft = shapeMapEditing.draft;
+  if (controlId === "center" || controlId === "origin") {
+    draft[controlId] = coordinate;
+  } else if (controlId === "radius" || controlId === "innerRadius" || controlId === "outerRadius") {
+    draft[controlId] = Math.max(controlId === "innerRadius" ? 0 : 1, metresBetween(draft.center, coordinate));
+    if (controlId === "innerRadius") draft.innerRadius = Math.min(draft.innerRadius, Math.max(0, draft.outerRadius - 1));
+    if (controlId === "outerRadius") draft.outerRadius = Math.max(draft.outerRadius, draft.innerRadius + 1);
+  } else if (controlId === "width" || controlId === "height") {
+    const direction = controlId === "width" ? 90 + draft.angle : draft.angle;
+    const offset = ((bearingBetween(draft.origin, coordinate) - direction + 540) % 360) - 180;
+    draft[controlId] = Math.max(1, Math.abs(metresBetween(draft.origin, coordinate) * Math.cos(offset * Math.PI / 180)) * 2);
+  } else if (controlId === "angle") {
+    draft.angle = ((bearingBetween(draft.origin, coordinate) - 90 + 540) % 360) - 180;
+  } else if (controlId === "startAngle" || controlId === "endAngle") {
+    draft[controlId] = bearingBetween(draft.center, coordinate);
+  } else if (controlId.startsWith("vertex:")) {
+    draft.coordinates[Number(controlId.slice(7))] = coordinate;
+  }
+}
+
 function finishShapeDrawing(end) {
   const { type, start } = shapeDrawing;
+  const draft = workspaceSession?.shapeEditing?.draft;
+  if (!draft) return;
   if (type === "circle") {
-    shapeType.value = type;
-    renderShapeGeometryFields({ type, center: start, radius: metresBetween(start, end) });
+    Object.assign(draft, { center: start, radius: metresBetween(start, end) });
   } else if (type === "rectangle") {
-    shapeType.value = type;
-    renderShapeGeometryFields({
-      type,
+    Object.assign(draft, {
       origin: start,
       width: metresBetween(start, [end[0], start[1]]) * 2,
       height: metresBetween(start, [start[0], end[1]]) * 2,
       angle: 0,
     });
   } else if (type === "annularSector") {
-    shapeType.value = type;
-    renderShapeGeometryFields({ type, center: start, innerRadius: 0, outerRadius: metresBetween(start, end), startAngle: 0, endAngle: 90 });
+    Object.assign(draft, { center: start, innerRadius: 0, outerRadius: metresBetween(start, end), startAngle: 0, endAngle: 90 });
   }
   shapeDrawing = null;
-  shapeEditorDialog.showModal();
+  renderWorkspace();
+  workspaceDialog.showModal();
+  status.textContent = "Geometry captured. Review the inspector and save the shape.";
 }
 
 function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) {
@@ -3416,11 +3803,9 @@ function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) 
     configure.setAttribute("aria-label", configure.title);
     renderButtonSymbol(configure);
     configure.addEventListener("click", () => {
-      const open = service.manifest?.capabilities?.shapeEditor
-        ? configureShapeEditor(service)
-        : service.manifest?.capabilities?.workspace
-          ? configureWorkspace(service)
-          : service.manifest?.capabilities?.scenarioEditor
+      const open = service.manifest?.capabilities?.workspace
+        ? configureWorkspace(service)
+        : service.manifest?.capabilities?.scenarioEditor
             ? configureTrackEditor(service)
             : configureService(service);
       open.catch((error) => {
@@ -3532,65 +3917,6 @@ serviceConfigForm.addEventListener("submit", async (event) => {
     await refreshShapes();
   } catch (error) {
     serviceConfigStatus.textContent = `Unable to save: ${error.message}`;
-  }
-});
-
-shapeType.addEventListener("change", () => renderShapeGeometryFields());
-shapeCancel.addEventListener("click", () => {
-  shapeDrawing = null;
-  shapeEditorDialog.close();
-});
-shapeDraw.addEventListener("click", () => {
-  shapeDrawing = { type: shapeType.value, points: [] };
-  shapeEditorDialog.close();
-  status.textContent = shapeDrawing.type === "polygon"
-    ? "Click polygon vertices, then double-click to finish."
-    : "Drag on the map to draw the shape.";
-});
-shapeDelete.addEventListener("click", async () => {
-  const { service, capability, editing, revision } = shapeEditorSession;
-  const response = await fetch(`${service.url}${capability.itemPath.replace("{id}", encodeURIComponent(editing.id))}`, {
-    method: capability.deleteMethod,
-    headers: { "If-Match": revision },
-  });
-  if (!response.ok) {
-    shapeEditorStatus.textContent = `Unable to delete shape: ${response.status}`;
-    return;
-  }
-  const catalogue = await response.json();
-  shapeEditorSession.revision = catalogue.revision;
-  shapeEditorSession.shapes = catalogue.shapes;
-  renderShapeEditorList();
-  showShapeEditor();
-  await refreshShapes();
-});
-shapeEditorForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    const { service, capability, editing, revision } = shapeEditorSession;
-    const path = editing
-      ? capability.itemPath.replace("{id}", encodeURIComponent(editing.id))
-      : capability.createPath;
-    const response = await fetch(`${service.url}${path}`, {
-      method: editing ? capability.updateMethod : "POST",
-      headers: { "Content-Type": "application/json", "If-Match": revision },
-      body: JSON.stringify(shapePayload()),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `shape service returned ${response.status}`);
-    }
-    const result = await response.json();
-    shapeEditorSession.revision = result.revision;
-    const catalogueResponse = await fetch(`${service.url}${capability.readPath}`);
-    if (!catalogueResponse.ok) throw new Error(`shape catalogue returned ${catalogueResponse.status}`);
-    const catalogue = await catalogueResponse.json();
-    shapeEditorSession.shapes = catalogue.shapes;
-    renderShapeEditorList();
-    showShapeEditor();
-    await refreshShapes();
-  } catch (error) {
-    shapeEditorStatus.textContent = `Unable to save shape: ${error.message}`;
   }
 });
 
@@ -3938,6 +4264,10 @@ function terrainTileKey({ zoom, x, y }) {
   return `${terrainServiceUrl}/raster/${zoom}/${x}/${y}`;
 }
 
+function esaDemTileKey({ zoom, x, y }) {
+  return `${esaDemServiceUrl}/raster/${zoom}/${x}/${y}`;
+}
+
 function exactCachedTiles(zoom, cache, keyForTile) {
   return visibleTiles(zoom)
     .map((tile) => {
@@ -4022,6 +4352,12 @@ function clearTerrainTileCache() {
   requestedTerrainTileKeys.clear();
 }
 
+function clearEsaDemTileCache() {
+  esaDemTileCache.forEach((bitmap) => bitmap.close());
+  esaDemTileCache.clear();
+  requestedEsaDemTileKeys.clear();
+}
+
 async function refreshRasterRevision() {
   if (!mapServices.has("satmap") || !imageryLayer.checked) {
     return;
@@ -4092,6 +4428,22 @@ async function refreshTerrainRevision() {
     requestVisibleTiles();
   }
   terrainRevision = revision;
+}
+
+async function refreshEsaDemRevision() {
+  if (!mapServices.has("esa-dem") || !esaDemLayer?.checked) {
+    return;
+  }
+  const response = await fetch(`${esaDemServiceUrl}/api/raster/revision`);
+  if (!response.ok) {
+    throw new Error(`ESA Download Terrain service returned ${response.status} for raster revision`);
+  }
+  const { revision } = await response.json();
+  if (esaDemRevision !== null && esaDemRevision !== revision) {
+    clearEsaDemTileCache();
+    requestVisibleTiles();
+  }
+  esaDemRevision = revision;
 }
 
 async function refreshShapes() {
@@ -4237,6 +4589,31 @@ function mapPointFromEvent(event) {
   return MapMath.worldToLonLat(worldX, worldY);
 }
 
+function mapScreenPointFromEvent(event) {
+  const rectangle = canvas.getBoundingClientRect();
+  return { x: event.clientX - rectangle.left, y: event.clientY - rectangle.top };
+}
+
+function selectableFeatureContextMenuPlugins(point) {
+  return selectableDataFeatures().flatMap(({ service, feature }) => {
+    if (!featureContainsScreenPoint(feature, point)) return [];
+    const actions = declaredFeatureActions(service, feature);
+    if (actions.length === 0) return [];
+    return [{
+      label: `${service.displayName}: ${selectionLabel(feature)}`,
+      actions: actions.map((action) => ({
+        label: action.label,
+        run: () => {
+          closeContextMenu();
+          runSelectedFeatureAction(service, feature, action).catch((error) => {
+            status.textContent = `Unable to run ${action.label}: ${error.message}`;
+          });
+        },
+      })),
+    }];
+  });
+}
+
 async function waitForContextAction(service, action) {
   if (!action.statusPath) {
     return;
@@ -4289,6 +4666,7 @@ async function runContextAction(service, action, point) {
 function showContextMenu(event) {
   event.preventDefault();
   const point = mapPointFromEvent(event);
+  const screenPoint = mapScreenPointFromEvent(event);
   const containerBounds = container.getBoundingClientRect();
   mapContextMenu.replaceChildren();
   const primaryMenu = document.createElement("div");
@@ -4302,6 +4680,7 @@ function showContextMenu(event) {
         { label: "Measure: Clear", run: clearMeasurement },
       ],
     },
+    ...selectableFeatureContextMenuPlugins(screenPoint),
     ...contextMenuPlugins,
   ];
   for (const plugin of plugins) {
@@ -4452,7 +4831,19 @@ function missingTerrainTiles(zoom) {
   });
 }
 
+function missingEsaDemTiles(zoom) {
+  return visibleTiles(zoom).filter((tile) => {
+    const key = esaDemTileKey(tile);
+    if (requestedEsaDemTileKeys.has(key)) return false;
+    requestedEsaDemTileKeys.add(key);
+    return true;
+  });
+}
+
 function requestVisibleTiles() {
+  if (!configurationLoaded || canvas.clientWidth === 0 || canvas.clientHeight === 0) {
+    return;
+  }
   if (tileRequestFrame !== null) {
     return;
   }
@@ -4462,7 +4853,7 @@ function requestVisibleTiles() {
     const baseTiles = visibleTiles(baseZoom);
     const tiles = missingTiles(baseZoom);
     const detailZoom = Math.min(18, Math.ceil(camera.zoom));
-    if (tiles.length > 0) {
+    if (mapServices.has("vecmap") && vectorLayer?.checked && tiles.length > 0) {
       if (status.dataset.liveDataError !== "true") {
         status.textContent = "";
       }
@@ -4475,7 +4866,7 @@ function requestVisibleTiles() {
         generation: vectorTileGeneration,
       });
     }
-    if (mapServices.has("satmap") && imageryLayer.checked) {
+    if (mapServices.has("satmap") && imageryLayer?.checked) {
       let rasterTiles = missingRasterTiles(baseZoom);
       const rasterBaseTilesReady = baseTiles.every((tile) => rasterTileCache.has(rasterTileKey(tile)));
       if (rasterBaseTilesReady && updatesPerSecond >= 50 && detailZoom > baseZoom) {
@@ -4485,7 +4876,7 @@ function requestVisibleTiles() {
         tileWorker.postMessage({ type: "request-raster-tiles", serviceUrl: satelliteMapServiceUrl, tiles: rasterTiles });
       }
     }
-    if (mapServices.has("copernicus") && copernicusLayer.checked) {
+    if (mapServices.has("copernicus") && copernicusLayer?.checked) {
       let copernicusTiles = missingCopernicusTiles(baseZoom);
       const copernicusBaseTilesReady = baseTiles.every(
         (tile) => copernicusTileCache.has(copernicusTileKey(tile)),
@@ -4501,7 +4892,7 @@ function requestVisibleTiles() {
         });
       }
     }
-    if (mapServices.has("terrain") && terrainLayer.checked) {
+    if (mapServices.has("terrain") && terrainLayer?.checked) {
       let terrainTiles = missingTerrainTiles(baseZoom);
       const terrainBaseTilesReady = baseTiles.every((tile) => terrainTileCache.has(terrainTileKey(tile)));
       if (terrainBaseTilesReady && updatesPerSecond >= 50 && detailZoom > baseZoom) {
@@ -4509,6 +4900,16 @@ function requestVisibleTiles() {
       }
       if (terrainTiles.length > 0) {
         tileWorker.postMessage({ type: "request-raster-tiles", serviceUrl: terrainServiceUrl, tiles: terrainTiles });
+      }
+    }
+    if (mapServices.has("esa-dem") && esaDemLayer?.checked) {
+      let demTiles = missingEsaDemTiles(baseZoom);
+      const baseTilesReady = baseTiles.every((tile) => esaDemTileCache.has(esaDemTileKey(tile)));
+      if (baseTilesReady && updatesPerSecond >= 50 && detailZoom > baseZoom) {
+        demTiles = demTiles.concat(missingEsaDemTiles(detailZoom));
+      }
+      if (demTiles.length > 0) {
+        tileWorker.postMessage({ type: "request-raster-tiles", serviceUrl: esaDemServiceUrl, tiles: demTiles });
       }
     }
   });
@@ -4543,14 +4944,15 @@ async function loadConfiguration(restoreMapView = true) {
   }
   const configuration = await servicesResponse.json();
   configuredServices = configuration.services;
-  configuredMapServices = configuration.services.filter((service) => ["vecmap", "satmap", "copernicus", "terrain"].includes(service.type));
+  configuredMapServices = configuration.services.filter((service) => ["vecmap", "satmap", "copernicus", "terrain", "esa-dem"].includes(service.type));
   const runningServices = await registeredRunningServices(configuration.services);
   const vectorService = runningServices.find((item) => item.type === "vecmap");
   const satelliteService = runningServices.find((item) => item.type === "satmap");
   const copernicusService = runningServices.find((item) => item.type === "copernicus");
   const terrainService = runningServices.find((item) => item.type === "terrain");
+  const esaDemService = runningServices.find((item) => item.type === "esa-dem");
   mapServices.clear();
-  [vectorService, satelliteService, copernicusService, terrainService].filter(Boolean).forEach((service) => {
+  [vectorService, satelliteService, copernicusService, terrainService, esaDemService].filter(Boolean).forEach((service) => {
     mapServices.set(service.type, service);
   });
   symbolServices = runningServices
@@ -4560,7 +4962,7 @@ async function loadConfiguration(restoreMapView = true) {
     .filter((item) => ["shapes", "geojson", "adsb", "ais", "airlanes"].includes(item.type))
     .map((item) => ({
       ...item,
-      endpoint: item.type === "shapes" ? "/api/shapes" : "/api/geojson",
+      endpoint: item.manifest?.dataEndpoint?.path ?? "/api/geojson",
       enabled: true,
     }));
   workspaceServices = runningServices
@@ -4605,6 +5007,14 @@ async function loadConfiguration(restoreMapView = true) {
       terrainRevision = null;
       terrainPalette = null;
     }
+    if (esaDemService) {
+      const nextEsaDemServiceUrl = esaDemService.url.replace(/\/$/, "");
+      if (esaDemServiceUrl !== nextEsaDemServiceUrl) {
+        clearEsaDemTileCache();
+        esaDemRevision = null;
+      }
+      esaDemServiceUrl = nextEsaDemServiceUrl;
+    }
     terrainServiceUrl = nextTerrainServiceUrl;
   }
   if (terrainService) {
@@ -4628,6 +5038,7 @@ async function loadConfiguration(restoreMapView = true) {
     layerOpacity.satellite = mapView.layers?.satelliteOpacity ?? 10;
     layerOpacity.copernicus = mapView.layers?.copernicusOpacity ?? 10;
     layerOpacity.terrain = mapView.layers?.terrainOpacity ?? 8;
+    layerOpacity.esaDem = mapView.layers?.esaDemOpacity ?? 8;
     layerOpacity.vector = mapView.layers?.vectorOpacity ?? 10;
     layerOpacity.grid = mapView.layers?.gridOpacity ?? 10;
   }
@@ -4648,6 +5059,10 @@ async function loadConfiguration(restoreMapView = true) {
   }
   if (copernicusLayer?.checked) {
     await refreshCopernicusRevision();
+    refreshMap();
+  }
+  if (esaDemLayer?.checked) {
+    await refreshEsaDemRevision();
     refreshMap();
   }
   try {
@@ -4675,18 +5090,20 @@ async function saveMapView() {
         latitude: center.latitude,
         zoom: camera.zoom,
         layers: {
-          satelliteImagery: imageryLayer.checked,
-          copernicus: copernicusLayer.checked,
-          terrain: terrainLayer.checked,
+          satelliteImagery: imageryLayer?.checked ?? false,
+          copernicus: copernicusLayer?.checked ?? false,
+          terrain: terrainLayer?.checked ?? false,
+          esaDem: esaDemLayer?.checked ?? false,
           dataSources: overlayLayerSelections(),
           dataSourceOpacity: overlaySourceOpacities(),
-          vectorMap: vectorLayer.checked,
+          vectorMap: vectorLayer?.checked ?? false,
           grid: gridLayer.checked,
           gridCrosshair,
           displayMiniTimeControl,
           satelliteOpacity: layerOpacity.satellite,
           copernicusOpacity: layerOpacity.copernicus,
           terrainOpacity: layerOpacity.terrain,
+          esaDemOpacity: layerOpacity.esaDem,
           vectorOpacity: layerOpacity.vector,
           gridOpacity: layerOpacity.grid,
         },
@@ -4713,18 +5130,20 @@ function saveMapViewOnExit() {
     latitude: center.latitude,
     zoom: camera.zoom,
     layers: {
-      satelliteImagery: imageryLayer.checked,
-      copernicus: copernicusLayer.checked,
-      terrain: terrainLayer.checked,
+      satelliteImagery: imageryLayer?.checked ?? false,
+      copernicus: copernicusLayer?.checked ?? false,
+      terrain: terrainLayer?.checked ?? false,
+      esaDem: esaDemLayer?.checked ?? false,
       dataSources: overlayLayerSelections(),
       dataSourceOpacity: overlaySourceOpacities(),
-      vectorMap: vectorLayer.checked,
+      vectorMap: vectorLayer?.checked ?? false,
       grid: gridLayer.checked,
       gridCrosshair,
       displayMiniTimeControl,
       satelliteOpacity: layerOpacity.satellite,
       copernicusOpacity: layerOpacity.copernicus,
       terrainOpacity: layerOpacity.terrain,
+      esaDemOpacity: layerOpacity.esaDem,
       vectorOpacity: layerOpacity.vector,
       gridOpacity: layerOpacity.grid,
     },
@@ -4754,7 +5173,9 @@ tileWorker.addEventListener("message", (event) => {
     status.textContent = `Unable to load map tile: ${message}`;
     window.setTimeout(requestVisibleTiles, 1000);
   } else if (type === "raster-tile") {
-    if (key.startsWith(`${terrainServiceUrl}/`)) {
+    if (key.startsWith(`${esaDemServiceUrl}/`)) {
+      esaDemTileCache.set(key, bitmap);
+    } else if (key.startsWith(`${terrainServiceUrl}/`)) {
       terrainTileCache.set(key, bitmap);
     } else if (key.startsWith(`${copernicusServiceUrl}/`)) {
       copernicusTileCache.set(key, bitmap);
@@ -4763,16 +5184,32 @@ tileWorker.addEventListener("message", (event) => {
     }
     requestVisibleTiles();
   } else if (type === "raster-missing") {
-    if (key.startsWith(`${terrainServiceUrl}/`)) {
-      requestedTerrainTileKeys.delete(key);
+    if (key.startsWith(`${esaDemServiceUrl}/`)) {
+      window.setTimeout(() => {
+        requestedEsaDemTileKeys.delete(key);
+        requestVisibleTiles();
+      }, 5000);
+    } else if (key.startsWith(`${terrainServiceUrl}/`)) {
+      window.setTimeout(() => {
+        requestedTerrainTileKeys.delete(key);
+        requestVisibleTiles();
+      }, 5000);
     } else if (key.startsWith(`${copernicusServiceUrl}/`)) {
-      requestedCopernicusTileKeys.delete(key);
+      window.setTimeout(() => {
+        requestedCopernicusTileKeys.delete(key);
+        requestVisibleTiles();
+      }, 5000);
     } else {
-      requestedRasterTileKeys.delete(key);
+      window.setTimeout(() => {
+        requestedRasterTileKeys.delete(key);
+        requestVisibleTiles();
+      }, 5000);
     }
-    window.setTimeout(requestVisibleTiles, 5000);
   } else if (type === "raster-error") {
-    if (key.startsWith(`${terrainServiceUrl}/`)) {
+    if (key.startsWith(`${esaDemServiceUrl}/`)) {
+      requestedEsaDemTileKeys.delete(key);
+      status.textContent = `Unable to load ESA Download Terrain tile: ${message}`;
+    } else if (key.startsWith(`${terrainServiceUrl}/`)) {
       requestedTerrainTileKeys.delete(key);
       status.textContent = `Unable to load terrain tile: ${message}`;
     } else if (key.startsWith(`${copernicusServiceUrl}/`)) {
@@ -4782,6 +5219,7 @@ tileWorker.addEventListener("message", (event) => {
       requestedRasterTileKeys.delete(key);
       status.textContent = `Unable to load satellite tile: ${message}`;
     }
+    window.setTimeout(requestVisibleTiles, 5000);
   }
 });
 serviceConfigDialog.addEventListener("close", stopServiceActivityPolling);
@@ -4832,6 +5270,15 @@ canvas.addEventListener("pointerdown", (event) => {
       return;
     }
   }
+  if (shapeMapEditing) {
+    const control = shapeControlPointAtMapEvent(event);
+    if (control) {
+      shapeMapMove = { controlId: control.id, pointerId: event.pointerId };
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
+    return;
+  }
   if (shapeDrawing) {
     const point = mapPosition(event);
     if (shapeDrawing.type === "polygon") {
@@ -4878,6 +5325,11 @@ canvas.addEventListener("pointermove", (event) => {
   }
   if (trackWaypointMove?.pointerId === event.pointerId) {
     trackWaypointMove.preview = mapPosition(event);
+    refreshMap();
+    return;
+  }
+  if (shapeMapMove?.pointerId === event.pointerId) {
+    updateShapeMapControl(shapeMapMove.controlId, mapPosition(event));
     refreshMap();
     return;
   }
@@ -4940,6 +5392,12 @@ canvas.addEventListener("pointerup", async (event) => {
     }
     return;
   }
+  if (shapeMapMove?.pointerId === event.pointerId) {
+    shapeMapMove = null;
+    status.textContent = "Draft updated. Drag another cyan control or press Escape to return to the Shapes inspector.";
+    refreshMap();
+    return;
+  }
   if (shapeDrawing?.start) {
     finishShapeDrawing(mapPosition(event));
     return;
@@ -4963,13 +5421,48 @@ canvas.addEventListener("dblclick", (event) => {
     return;
   }
   event.preventDefault();
-  shapeType.value = "polygon";
-  renderShapeGeometryFields({ type: "polygon", coordinates: shapeDrawing.points });
+  const draft = workspaceSession?.shapeEditing?.draft;
+  if (!draft) return;
+  draft.coordinates = shapeDrawing.points;
   shapeDrawing = null;
-  shapeEditorDialog.showModal();
+  renderWorkspace();
+  workspaceDialog.showModal();
+  status.textContent = "Geometry captured. Review the inspector and save the shape.";
 });
 
 window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && shapeMapEditing) {
+    const editing = shapeMapEditing;
+    shapeMapMove = null;
+    if (editing.mapEditOrigin === "selection") {
+      shapeMapEditing = null;
+      status.textContent = "Saving selected shape changes…";
+      persistShapeDraft(editing).then(() => {
+        workspaceSession.shapeEditing = null;
+        status.textContent = "Saved selected shape changes.";
+        refreshMap();
+      }).catch((error) => {
+        shapeMapEditing = editing;
+        status.textContent = `Unable to save selected shape changes: ${error.message}`;
+        refreshMap();
+      });
+    } else {
+      shapeMapEditing = null;
+      renderWorkspace();
+      workspaceDialog.showModal();
+      status.textContent = "Finished editing the Shapes draft on the map.";
+      refreshMap();
+    }
+    return;
+  }
+  if (event.key === "Escape" && shapeDrawing) {
+    shapeDrawing = null;
+    renderWorkspace();
+    workspaceDialog.showModal();
+    status.textContent = "Shape drawing cancelled.";
+    refreshMap();
+    return;
+  }
   if (event.key === "Escape" && terrainProfileDrawing) {
     terrainProfileDrawing = null;
     renderWorkspace();
@@ -5096,10 +5589,16 @@ window.setInterval(() => {
   });
 }, 5000);
 window.setInterval(() => {
+  refreshEsaDemRevision().catch((error) => {
+    status.textContent = `Unable to refresh ESA Download Terrain: ${error.message}`;
+  });
+}, 5000);
+window.setInterval(() => {
   reconcileRegisteredServices().catch((error) => {
     status.textContent = `Unable to reconcile registered services: ${error.message}`;
   });
 }, 2000);
+window.setInterval(requestVisibleTiles, 1000);
 window.setInterval(() => {
   refreshShapes().catch((error) => {
     status.textContent = `Unable to refresh shapes: ${error.message}`;

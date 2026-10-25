@@ -47,6 +47,15 @@ workspaces call service endpoints for configuration, analysis, persistence,
 jobs, and results. The core renders only its trusted UI vocabulary and map
 interaction modes.
 
+Shapes declares both `dataLayer` and `workspace`: its independent GeoJSON
+endpoint remains the map data source, while the Shapes catalog workspace uses
+the service's revision-safe definition APIs and trusted map drawing handoff.
+
+ESA Download Terrain is an independent `tileLayer` backed by authenticated
+Copernicus DEM GLO-30 downloads. It retains numeric EGM2008 elevation samples
+alongside rendered terrain tiles, so it can support local elevation/profile
+operations without changing the local-file Terrain service.
+
 TrackSimControl depends on SimTimeControl for progression: the Tracks service
 reads SimTimeControl's elapsed seconds server-to-server, advances only when
 that value increases, and rewinds its non-persisted flight runtime when the

@@ -5224,10 +5224,27 @@ tileWorker.addEventListener("message", (event) => {
 });
 serviceConfigDialog.addEventListener("close", stopServiceActivityPolling);
 
+function clearInterruptedMapGesture(pointerId) {
+  if (trackWaypointMove?.pointerId === pointerId) {
+    trackWaypointMove = null;
+  }
+  if (shapeMapMove?.pointerId === pointerId) {
+    shapeMapMove = null;
+  }
+  if (selectionPointer?.pointerId === pointerId) {
+    selectionPointer = null;
+  }
+  if (lastPointer?.pointerId === pointerId) {
+    dragging = false;
+    lastPointer = null;
+  }
+}
+
 canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) {
     return;
   }
+  clearInterruptedMapGesture(event.pointerId);
   closeContextMenu();
   if (terrainProfileDrawing) {
     const point = mapPosition(event);
@@ -5414,6 +5431,15 @@ canvas.addEventListener("pointerup", async (event) => {
   dragging = false;
   lastPointer = null;
   invalidateAirLanesCache();
+});
+
+canvas.addEventListener("pointercancel", (event) => {
+  clearInterruptedMapGesture(event.pointerId);
+  refreshMap();
+});
+
+canvas.addEventListener("lostpointercapture", (event) => {
+  clearInterruptedMapGesture(event.pointerId);
 });
 
 canvas.addEventListener("dblclick", (event) => {

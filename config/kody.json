@@ -62,15 +62,15 @@
     }
   ],
   "mapView": {
-    "longitude": -70.18248609501315,
-    "latitude": 66.66104299299818,
-    "zoom": 3.8,
+    "longitude": -0.8874471357377729,
+    "latitude": 50.74324214939615,
+    "zoom": 9.559999999999997,
     "layers": {
       "satelliteImagery": false,
-      "copernicus": false,
+      "copernicus": true,
       "terrain": false,
       "esaDem": false,
-      "vectorMap": true,
+      "vectorMap": false,
       "grid": true,
       "gridCrosshair": true,
       "displayMiniTimeControl": true,

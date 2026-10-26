@@ -637,17 +637,19 @@ function drawTerrainLayer(target) {
     if (detailTiles.length === visibleDetailTiles.length) {
       tiles = detailTiles;
     }
+  }
+  for (const tile of tiles) drawTerrainTile(target, tile);
+}
 
-    function drawEsaDemLayer(target) {
-      const baseZoom = Math.max(0, Math.min(18, Math.floor(camera.zoom)));
-      const detailZoom = Math.min(18, Math.ceil(camera.zoom));
-      let tiles = nearestCachedTiles(baseZoom, esaDemTileCache, esaDemTileKey);
-      if (detailZoom > baseZoom) {
-        const visibleDetailTiles = visibleTiles(detailZoom);
-        const detailTiles = exactCachedTiles(detailZoom, esaDemTileCache, esaDemTileKey);
-        if (detailTiles.length === visibleDetailTiles.length) tiles = detailTiles;
-      }
-      for (const tile of tiles) drawTerrainTile(target, tile);
+function drawEsaDemLayer(target) {
+  const baseZoom = Math.max(0, Math.min(18, Math.floor(camera.zoom)));
+  const detailZoom = Math.min(18, Math.ceil(camera.zoom));
+  let tiles = nearestCachedTiles(baseZoom, esaDemTileCache, esaDemTileKey);
+  if (detailZoom > baseZoom) {
+    const visibleDetailTiles = visibleTiles(detailZoom);
+    const detailTiles = exactCachedTiles(detailZoom, esaDemTileCache, esaDemTileKey);
+    if (detailTiles.length === visibleDetailTiles.length) {
+      tiles = detailTiles;
     }
   }
   for (const tile of tiles) drawTerrainTile(target, tile);

@@ -527,7 +527,7 @@ class TrackStore:
                     {
                         "id": "timeline",
                         "label": "Timeline",
-                        "description": "Shared simulation time and future scheduled scenario events.",
+                        "description": "Shared simulation time, Track update rate, and future scheduled scenario events.",
                         "summary": {
                             "metrics": [
                                 {"label": "State", "value": "Running" if self.simulation_running else "Paused"},
@@ -538,7 +538,7 @@ class TrackStore:
                     },
                 ],
                 "timeline": {
-                    "description": "SimTimeControl is the authoritative clock for TrackSim progression.",
+                    "description": "SimTimeControl is the authoritative clock for TrackSim progression and its Track update rate.",
                 },
             }
 

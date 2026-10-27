@@ -34,6 +34,10 @@ The Tracks service owns:
 - flight progression from SimTimeControl's shared elapsed clock and published
   live GeoJSON.
 
+SimTimeControl also owns the TrackSim update rate. It defaults to one update
+per second and can be raised to 60 updates per second for smoother movement;
+higher rates increase the GeoJSON, network, and rendering load.
+
 ## Route editor
 
 The route editor is a full-width primary view rather than an inspector:

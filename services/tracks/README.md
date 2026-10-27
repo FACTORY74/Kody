@@ -80,6 +80,8 @@ authoritative for its data and simulation behavior.
 The workspace timeline reports progress driven by SimTimeControl. TrackSim's
 manifest declares this server-to-server dependency so operators configure the
 clock through the SimTimeControl workspace, not TrackSimControl.
+Kody interpolates each live aircraft position between consecutive TrackSim
+updates so movement remains smooth at display-frame cadence.
 
 Aircraft types, routes, and aircraft are managed directly in their workspace
 panes. Each has Add, Edit, and guarded Remove controls; edits use the

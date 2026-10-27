@@ -2,7 +2,11 @@ import unittest
 
 from fastapi import HTTPException
 
-from kody_sim_time.sim_time_service import SimulationControlAction, SimulationTimeStore
+from kody_sim_time.sim_time_service import (
+    SimulationControlAction,
+    SimulationTimeStore,
+    SimulationUpdateRate,
+)
 
 
 class SimulationTimeStoreTests(unittest.TestCase):
@@ -15,6 +19,7 @@ class SimulationTimeStoreTests(unittest.TestCase):
         self.assertFalse(initial["running"])
         self.assertEqual(initial["status"], "stopped")
         self.assertEqual(initial["elapsedSeconds"], 0.0)
+        self.assertEqual(initial["updatesPerSecond"], 1.0)
         self.assertIn("+00:00", initial["wallClockUtc"])
 
         running = store.apply_action(SimulationControlAction(action="start"), initial["revision"])
@@ -30,6 +35,18 @@ class SimulationTimeStoreTests(unittest.TestCase):
 
         with self.assertRaises(HTTPException) as context:
             store.apply_action(SimulationControlAction(action="resume"), "0")
+        self.assertEqual(context.exception.status_code, 409)
+
+    def test_updates_rate_with_current_revision_and_publishes_event(self) -> None:
+        store = SimulationTimeStore()
+        updated = store.update_rate(SimulationUpdateRate(updatesPerSecond=10), "0")
+
+        self.assertEqual(updated["updatesPerSecond"], 10)
+        self.assertEqual(updated["revision"], "1")
+        self.assertEqual([event["type"] for event in store.events_since(0)], ["rate-changed"])
+
+        with self.assertRaises(HTTPException) as context:
+            store.update_rate(SimulationUpdateRate(updatesPerSecond=2), "0")
         self.assertEqual(context.exception.status_code, 409)
 
     def test_reset_returns_to_zero_and_updates_the_revision(self) -> None:

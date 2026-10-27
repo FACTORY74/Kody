@@ -400,11 +400,33 @@ input[type="checkbox"], input[type="radio"] {
 .terrain-profile-chart { display: block; width: 100%; max-width: 45rem; border: 1px solid rgb(137 214 246 / 19%); border-radius: 0.55rem; background: #07111e; }
 .workspace-editor-actions { display: flex; justify-content: end; gap: 0.45rem; margin-top: 0.9rem; }
 .workspace-editor-actions button:disabled { cursor: not-allowed; opacity: 0.45; }
+.simulation-lifecycle-controls { justify-content: flex-start; }
+.simulation-update-rate-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  max-width: 37rem;
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgb(137 214 246 / 19%);
+  border-radius: 0.55rem;
+  background: rgb(4 20 32 / 38%);
+}
+.simulation-update-rate-panel h4, .simulation-update-rate-panel p { margin: 0; }
+.simulation-update-rate-panel h4 { color: #e9faff; font-size: 0.8rem; }
+.simulation-update-rate-panel p { margin-top: 0.18rem; color: #8fbacb; font-size: 0.72rem; line-height: 1.35; }
 .workspace-inspector-title { margin: 0 0 0.3rem; color: #e8fbff; font-size: 0.94rem; }
 .workspace-timeline-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .workspace-timeline-row h3 { margin: 0; color: #dff6ff; font-size: 0.82rem; }
 .workspace-timeline-row p { margin: 0.25rem 0 0; color: #8fbacb; font-size: 0.75rem; }
 .workspace-timeline-controls { display: flex; align-items: center; gap: 0.45rem; }
+.workspace-update-rate { display: flex; align-items: center; gap: 0.45rem; }
+.workspace-update-rate > span { color: #a9c8d5; font-size: 0.72rem; font-weight: 700; }
+.simulation-update-rate-panel .workspace-update-rate > span { display: none; }
+.workspace-update-rate .opacity-control { grid-template-columns: 2rem 2.65rem 2rem; height: 2rem; border-radius: 0.5rem; }
+.workspace-update-rate .opacity-control button { font-size: 1rem; }
+.workspace-update-rate .opacity-control output { font-size: 0.78rem; }
 .workspace-timeline-controls output { min-width: 4.25rem; padding: 0.48rem 0.6rem; border: 1px solid rgb(137 214 246 / 19%); border-radius: 0.45rem; color: #e9faff; background: rgb(4 20 32 / 55%); font-variant-numeric: tabular-nums; text-align: center; }
 .workspace-timeline-controls button { padding: 0.48rem 0.65rem; border: 1px solid rgb(143 220 255 / 23%); border-radius: 0.45rem; color: #c5e9f6; background: rgb(83 192 237 / 8%); font-size: 0.72rem; font-weight: 700; }
 .workspace-checkbox { display: inline-flex; align-items: center; gap: 0.45rem; margin-top: 0.85rem; color: #c5e9f6; font-size: 0.78rem; }

@@ -10,11 +10,15 @@ from typing import AsyncIterator, Callable, Literal
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SimulationControlAction(BaseModel):
     action: Literal["start", "pause", "resume", "stop"]
+
+
+class SimulationUpdateRate(BaseModel):
+    updates_per_second: int = Field(alias="updatesPerSecond", ge=1, le=60)
 
 
 class SimulationTimeStore:
@@ -22,6 +26,7 @@ class SimulationTimeStore:
         self._clock = clock
         self._lock = RLock()
         self._elapsed_seconds = 0.0
+        self._updates_per_second = 1.0
         self._status: Literal["stopped", "running", "paused"] = "stopped"
         self._last_updated = clock()
         self._revision = 0
@@ -45,6 +50,7 @@ class SimulationTimeStore:
             "status": self._status,
             "running": self._status == "running",
             "elapsedSeconds": self._elapsed_seconds,
+            "updatesPerSecond": self._updates_per_second,
             "wallClockUtc": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -85,6 +91,17 @@ class SimulationTimeStore:
                 "resume": "resumed",
                 "stop": "stopped",
             }[control.action])
+            return self._state()
+
+    def update_rate(self, update: SimulationUpdateRate, revision: str | None) -> dict[str, object]:
+        with self._lock:
+            if revision != str(self._revision):
+                raise HTTPException(status_code=409, detail="simulation-time control has changed")
+            self._advance()
+            if update.updates_per_second != self._updates_per_second:
+                self._updates_per_second = update.updates_per_second
+                self._revision += 1
+                self._record_event("rate-changed")
             return self._state()
 
     def reset(self) -> dict[str, object]:
@@ -128,6 +145,7 @@ def get_manifest() -> dict[str, object]:
             "simulationControls": {
                 "readPath": "/api/sim-time",
                 "writePath": "/api/sim-time",
+                "updateRatePath": "/api/sim-time/update-rate",
                 "resetPath": "/api/sim-time/reset",
                 "eventStreamPath": "/api/sim-time/events",
                 "revisionHeader": "If-Match",
@@ -165,6 +183,14 @@ def update_simulation_time(
     return store.apply_action(control, if_match)
 
 
+@app.put("/api/sim-time/update-rate")
+def update_simulation_update_rate(
+    update: SimulationUpdateRate,
+    if_match: str | None = Header(default=None),
+) -> dict[str, object]:
+    return store.update_rate(update, if_match)
+
+
 @app.post("/api/sim-time/reset")
 def reset_simulation_time() -> dict[str, object]:
     return store.reset()
@@ -187,7 +213,7 @@ async def stream_simulation_time_events(
     async def events() -> AsyncIterator[str]:
         nonlocal event_id
         yield encode_event("state", store.response())
-        last_sync_second = int(time.time())
+        next_sync = time.monotonic()
         while True:
             for event in store.events_since(event_id):
                 event_id = int(event["id"])
@@ -196,11 +222,12 @@ async def stream_simulation_time_events(
                     event["state"],
                     event_id,
                 )
-            current_second = int(time.time())
-            if current_second > last_sync_second:
-                yield encode_event("sync", store.response())
-                last_sync_second = current_second
-            await asyncio.sleep(max(0.01, min(0.1, 1 - time.time() % 1)))
+            current_time = time.monotonic()
+            if current_time >= next_sync:
+                state = store.response()
+                yield encode_event("sync", state)
+                next_sync = current_time + 1 / float(state["updatesPerSecond"])
+            await asyncio.sleep(max(0.01, min(0.1, next_sync - time.monotonic())))
 
     return StreamingResponse(
         events(),

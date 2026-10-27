@@ -117,6 +117,7 @@ let overlayServices = [];
 let workspaceServices = [];
 let overlayRevision = null;
 const overlayCollections = new Map();
+const trackPositionTransitions = new Map();
 let symbolServices = [];
 const symbolDefinitions = new Map();
 let shapes = [];
@@ -143,6 +144,7 @@ let workspaceSimulationEvents = null;
 let simTimeControlService = null;
 let simTimeControlState = null;
 let simTimeControlEvents = null;
+let liveOverlayRefreshTimer = null;
 let displayMiniTimeControl = false;
 let measureStart = null;
 let measureEnd = null;
@@ -884,7 +886,8 @@ function drawShapeFeatures(features, liveTrackLabelBoxes = null) {
   context.textBaseline = "middle";
   const airlaneLabelBoxes = [];
   for (const feature of features) {
-    const { geometry, properties } = feature;
+    const { properties } = feature;
+    const geometry = interpolatedTrackGeometry(feature);
     if (!geometry) {
       continue;
     }
@@ -949,6 +952,25 @@ function drawShapeFeatures(features, liveTrackLabelBoxes = null) {
     context.setLineDash([]);
   }
   context.restore();
+}
+
+function interpolatedTrackGeometry(feature) {
+  const { geometry, properties } = feature;
+  if (properties?.kind !== "track-position" || geometry?.type !== "Point") {
+    return geometry;
+  }
+  const transition = trackPositionTransitions.get(feature.id);
+  if (!transition) {
+    return geometry;
+  }
+  const progress = Math.max(0, Math.min(1, (performance.now() - transition.startedAt) / transition.duration));
+  return {
+    ...geometry,
+    coordinates: [
+      transition.from[0] + (transition.to[0] - transition.from[0]) * progress,
+      transition.from[1] + (transition.to[1] - transition.from[1]) * progress,
+    ],
+  };
 }
 
 function drawCachedAirLanes() {
@@ -1255,12 +1277,13 @@ function pointInRing(point, ring) {
 }
 
 function featureContainsScreenPoint(feature, point) {
-  if (feature.geometry?.type === "Point") {
-    const featurePoint = screenPoint(...feature.geometry.coordinates);
+  const geometry = interpolatedTrackGeometry(feature);
+  if (geometry?.type === "Point") {
+    const featurePoint = screenPoint(...geometry.coordinates);
     return Math.hypot(featurePoint.x - point.x, featurePoint.y - point.y) <= SELECTION_CAPTURE_RADIUS_PIXELS;
   }
-  const rings = feature.geometry?.type === "Polygon" ? feature.geometry.coordinates
-    : feature.geometry?.type === "MultiPolygon" ? feature.geometry.coordinates.flat()
+  const rings = geometry?.type === "Polygon" ? geometry.coordinates
+    : geometry?.type === "MultiPolygon" ? geometry.coordinates.flat()
       : [];
   return rings.some((ring) => {
     const points = screenCoordinates(ring);
@@ -1295,13 +1318,14 @@ function ringIntersectsRectangle(ring, rectangle) {
 }
 
 function featureIntersectsScreenRectangle(feature, rectangle) {
-  if (feature.geometry?.type === "Point") {
-    const point = screenPoint(...feature.geometry.coordinates);
+  const geometry = interpolatedTrackGeometry(feature);
+  if (geometry?.type === "Point") {
+    const point = screenPoint(...geometry.coordinates);
     return point.x >= rectangle.left && point.x <= rectangle.right
       && point.y >= rectangle.top && point.y <= rectangle.bottom;
   }
-  const rings = feature.geometry?.type === "Polygon" ? feature.geometry.coordinates
-    : feature.geometry?.type === "MultiPolygon" ? feature.geometry.coordinates.flat()
+  const rings = geometry?.type === "Polygon" ? geometry.coordinates
+    : geometry?.type === "MultiPolygon" ? geometry.coordinates.flat()
       : [];
   return rings.some((ring) => ringIntersectsRectangle(ring, rectangle));
 }
@@ -1472,9 +1496,10 @@ function centerOnSelectedFeature() {
   }
 
   function featureFocusCoordinate(feature) {
-    if (feature.geometry?.type === "Point") return feature.geometry.coordinates;
-    const ring = feature.geometry?.type === "Polygon" ? feature.geometry.coordinates[0]
-      : feature.geometry?.type === "MultiPolygon" ? feature.geometry.coordinates[0]?.[0]
+    const geometry = interpolatedTrackGeometry(feature);
+    if (geometry?.type === "Point") return geometry.coordinates;
+    const ring = geometry?.type === "Polygon" ? geometry.coordinates[0]
+      : geometry?.type === "MultiPolygon" ? geometry.coordinates[0]?.[0]
         : null;
     if (!Array.isArray(ring) || ring.length === 0) return [0, 0];
     return [
@@ -1542,11 +1567,12 @@ function drawSelectedFeatureMarkers() {
   context.lineWidth = 2;
   for (const { feature } of selectedFeatures.values()) {
     context.beginPath();
-    if (feature.geometry.type === "Point") {
-      const point = screenPoint(...feature.geometry.coordinates);
+    const geometry = interpolatedTrackGeometry(feature);
+    if (geometry.type === "Point") {
+      const point = screenPoint(...geometry.coordinates);
       context.arc(point.x, point.y, 10, 0, 2 * Math.PI);
     } else {
-      appendShapeGeometry(feature.geometry);
+      appendShapeGeometry(geometry);
     }
     context.stroke();
   }
@@ -1617,6 +1643,39 @@ function rebuildOverlayFeatures() {
     invalidateAirLanesCache({ immediate: true });
   }
   reconcileSelectedFeatures();
+}
+
+function updateTrackPositionTransitions(collection) {
+  const now = performance.now();
+  const duration = 1000 / Math.max(1, Number(simTimeControlState?.updatesPerSecond) || 1);
+  const activeTrackIds = new Set();
+  for (const feature of collection.features) {
+    if (
+      feature.properties?.kind !== "track-position"
+      || feature.geometry?.type !== "Point"
+      || !Array.isArray(feature.geometry.coordinates)
+      || feature.geometry.coordinates.length !== 2
+      || !feature.geometry.coordinates.every(Number.isFinite)
+    ) {
+      continue;
+    }
+    activeTrackIds.add(feature.id);
+    const target = [...feature.geometry.coordinates];
+    const previous = trackPositionTransitions.get(feature.id);
+    const from = previous
+      ? interpolatedTrackGeometry({
+        id: feature.id,
+        properties: feature.properties,
+        geometry: { type: "Point", coordinates: previous.to },
+      }).coordinates
+      : target;
+    trackPositionTransitions.set(feature.id, { from, to: target, startedAt: now, duration });
+  }
+  for (const trackId of trackPositionTransitions.keys()) {
+    if (!activeTrackIds.has(trackId)) {
+      trackPositionTransitions.delete(trackId);
+    }
+  }
 }
 
 function overlayDisplayName(service) {
@@ -2065,6 +2124,44 @@ function trackEditorInput(key, label, value, { type = "text", options = null } =
   return field;
 }
 
+function trackUpdateRateControl(simulation) {
+  const rate = Math.max(1, Math.round(Number(simulation.updatesPerSecond) || 1));
+  const control = document.createElement("div");
+  control.className = "workspace-update-rate";
+  control.append(Object.assign(document.createElement("span"), {
+    textContent: "Track updates / s",
+  }));
+  const picker = document.createElement("div");
+  picker.className = "opacity-control";
+  picker.setAttribute("aria-label", "Track update rate");
+  const decrease = document.createElement("button");
+  decrease.type = "button";
+  decrease.textContent = "−";
+  decrease.setAttribute("aria-label", "Decrease track update rate");
+  decrease.disabled = rate <= 1;
+  const value = document.createElement("output");
+  value.value = String(rate);
+  const increase = document.createElement("button");
+  increase.type = "button";
+  increase.textContent = "+";
+  increase.setAttribute("aria-label", "Increase track update rate");
+  increase.disabled = rate >= 60;
+  const update = (nextRate) => {
+    decrease.disabled = true;
+    increase.disabled = true;
+    updateSimTimeUpdateRate(nextRate).catch((error) => {
+      status.textContent = `Unable to update track rate: ${error.message}`;
+      decrease.disabled = rate <= 1;
+      increase.disabled = rate >= 60;
+    });
+  };
+  decrease.addEventListener("click", () => update(rate - 1));
+  increase.addEventListener("click", () => update(rate + 1));
+  picker.append(decrease, value, increase);
+  control.append(picker);
+  return control;
+}
+
 function selectedTrackRoute() {
   return trackEditorSession?.scenario.routes.find((route) => route.id === trackRouteSelect.value) ?? null;
 }
@@ -2320,7 +2417,26 @@ function setSimTimeControlState(service, simulation) {
   simTimeControlService = service;
   simTimeControlState = simulation;
   if (workspaceSession?.service === service) workspaceSession.simulation = simulation;
+  scheduleLiveOverlayRefresh();
   renderMiniTimeControl();
+}
+
+function scheduleLiveOverlayRefresh() {
+  if (liveOverlayRefreshTimer !== null) {
+    window.clearInterval(liveOverlayRefreshTimer);
+  }
+  const tracksEnabled = overlayServices.some(
+    (service) => service.manifest?.serviceId === "tracks" && service.enabled,
+  );
+  const updatesPerSecond = Number(simTimeControlState?.updatesPerSecond);
+  const interval = tracksEnabled && Number.isFinite(updatesPerSecond) && updatesPerSecond > 0
+    ? Math.max(1000 / 60, 1000 / updatesPerSecond)
+    : 1000;
+  liveOverlayRefreshTimer = window.setInterval(() => {
+    refreshShapes().catch((error) => {
+      status.textContent = `Unable to refresh shapes: ${error.message}`;
+    });
+  }, interval);
 }
 
 async function sendMiniTimeControlAction(action) {
@@ -2347,6 +2463,32 @@ async function sendMiniTimeControlAction(action) {
   if (workspaceSession?.service === simTimeControlService) renderWorkspace();
 }
 
+async function updateSimTimeUpdateRate(updatesPerSecond) {
+  const service = simTimeControlService;
+  const simulationCapability = service?.manifest.capabilities.simulationControls;
+  const simulation = simTimeControlState;
+  if (!service || !simulationCapability || !simulation) {
+    throw new Error("SimTimeControl is unavailable");
+  }
+  if (!simulationCapability.updateRatePath) {
+    throw new Error("simulation-time service does not support configurable update rates");
+  }
+  if (!Number.isInteger(updatesPerSecond) || updatesPerSecond < 1 || updatesPerSecond > 60) {
+    throw new Error("track update rate must be a whole number between 1 and 60 updates per second");
+  }
+  const response = await fetch(`${service.url}${simulationCapability.updateRatePath}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", [simulationCapability.revisionHeader]: simulation.revision },
+    body: JSON.stringify({ updatesPerSecond }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `simulation-time rate update returned ${response.status}`);
+  }
+  setSimTimeControlState(service, await response.json());
+  renderWorkspace();
+}
+
 function startMiniTimeControlUpdates() {
   const service = workspaceServices.find(isSimTimeControlService) ?? null;
   if (simTimeControlService !== service && simTimeControlEvents !== null) {
@@ -2371,13 +2513,14 @@ function startMiniTimeControlUpdates() {
     });
   if (simTimeControlEvents !== null) return;
   simTimeControlEvents = new EventSource(`${service.url}${capability.eventStreamPath}`);
-  for (const eventType of ["state", "sync", "started", "paused", "resumed", "stopped", "reset"]) {
+  for (const eventType of ["state", "sync", "started", "paused", "resumed", "stopped", "reset", "rate-changed"]) {
     simTimeControlEvents.addEventListener(eventType, (event) => {
       try {
         const simulation = JSON.parse(event.data);
         if (
           typeof simulation.running !== "boolean"
           || typeof simulation.elapsedSeconds !== "number"
+          || typeof simulation.updatesPerSecond !== "number"
           || typeof simulation.revision !== "string"
           || typeof simulation.wallClockUtc !== "string"
         ) {
@@ -2961,10 +3104,11 @@ function renderSimTimeControlWorkspace() {
       { label: "Wall clock (UTC)", value: formatWallClockUtc(simulation.wallClockUtc) },
       { label: "Sim seconds", value: `${Number(simulation.elapsedSeconds).toFixed(3)} s` },
       { label: "Sim time", value: formatSimulationElapsed(simulation.elapsedSeconds) },
+      { label: "Track updates", value: `${Math.round(Number(simulation.updatesPerSecond) || 1)} / s` },
       { label: "State", value: simulationStatus },
     ]));
     const controls = document.createElement("div");
-    controls.className = "workspace-editor-actions";
+    controls.className = "workspace-editor-actions simulation-lifecycle-controls";
     for (const [label, action, enabled] of [
       ["Start", "start", simulationStatus === "stopped"],
       ["Pause", "pause", simulationStatus === "running"],
@@ -2985,6 +3129,16 @@ function renderSimTimeControlWorkspace() {
         });
       });
     controls.append(reset);
+    const updateRatePanel = document.createElement("section");
+    updateRatePanel.className = "simulation-update-rate-panel";
+    const updateRateCopy = document.createElement("div");
+    updateRateCopy.append(
+      Object.assign(document.createElement("h4"), { textContent: "Track update rate" }),
+      Object.assign(document.createElement("p"), {
+        textContent: "Higher rates make tracks smoother but use more network and rendering resources.",
+      }),
+    );
+    updateRatePanel.append(updateRateCopy, trackUpdateRateControl(simulation));
     const miniTimeToggle = document.createElement("label");
     miniTimeToggle.className = "workspace-checkbox";
     const checkbox = document.createElement("input");
@@ -2996,7 +3150,7 @@ function renderSimTimeControlWorkspace() {
       renderMiniTimeControl();
     });
     miniTimeToggle.append(checkbox, " Display Mini Time Control");
-    workspacePrimary.append(controls, miniTimeToggle);
+    workspacePrimary.append(controls, updateRatePanel, miniTimeToggle);
   }
   workspaceInspector.replaceChildren();
   workspaceTimeline.replaceChildren(Object.assign(document.createElement("p"), {
@@ -3352,6 +3506,9 @@ function renderWorkspace() {
     controls.append(elapsed, toggle, reset);
     timelineRow.append(controls);
   }
+  if (definition.kind === "platform-simulation" && simTimeControlState) {
+    timelineRow.append(trackUpdateRateControl(simTimeControlState));
+  }
   workspaceTimeline.append(timelineRow);
 }
 
@@ -3427,13 +3584,14 @@ function startWorkspaceSimulationPolling() {
   const { service, simulationCapability } = workspaceSession;
   if (simulationCapability.eventStreamPath) {
     workspaceSimulationEvents = new EventSource(`${service.url}${simulationCapability.eventStreamPath}`);
-    for (const eventType of ["state", "sync", "started", "paused", "resumed", "stopped", "reset"]) {
+    for (const eventType of ["state", "sync", "started", "paused", "resumed", "stopped", "reset", "rate-changed"]) {
       workspaceSimulationEvents.addEventListener(eventType, (event) => {
         try {
           const simulation = JSON.parse(event.data);
           if (
             typeof simulation.running !== "boolean"
             || typeof simulation.elapsedSeconds !== "number"
+            || typeof simulation.updatesPerSecond !== "number"
             || typeof simulation.revision !== "string"
             || typeof simulation.wallClockUtc !== "string"
           ) {
@@ -3756,6 +3914,7 @@ function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) 
     checkbox.checked = service.enabled;
     checkbox.addEventListener("change", () => {
       service.enabled = checkbox.checked;
+      scheduleLiveOverlayRefresh();
       overlayRevision = null;
       rebuildOverlayFeatures();
       saveLayerSelection();
@@ -3818,6 +3977,7 @@ function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) 
     row.append(label, opacity, configure);
     dataSourceList.append(row);
   }
+  scheduleLiveOverlayRefresh();
   renderWorkspaceLaunchers();
 }
 
@@ -4189,6 +4349,9 @@ function drawGridLayer() {
 }
 
 function draw() {
+  if (centeredSelectionKey !== null) {
+    centerOnSelectedFeature();
+  }
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
   context.clearRect(0, 0, width, height);
@@ -4471,6 +4634,9 @@ async function refreshShapes() {
     if (result.error) {
       unavailableServices.push(result.service.url);
     } else {
+      if (result.service.manifest?.serviceId === "tracks") {
+        updateTrackPositionTransitions(result.collection);
+      }
       overlayCollections.set(key, result.collection);
       if (typeof result.collection.source?.lastError === "string") {
         unavailableLiveData.push(`${overlayDisplayName(result.service)}: ${result.collection.source.lastError}`);
@@ -5627,11 +5793,7 @@ window.setInterval(() => {
   });
 }, 2000);
 window.setInterval(requestVisibleTiles, 1000);
-window.setInterval(() => {
-  refreshShapes().catch((error) => {
-    status.textContent = `Unable to refresh shapes: ${error.message}`;
-  });
-}, 1000);
+scheduleLiveOverlayRefresh();
 requestAnimationFrame(renderMap);
 
 loadConfiguration()

@@ -20,6 +20,7 @@ let imageryLayer;
 let copernicusLayer;
 let terrainLayer;
 let esaDemLayer;
+let worldcoverLayer;
 const mapServiceList = document.querySelector("#map-service-list");
 const dataSourceList = document.querySelector("#data-source-list");
 const workspaceSourceList = document.querySelector("#workspace-source-list");
@@ -77,17 +78,20 @@ const rasterTileCache = new Map();
 const copernicusTileCache = new Map();
 const terrainTileCache = new Map();
 const esaDemTileCache = new Map();
+const worldcoverTileCache = new Map();
 const requestedTileKeys = new Set();
 const requestedRasterTileKeys = new Set();
 const requestedCopernicusTileKeys = new Set();
 const requestedTerrainTileKeys = new Set();
 const requestedEsaDemTileKeys = new Set();
+const requestedWorldcoverTileKeys = new Set();
 const tileWorker = new Worker("/tile-worker.js?v=20261022a");
 let vectorMapServiceUrl = window.location.origin;
 let satelliteMapServiceUrl = window.location.origin;
 let copernicusServiceUrl = window.location.origin;
 let terrainServiceUrl = window.location.origin;
 let esaDemServiceUrl = window.location.origin;
+let worldcoverServiceUrl = window.location.origin;
 let configuredMapServices = [];
 let configuredServices = [];
 let serviceReconciliationInProgress = false;
@@ -111,6 +115,7 @@ let rasterRevision = null;
 let copernicusRevision = null;
 let terrainRevision = null;
 let esaDemRevision = null;
+let worldcoverRevision = null;
 let terrainPalette = null;
 let viewportElevation = null;
 let overlayServices = [];
@@ -145,6 +150,7 @@ let simTimeControlService = null;
 let simTimeControlState = null;
 let simTimeControlEvents = null;
 let liveOverlayRefreshTimer = null;
+let liveOverlayRefreshInterval = null;
 let displayMiniTimeControl = false;
 let measureStart = null;
 let measureEnd = null;
@@ -154,7 +160,7 @@ let viewportPublishTimer = null;
 let viewportElevationTimer = null;
 let viewportElevationRequest = 0;
 const mapServices = new Map();
-const layerOpacity = { satellite: 10, copernicus: 10, terrain: 8, esaDem: 8, vector: 10, grid: 10 };
+const layerOpacity = { satellite: 10, copernicus: 10, terrain: 8, esaDem: 8, worldcover: 8, vector: 10, grid: 10 };
 let gridCrosshair = false;
 const airLanesCacheCanvas = document.createElement("canvas");
 const airLanesCacheContext = airLanesCacheCanvas.getContext("2d");
@@ -243,6 +249,7 @@ function mapLayerDetails(type, layers) {
     copernicus: { control: "copernicusLayer", visible: layers?.copernicus ?? false, opacity: "copernicus" },
     terrain: { control: "terrainLayer", visible: layers?.terrain ?? false, opacity: "terrain" },
     "esa-dem": { control: "esaDemLayer", visible: layers?.esaDem ?? false, opacity: "esaDem" },
+    worldcover: { control: "worldcoverLayer", visible: layers?.worldcover ?? false, opacity: "worldcover" },
   }[type];
 }
 
@@ -261,6 +268,7 @@ function renderMapServiceControls(layers) {
     checkbox.checked = details.visible;
     checkbox.addEventListener("change", () => {
       mapStateVersion += 1;
+      updateMapAttribution();
       refreshMap();
       if (service.type === "satmap") {
         refreshRasterRevision().catch((error) => { status.textContent = `Unable to refresh satellite imagery: ${error.message}`; });
@@ -270,6 +278,8 @@ function renderMapServiceControls(layers) {
         refreshTerrainRevision().catch((error) => { status.textContent = `Unable to refresh terrain: ${error.message}`; });
       } else if (service.type === "esa-dem") {
         refreshEsaDemRevision().catch((error) => { status.textContent = `Unable to refresh ESA Download Terrain: ${error.message}`; });
+      } else if (service.type === "worldcover") {
+        refreshWorldcoverRevision().catch((error) => { status.textContent = `Unable to refresh ESA WorldCover 2021: ${error.message}`; });
       }
     });
     label.append(checkbox, ` ${service.displayName}`);
@@ -312,7 +322,24 @@ function renderMapServiceControls(layers) {
     if (details.control === "copernicusLayer") copernicusLayer = checkbox;
     if (details.control === "terrainLayer") terrainLayer = checkbox;
     if (details.control === "esaDemLayer") esaDemLayer = checkbox;
+    if (details.control === "worldcoverLayer") worldcoverLayer = checkbox;
   }
+  updateMapAttribution();
+}
+
+function updateMapAttribution() {
+  const attributions = [];
+  if (vectorLayer?.checked) {
+    attributions.push("Natural Earth");
+  }
+  if (copernicusLayer?.checked || esaDemLayer?.checked) {
+    attributions.push("ESA Copernicus");
+  }
+  if (worldcoverLayer?.checked) {
+    attributions.push("ESA WorldCover 2021");
+  }
+  attribution.textContent = attributions.join(" | ");
+  attribution.hidden = attributions.length === 0;
 }
 
 function renderWorkspaceLaunchers() {
@@ -349,6 +376,7 @@ const layers = {
   copernicus: { isVisible: () => copernicusLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.copernicus, drawCopernicusLayer) },
   terrain: { isVisible: () => terrainLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.terrain, drawTerrainLayer) },
   esaDem: { isVisible: () => esaDemLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.esaDem, drawEsaDemLayer) },
+  worldcover: { isVisible: () => worldcoverLayer?.checked, draw: () => drawTileLayerWithOpacity(layerOpacity.worldcover, drawWorldcoverLayer) },
   shapes: { isVisible: () => shapes.length > 0 || contextActionFeatures.length > 0 || terrainProfileDrawing !== null || shapeMapEditing !== null, draw: drawShapesLayer },
   grid: { isVisible: () => gridLayer.checked, draw: () => drawWithOpacity(layerOpacity.grid, drawGridLayer) },
   measurement: { isVisible: () => measureStart !== null, draw: drawMeasurement },
@@ -595,10 +623,6 @@ function drawCountryLayer(target) {
   for (const tile of tiles) {
     drawTile(target, tile);
   }
-  const attributions = new Set(
-    tiles.map((tile) => tile.source?.attribution).filter((item) => item),
-  );
-  attribution.textContent = [...attributions].join(" | ");
 }
 
 function drawImageryLayer(target) {
@@ -655,6 +679,17 @@ function drawEsaDemLayer(target) {
     }
   }
   for (const tile of tiles) drawTerrainTile(target, tile);
+}
+
+function drawWorldcoverLayer(target) {
+  const baseZoom = Math.max(0, Math.min(14, Math.floor(camera.zoom)));
+  const detailZoom = Math.min(14, Math.ceil(camera.zoom));
+  const tiles = nearestCachedTiles(baseZoom, worldcoverTileCache, worldcoverTileKey);
+  if (detailZoom > baseZoom) {
+    const detailTiles = exactCachedTiles(detailZoom, worldcoverTileCache, worldcoverTileKey);
+    tiles.push(...detailTiles);
+  }
+  for (const tile of tiles) drawTile(target, tile);
 }
 
 function clipLineSegment(start, end, bounds) {
@@ -2372,6 +2407,9 @@ function renderWorkspaceMetrics(metrics) {
     const item = document.createElement("div");
     const value = document.createElement("strong");
     value.textContent = metric.value;
+    if (metric.key) {
+      value.dataset.workspaceMetric = metric.key;
+    }
     const label = document.createElement("small");
     label.textContent = metric.label;
     item.append(value, label);
@@ -2421,10 +2459,26 @@ function setSimTimeControlState(service, simulation) {
   renderMiniTimeControl();
 }
 
-function scheduleLiveOverlayRefresh() {
-  if (liveOverlayRefreshTimer !== null) {
-    window.clearInterval(liveOverlayRefreshTimer);
+function updateSimTimeWorkspaceReadout(simulation) {
+  if (workspaceSession?.service !== simTimeControlService || workspaceSession.editing) {
+    return;
   }
+  const values = {
+    wallClock: formatWallClockUtc(simulation.wallClockUtc),
+    elapsedSeconds: `${Number(simulation.elapsedSeconds).toFixed(3)} s`,
+    elapsedTime: formatSimulationElapsed(simulation.elapsedSeconds),
+    updateRate: `${Math.round(Number(simulation.updatesPerSecond) || 1)} / s`,
+    state: simulation.status || (simulation.running ? "running" : "paused"),
+  };
+  for (const [key, value] of Object.entries(values)) {
+    const element = workspacePrimary.querySelector(`[data-workspace-metric="${key}"]`);
+    if (element) {
+      element.textContent = value;
+    }
+  }
+}
+
+function scheduleLiveOverlayRefresh() {
   const tracksEnabled = overlayServices.some(
     (service) => service.manifest?.serviceId === "tracks" && service.enabled,
   );
@@ -2432,6 +2486,13 @@ function scheduleLiveOverlayRefresh() {
   const interval = tracksEnabled && Number.isFinite(updatesPerSecond) && updatesPerSecond > 0
     ? Math.max(1000 / 60, 1000 / updatesPerSecond)
     : 1000;
+  if (liveOverlayRefreshTimer !== null && liveOverlayRefreshInterval === interval) {
+    return;
+  }
+  if (liveOverlayRefreshTimer !== null) {
+    window.clearInterval(liveOverlayRefreshTimer);
+  }
+  liveOverlayRefreshInterval = interval;
   liveOverlayRefreshTimer = window.setInterval(() => {
     refreshShapes().catch((error) => {
       status.textContent = `Unable to refresh shapes: ${error.message}`;
@@ -2527,7 +2588,13 @@ function startMiniTimeControlUpdates() {
           throw new Error("event payload has an invalid simulation state");
         }
         setSimTimeControlState(service, simulation);
-        if (workspaceSession?.service === service && !workspaceSession.editing) renderWorkspace();
+        if (workspaceSession?.service === service && !workspaceSession.editing) {
+          if (eventType === "sync") {
+            updateSimTimeWorkspaceReadout(simulation);
+          } else {
+            renderWorkspace();
+          }
+        }
       } catch (error) {
         status.textContent = `Unable to process simulation-time event: ${error.message}`;
       }
@@ -3101,11 +3168,11 @@ function renderSimTimeControlWorkspace() {
   } else {
     const simulationStatus = simulation.status || (simulation.running ? "running" : "paused");
     workspacePrimary.append(renderWorkspaceMetrics([
-      { label: "Wall clock (UTC)", value: formatWallClockUtc(simulation.wallClockUtc) },
-      { label: "Sim seconds", value: `${Number(simulation.elapsedSeconds).toFixed(3)} s` },
-      { label: "Sim time", value: formatSimulationElapsed(simulation.elapsedSeconds) },
-      { label: "Track updates", value: `${Math.round(Number(simulation.updatesPerSecond) || 1)} / s` },
-      { label: "State", value: simulationStatus },
+      { key: "wallClock", label: "Wall clock (UTC)", value: formatWallClockUtc(simulation.wallClockUtc) },
+      { key: "elapsedSeconds", label: "Sim seconds", value: `${Number(simulation.elapsedSeconds).toFixed(3)} s` },
+      { key: "elapsedTime", label: "Sim time", value: formatSimulationElapsed(simulation.elapsedSeconds) },
+      { key: "updateRate", label: "Track updates", value: `${Math.round(Number(simulation.updatesPerSecond) || 1)} / s` },
+      { key: "state", label: "State", value: simulationStatus },
     ]));
     const controls = document.createElement("div");
     controls.className = "workspace-editor-actions simulation-lifecycle-controls";
@@ -3598,7 +3665,13 @@ function startWorkspaceSimulationPolling() {
             throw new Error("event payload has an invalid simulation state");
           }
           workspaceSession.simulation = simulation;
-          if (!workspaceSession.editing) renderWorkspace();
+          if (!workspaceSession.editing) {
+            if (eventType === "sync") {
+              updateSimTimeWorkspaceReadout(simulation);
+            } else {
+              renderWorkspace();
+            }
+          }
         } catch (error) {
           status.textContent = `Unable to process simulation-time event: ${error.message}`;
         }
@@ -4433,6 +4506,10 @@ function esaDemTileKey({ zoom, x, y }) {
   return `${esaDemServiceUrl}/raster/${zoom}/${x}/${y}`;
 }
 
+function worldcoverTileKey({ zoom, x, y }) {
+  return `${worldcoverServiceUrl}/raster/${zoom}/${x}/${y}`;
+}
+
 function exactCachedTiles(zoom, cache, keyForTile) {
   return visibleTiles(zoom)
     .map((tile) => {
@@ -4523,6 +4600,12 @@ function clearEsaDemTileCache() {
   requestedEsaDemTileKeys.clear();
 }
 
+function clearWorldcoverTileCache() {
+  worldcoverTileCache.forEach((bitmap) => bitmap.close());
+  worldcoverTileCache.clear();
+  requestedWorldcoverTileKeys.clear();
+}
+
 async function refreshRasterRevision() {
   if (!mapServices.has("satmap") || !imageryLayer.checked) {
     return;
@@ -4609,6 +4692,22 @@ async function refreshEsaDemRevision() {
     requestVisibleTiles();
   }
   esaDemRevision = revision;
+}
+
+async function refreshWorldcoverRevision() {
+  if (!mapServices.has("worldcover") || !worldcoverLayer?.checked) {
+    return;
+  }
+  const response = await fetch(`${worldcoverServiceUrl}/api/raster/revision`);
+  if (!response.ok) {
+    throw new Error(`ESA WorldCover 2021 service returned ${response.status} for raster revision`);
+  }
+  const { revision } = await response.json();
+  if (worldcoverRevision !== null && worldcoverRevision !== revision) {
+    clearWorldcoverTileCache();
+    requestVisibleTiles();
+  }
+  worldcoverRevision = revision;
 }
 
 async function refreshShapes() {
@@ -5008,6 +5107,15 @@ function missingEsaDemTiles(zoom) {
   });
 }
 
+function missingWorldcoverTiles(zoom) {
+  return visibleTiles(zoom).filter((tile) => {
+    const key = worldcoverTileKey(tile);
+    if (requestedWorldcoverTileKeys.has(key)) return false;
+    requestedWorldcoverTileKeys.add(key);
+    return true;
+  });
+}
+
 function requestVisibleTiles() {
   if (!configurationLoaded || canvas.clientWidth === 0 || canvas.clientHeight === 0) {
     return;
@@ -5080,6 +5188,13 @@ function requestVisibleTiles() {
         tileWorker.postMessage({ type: "request-raster-tiles", serviceUrl: esaDemServiceUrl, tiles: demTiles });
       }
     }
+    if (mapServices.has("worldcover") && worldcoverLayer?.checked) {
+      const worldcoverZoom = Math.min(14, Math.ceil(camera.zoom));
+      const worldcoverTiles = missingWorldcoverTiles(worldcoverZoom);
+      if (worldcoverTiles.length > 0) {
+        tileWorker.postMessage({ type: "request-raster-tiles", serviceUrl: worldcoverServiceUrl, tiles: worldcoverTiles });
+      }
+    }
   });
 }
 
@@ -5112,15 +5227,16 @@ async function loadConfiguration(restoreMapView = true) {
   }
   const configuration = await servicesResponse.json();
   configuredServices = configuration.services;
-  configuredMapServices = configuration.services.filter((service) => ["vecmap", "satmap", "copernicus", "terrain", "esa-dem"].includes(service.type));
+  configuredMapServices = configuration.services.filter((service) => ["vecmap", "satmap", "copernicus", "terrain", "esa-dem", "worldcover"].includes(service.type));
   const runningServices = await registeredRunningServices(configuration.services);
   const vectorService = runningServices.find((item) => item.type === "vecmap");
   const satelliteService = runningServices.find((item) => item.type === "satmap");
   const copernicusService = runningServices.find((item) => item.type === "copernicus");
   const terrainService = runningServices.find((item) => item.type === "terrain");
   const esaDemService = runningServices.find((item) => item.type === "esa-dem");
+  const worldcoverService = runningServices.find((item) => item.type === "worldcover");
   mapServices.clear();
-  [vectorService, satelliteService, copernicusService, terrainService, esaDemService].filter(Boolean).forEach((service) => {
+  [vectorService, satelliteService, copernicusService, terrainService, esaDemService, worldcoverService].filter(Boolean).forEach((service) => {
     mapServices.set(service.type, service);
   });
   symbolServices = runningServices
@@ -5185,6 +5301,14 @@ async function loadConfiguration(restoreMapView = true) {
     }
     terrainServiceUrl = nextTerrainServiceUrl;
   }
+  if (worldcoverService) {
+    const nextWorldcoverServiceUrl = worldcoverService.url.replace(/\/$/, "");
+    if (worldcoverServiceUrl !== nextWorldcoverServiceUrl) {
+      clearWorldcoverTileCache();
+      worldcoverRevision = null;
+    }
+    worldcoverServiceUrl = nextWorldcoverServiceUrl;
+  }
   if (terrainService) {
     await refreshTerrainPalette();
   }
@@ -5207,6 +5331,7 @@ async function loadConfiguration(restoreMapView = true) {
     layerOpacity.copernicus = mapView.layers?.copernicusOpacity ?? 10;
     layerOpacity.terrain = mapView.layers?.terrainOpacity ?? 8;
     layerOpacity.esaDem = mapView.layers?.esaDemOpacity ?? 8;
+    layerOpacity.worldcover = mapView.layers?.worldcoverOpacity ?? 8;
     layerOpacity.vector = mapView.layers?.vectorOpacity ?? 10;
     layerOpacity.grid = mapView.layers?.gridOpacity ?? 10;
   }
@@ -5231,6 +5356,10 @@ async function loadConfiguration(restoreMapView = true) {
   }
   if (esaDemLayer?.checked) {
     await refreshEsaDemRevision();
+    refreshMap();
+  }
+  if (worldcoverLayer?.checked) {
+    await refreshWorldcoverRevision();
     refreshMap();
   }
   try {
@@ -5262,6 +5391,7 @@ async function saveMapView() {
           copernicus: copernicusLayer?.checked ?? false,
           terrain: terrainLayer?.checked ?? false,
           esaDem: esaDemLayer?.checked ?? false,
+          worldcover: worldcoverLayer?.checked ?? false,
           dataSources: overlayLayerSelections(),
           dataSourceOpacity: overlaySourceOpacities(),
           vectorMap: vectorLayer?.checked ?? false,
@@ -5272,6 +5402,7 @@ async function saveMapView() {
           copernicusOpacity: layerOpacity.copernicus,
           terrainOpacity: layerOpacity.terrain,
           esaDemOpacity: layerOpacity.esaDem,
+          worldcoverOpacity: layerOpacity.worldcover,
           vectorOpacity: layerOpacity.vector,
           gridOpacity: layerOpacity.grid,
         },
@@ -5302,6 +5433,7 @@ function saveMapViewOnExit() {
       copernicus: copernicusLayer?.checked ?? false,
       terrain: terrainLayer?.checked ?? false,
       esaDem: esaDemLayer?.checked ?? false,
+      worldcover: worldcoverLayer?.checked ?? false,
       dataSources: overlayLayerSelections(),
       dataSourceOpacity: overlaySourceOpacities(),
       vectorMap: vectorLayer?.checked ?? false,
@@ -5312,6 +5444,7 @@ function saveMapViewOnExit() {
       copernicusOpacity: layerOpacity.copernicus,
       terrainOpacity: layerOpacity.terrain,
       esaDemOpacity: layerOpacity.esaDem,
+      worldcoverOpacity: layerOpacity.worldcover,
       vectorOpacity: layerOpacity.vector,
       gridOpacity: layerOpacity.grid,
     },
@@ -5343,6 +5476,8 @@ tileWorker.addEventListener("message", (event) => {
   } else if (type === "raster-tile") {
     if (key.startsWith(`${esaDemServiceUrl}/`)) {
       esaDemTileCache.set(key, bitmap);
+    } else if (key.startsWith(`${worldcoverServiceUrl}/`)) {
+      worldcoverTileCache.set(key, bitmap);
     } else if (key.startsWith(`${terrainServiceUrl}/`)) {
       terrainTileCache.set(key, bitmap);
     } else if (key.startsWith(`${copernicusServiceUrl}/`)) {
@@ -5355,6 +5490,11 @@ tileWorker.addEventListener("message", (event) => {
     if (key.startsWith(`${esaDemServiceUrl}/`)) {
       window.setTimeout(() => {
         requestedEsaDemTileKeys.delete(key);
+        requestVisibleTiles();
+      }, 5000);
+    } else if (key.startsWith(`${worldcoverServiceUrl}/`)) {
+      window.setTimeout(() => {
+        requestedWorldcoverTileKeys.delete(key);
         requestVisibleTiles();
       }, 5000);
     } else if (key.startsWith(`${terrainServiceUrl}/`)) {
@@ -5377,6 +5517,9 @@ tileWorker.addEventListener("message", (event) => {
     if (key.startsWith(`${esaDemServiceUrl}/`)) {
       requestedEsaDemTileKeys.delete(key);
       status.textContent = `Unable to load ESA Download Terrain tile: ${message}`;
+    } else if (key.startsWith(`${worldcoverServiceUrl}/`)) {
+      requestedWorldcoverTileKeys.delete(key);
+      status.textContent = `Unable to load ESA WorldCover 2021 tile: ${message}`;
     } else if (key.startsWith(`${terrainServiceUrl}/`)) {
       requestedTerrainTileKeys.delete(key);
       status.textContent = `Unable to load terrain tile: ${message}`;
@@ -5785,6 +5928,11 @@ window.setInterval(() => {
 window.setInterval(() => {
   refreshEsaDemRevision().catch((error) => {
     status.textContent = `Unable to refresh ESA Download Terrain: ${error.message}`;
+  });
+}, 5000);
+window.setInterval(() => {
+  refreshWorldcoverRevision().catch((error) => {
+    status.textContent = `Unable to refresh ESA WorldCover 2021: ${error.message}`;
   });
 }, 5000);
 window.setInterval(() => {

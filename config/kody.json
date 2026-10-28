@@ -26,6 +26,11 @@
       "url": "http://127.0.0.1:8013/"
     },
     {
+      "id": "local-worldcover",
+      "type": "worldcover",
+      "url": "http://127.0.0.1:8014/"
+    },
+    {
       "id": "local-shapes",
       "type": "shapes",
       "url": "http://127.0.0.1:8002/"
@@ -62,14 +67,15 @@
     }
   ],
   "mapView": {
-    "longitude": -0.6911352693828974,
-    "latitude": 51.287999837932844,
-    "zoom": 13.200000000000017,
+    "longitude": -3.0070378673347307,
+    "latitude": 53.35197938490064,
+    "zoom": 11.240000000000027,
     "layers": {
       "satelliteImagery": false,
-      "copernicus": true,
+      "copernicus": false,
       "terrain": false,
       "esaDem": false,
+      "worldcover": true,
       "vectorMap": false,
       "grid": true,
       "gridCrosshair": true,
@@ -78,11 +84,12 @@
       "copernicusOpacity": 6,
       "terrainOpacity": 5,
       "esaDemOpacity": 8,
+      "worldcoverOpacity": 4,
       "vectorOpacity": 2,
       "gridOpacity": 2,
       "dataSources": {
         "local-shapes": true,
-        "local-track": true,
+        "local-track": false,
         "local-adsb": false,
         "local-ais": false,
         "local-airlanes": false,
@@ -212,6 +219,14 @@
         "module": "kody_esa_dem.server:app",
         "workingDirectory": "services/esa-dem",
         "port": 8013,
+        "enabled": true
+      },
+      {
+        "id": "worldcover",
+        "displayName": "ESA WorldCover 2021 service",
+        "module": "kody_worldcover.server:app",
+        "workingDirectory": "services/worldcover",
+        "port": 8014,
         "enabled": true
       }
     ]

@@ -16,7 +16,7 @@ CONFIG_FILE = ROOT_DIRECTORY / "config" / "kody.json"
 
 class MapService(BaseModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$", max_length=64)
-    type: Literal["vecmap", "satmap", "copernicus", "terrain", "esa-dem", "geojson", "shapes", "adsb", "ais", "airlanes", "symbols", "workspace"]
+    type: Literal["vecmap", "satmap", "copernicus", "terrain", "esa-dem", "worldcover", "geojson", "shapes", "adsb", "ais", "airlanes", "symbols", "workspace"]
     url: HttpUrl
 
 
@@ -25,7 +25,7 @@ class ServiceConfiguration(BaseModel):
 
     @model_validator(mode="after")
     def validate_map_services(self) -> "ServiceConfiguration":
-        for service_type in ("vecmap", "satmap", "copernicus", "terrain", "esa-dem"):
+        for service_type in ("vecmap", "satmap", "copernicus", "terrain", "esa-dem", "worldcover"):
             if sum(service.type == service_type for service in self.services) > 1:
                 raise ValueError(f"only one {service_type} service may be configured")
         return self
@@ -61,6 +61,7 @@ class MapLayers(BaseModel):
     copernicus: bool = False
     terrain: bool = False
     esa_dem: bool = Field(default=False, alias="esaDem")
+    worldcover: bool = False
     vector_map: bool = Field(default=True, alias="vectorMap")
     grid: bool = True
     grid_crosshair: bool = Field(default=False, alias="gridCrosshair")
@@ -72,6 +73,7 @@ class MapLayers(BaseModel):
     copernicus_opacity: int = Field(default=10, alias="copernicusOpacity", ge=1, le=10)
     terrain_opacity: int = Field(default=8, alias="terrainOpacity", ge=1, le=10)
     esa_dem_opacity: int = Field(default=8, alias="esaDemOpacity", ge=1, le=10)
+    worldcover_opacity: int = Field(default=8, alias="worldcoverOpacity", ge=1, le=10)
     vector_opacity: int = Field(default=10, alias="vectorOpacity", ge=1, le=10)
     grid_opacity: int = Field(default=10, alias="gridOpacity", ge=1, le=10)
     data_sources: dict[str, bool] = Field(default_factory=dict, alias="dataSources")

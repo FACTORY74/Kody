@@ -327,6 +327,7 @@ input[type="checkbox"], input[type="radio"] {
 .map-status { position: absolute; z-index: 2; bottom: 1rem; left: 1rem; max-width: min(35rem, calc(100% - 2rem)); margin: 0; padding: 0.42rem 0.65rem; border: 1px solid rgb(255 148 157 / 38%); border-radius: 0.45rem; color: #ffd5d8; background: rgb(66 10 18 / 85%); font-size: 0.75rem; }
 .map-status:empty { display: none; }
 .map-attribution { position: absolute; z-index: 2; right: 1rem; bottom: 1rem; margin: 0; padding: 0.26rem 0.5rem; border: 1px solid rgb(148 229 255 / 13%); border-radius: 0.35rem; color: #b7d1dd; background: rgb(6 18 30 / 76%); font-size: 0.66rem; }
+.map-attribution[hidden] { display: none; }
 
 #service-config-dialog, #track-editor-dialog, #workspace-dialog {
   width: min(32rem, calc(100vw - 2rem));

@@ -1,0 +1,1 @@
+"""Kody ESA WorldCover service."""

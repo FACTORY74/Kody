@@ -20,6 +20,58 @@ body {
 
 button, input, select { font: inherit; }
 button { cursor: pointer; }
+button:focus-visible {
+  outline: 2px solid #68dfff;
+  outline-offset: 2px;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.primary-action, .secondary-action, .danger-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2rem;
+  padding: 0.42rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: 0.45rem;
+  box-shadow: none;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.2;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+.primary-action {
+  border-color: #68dfff;
+  color: #001923;
+  background: #68dfff;
+}
+.primary-action:hover:not(:disabled) {
+  border-color: #a4efff;
+  background: #a4efff;
+}
+.secondary-action {
+  border-color: rgb(143 220 255 / 23%);
+  color: #c5e9f6;
+  background: rgb(83 192 237 / 8%);
+}
+.secondary-action:hover:not(:disabled) {
+  border-color: rgb(104 223 255 / 55%);
+  color: #effcff;
+  background: rgb(83 192 237 / 20%);
+}
+.danger-action {
+  border-color: rgb(255 144 154 / 40%);
+  color: #ffc3c8;
+  background: rgb(255 89 104 / 12%);
+}
+.danger-action:hover:not(:disabled) {
+  border-color: rgb(255 144 154 / 70%);
+  color: #fff2f3;
+  background: rgb(255 89 104 / 22%);
+}
 
 .topbar {
   position: relative;
@@ -362,7 +414,6 @@ input[type="checkbox"], input[type="radio"] {
 .workspace-resource-list { padding-left: 1.1rem; }
 .workspace-resource-list code { word-break: break-all; }
 .workspace-placeholder { margin: 1rem 0; padding: 0.85rem; border: 1px dashed rgb(143 220 255 / 25%); border-radius: 0.55rem; color: #a9c6d3; font-size: 0.82rem; }
-.workspace-primary-action { padding: 0.58rem 0.85rem; border: 0; border-radius: 0.5rem; color: #001923; background: #68dfff; font-size: 0.78rem; font-weight: 700; }
 .workspace-metrics { display: flex; flex-wrap: wrap; gap: 0.55rem; margin: 0.85rem 0; }
 .workspace-metrics > div { min-width: 5rem; padding: 0.5rem 0.6rem; border: 1px solid rgb(137 214 246 / 19%); border-radius: 0.48rem; background: rgb(4 20 32 / 38%); }
 .workspace-metrics strong, .workspace-metrics small { display: block; }
@@ -374,9 +425,7 @@ input[type="checkbox"], input[type="radio"] {
 .workspace-summary-card strong { color: #effcff; font-size: 0.82rem; }
 .workspace-summary-card small { color: #9bc0cf; font-size: 0.7rem; line-height: 1.35; }
 .workspace-pane-toolbar { display: flex; justify-content: flex-end; margin: 0.75rem 0; }
-.workspace-pane-toolbar button, .workspace-card-actions button, .workspace-editor-actions button { padding: 0.42rem 0.58rem; border: 1px solid rgb(143 220 255 / 23%); border-radius: 0.4rem; box-shadow: none; font-size: 0.68rem; font-weight: 700; }
-.workspace-pane-toolbar .primary-action, .workspace-editor-actions .primary-action { border-color: #68dfff; color: #001923; background: #68dfff; box-shadow: none; }
-.workspace-card-actions .danger-action { border-color: rgb(230 95 108 / 65%); box-shadow: none; }
+.workspace-pane-toolbar button, .workspace-card-actions button, .workspace-editor-actions button { min-height: 0; padding: 0.42rem 0.58rem; border-radius: 0.4rem; font-size: 0.68rem; }
 .workspace-card-actions { display: flex; gap: 0.35rem; margin-top: 0.25rem; }
 .workspace-editor-fields { display: grid; gap: 0.7rem; }
 .workspace-editor-fields .service-config-field { font-size: 0.71rem; }
@@ -428,6 +477,7 @@ input[type="checkbox"], input[type="radio"] {
 .workspace-update-rate .opacity-control { grid-template-columns: 2rem 2.65rem 2rem; height: 2rem; border-radius: 0.5rem; }
 .workspace-update-rate .opacity-control button { font-size: 1rem; }
 .workspace-update-rate .opacity-control output { font-size: 0.78rem; }
+.workspace-editor-error { grid-column: 1 / -1; margin: 0; padding: 0.6rem 0.7rem; border: 1px solid rgb(255 109 121 / 38%); border-radius: 0.4rem; color: #ffb5bc; background: rgb(255 77 96 / 12%); font-size: 0.8rem; line-height: 1.4; }
 .workspace-timeline-controls output { min-width: 4.25rem; padding: 0.48rem 0.6rem; border: 1px solid rgb(137 214 246 / 19%); border-radius: 0.45rem; color: #e9faff; background: rgb(4 20 32 / 55%); font-variant-numeric: tabular-nums; text-align: center; }
 .workspace-timeline-controls button { padding: 0.48rem 0.65rem; border: 1px solid rgb(143 220 255 / 23%); border-radius: 0.45rem; color: #c5e9f6; background: rgb(83 192 237 / 8%); font-size: 0.72rem; font-weight: 700; }
 .workspace-checkbox { display: inline-flex; align-items: center; gap: 0.45rem; margin-top: 0.85rem; color: #c5e9f6; font-size: 0.78rem; }
@@ -482,17 +532,12 @@ input[type="checkbox"], input[type="radio"] {
 .empty-config-state { margin: 0; padding: 0.8rem; border: 1px dashed rgb(143 220 255 / 25%); border-radius: 0.55rem; color: #a9c6d3; font-size: 0.83rem; text-align: center; }
 .dialog-actions, .form-actions { display: flex; justify-content: end; gap: 0.6rem; margin-top: 0.3rem; }
 #service-config-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 0.6rem; margin-top: 0.55rem; }
-#service-config-actions button { padding: 0.58rem 0.85rem; border: 0; border-radius: 0.5rem; font-size: 0.78rem; font-weight: 700; white-space: nowrap; }
+#service-config-actions button { padding: 0.58rem 0.85rem; font-size: 0.78rem; white-space: nowrap; }
 #service-config-progress { margin-top: 0.55rem; padding: 0.65rem 0.7rem; border: 1px solid rgb(104 223 255 / 20%); border-radius: 0.5rem; background: rgb(36 114 148 / 12%); color: #c5e9f6; font-size: 0.75rem; }
 #service-config-progress > div:first-child { display: flex; justify-content: space-between; gap: 1rem; }
 .service-progress-track { height: 0.26rem; margin-top: 0.45rem; overflow: hidden; border-radius: 1rem; background: rgb(143 220 255 / 15%); }
 .service-progress-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: #68dfff; transition: width 0.25s ease; }
-.dialog-actions button, .form-actions button { padding: 0.58rem 0.85rem; border: 1px solid transparent; border-radius: 0.5rem; font-size: 0.78rem; font-weight: 700; }
-.dialog-actions button[type="button"], .secondary-action { border-color: rgb(143 220 255 / 23%) !important; color: #c5e9f6; background: rgb(83 192 237 / 8%); }
-.dialog-actions button[type="submit"], .primary-action { color: #001923; background: #68dfff; box-shadow: 0 0.5rem 1.2rem rgb(48 194 255 / 20%); }
-.danger-action { color: #fff2f3; background: #b52e3f; box-shadow: 0 0.5rem 1.2rem rgb(207 50 65 / 28%); }
-.danger-action:hover { background: #d44855; }
-.dialog-actions button:hover, .form-actions button:hover { filter: brightness(1.1); }
+.dialog-actions button, .form-actions button { padding: 0.58rem 0.85rem; border-radius: 0.5rem; font-size: 0.78rem; }
 #service-config-status, #form-status { min-height: 1.1rem; margin: 0; color: #ffb9c0; font-size: 0.75rem; }
 .symbol-review-grid {
   display: grid;
@@ -527,8 +572,7 @@ input[type="checkbox"], input[type="radio"] {
 .data-directory-controls { display: flex; gap: 0.6rem; }
 .data-directory-controls input { min-width: 0; flex: 1; padding: 0.64rem 0.75rem; border: 1px solid rgb(124 209 241 / 25%); border-radius: 0.5rem; color: #e4f8ff; background: rgb(5 19 31 / 72%); font: 0.84rem/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .data-directory-controls input:focus { outline: none; border-color: #54d8ff; box-shadow: 0 0 0 0.18rem rgb(73 207 255 / 15%); }
-.save-data-location { align-self: center; padding: 0.42rem 0.7rem; border: 1px solid rgb(91 220 255 / 36%); border-radius: 0.45rem; color: #c8f4ff; background: rgb(49 191 234 / 13%); font-size: 0.74rem; font-weight: 700; white-space: nowrap; }
-.save-data-location:hover { border-color: #69dcff; color: #effcff; background: rgb(52 199 241 / 23%); }
+.data-directory-controls .primary-action { align-self: center; white-space: nowrap; }
 .data-library-note { margin: 0; color: #84b8ca; font-size: 0.75rem; }
 code { padding: 0.1rem 0.25rem; border-radius: 0.25rem; color: #a9e9ff; background: rgb(71 178 225 / 10%); }
 #services-form, #service-list { display: grid; gap: 0.85rem; }
@@ -556,11 +600,11 @@ code { padding: 0.1rem 0.25rem; border-radius: 0.25rem; color: #a9e9ff; backgrou
 .service label { display: grid; gap: 0.35rem; color: #b9d7e4; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.045em; text-transform: uppercase; }
 .service .primary { display: flex; gap: 0.42rem; align-items: center; min-height: 2.2rem; white-space: nowrap; }
 .service .primary input { width: auto; }
-.remove-service { align-self: center; padding: 0.42rem 0.58rem; border: 1px solid rgb(255 144 154 / 30%); border-radius: 0.45rem; color: #ffc3c8; background: rgb(255 89 104 / 8%); font-size: 0.74rem; }
+.service .danger-action { align-self: center; }
 
 @media (max-width: 48rem) {
   .service { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .service .primary, .remove-service { align-self: end; }
+  .service .primary, .service .danger-action { align-self: end; }
 }
 @media (max-width: 35rem) {
   .topbar { gap: 0.75rem; padding-inline: 0.75rem; }

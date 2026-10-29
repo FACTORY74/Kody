@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from datetime import datetime, timezone
 from threading import RLock
 from typing import AsyncIterator, Callable, Literal
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SimulationControlAction(BaseModel):
@@ -178,8 +181,16 @@ def get_simulation_time() -> dict[str, object]:
 @app.put("/api/sim-time")
 def update_simulation_time(
     control: SimulationControlAction,
+    request: Request,
     if_match: str | None = Header(default=None),
 ) -> dict[str, object]:
+    client_host = request.client.host if request.client else "unknown"
+    LOGGER.info(
+        "SimTimeControl received %s from %s (%s)",
+        control.action,
+        client_host,
+        request.headers.get("user-agent", "unknown"),
+    )
     return store.apply_action(control, if_match)
 
 
@@ -192,7 +203,13 @@ def update_simulation_update_rate(
 
 
 @app.post("/api/sim-time/reset")
-def reset_simulation_time() -> dict[str, object]:
+def reset_simulation_time(request: Request) -> dict[str, object]:
+    client_host = request.client.host if request.client else "unknown"
+    LOGGER.warning(
+        "SimTimeControl reset requested by %s (%s)",
+        client_host,
+        request.headers.get("user-agent", "unknown"),
+    )
     return store.reset()
 
 

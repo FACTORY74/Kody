@@ -15,6 +15,7 @@ import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Any, Literal
@@ -152,11 +153,18 @@ class PointEvent(BaseModel):
 
 
 class ShapeServerConfiguration(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", validate_default=True)
 
-    output_url: HttpUrl | None = Field(default=None, alias="outputUrl")
+    output_url: HttpUrl | None = Field(default="http://127.0.0.1:8017/api/interactions", alias="outputUrl")
     processing_rate: int = Field(default=50, alias="processingRate", ge=1, le=10_000)
     queue_capacity: int = Field(default=250, alias="queueCapacity", ge=1, le=100_000)
+    track_source_url: HttpUrl | None = Field(default="http://127.0.0.1:8003", alias="trackSourceUrl")
+    track_poll_interval_milliseconds: int = Field(
+        default=1_000,
+        alias="trackPollIntervalMilliseconds",
+        ge=100,
+        le=60_000,
+    )
 
 
 def destination(center: list[float], bearing: float, distance: float) -> list[float]:
@@ -441,6 +449,94 @@ class EventProcessor:
             return f"failed: {error}"
 
 
+def track_events_from_geojson(
+    payload: dict[str, object],
+    source_url: str,
+    timestamp: str,
+) -> list[PointEvent]:
+    features = payload.get("features")
+    if not isinstance(features, list):
+        raise ValueError("TrackSim GeoJSON response does not contain a features array")
+    events: list[PointEvent] = []
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties")
+        geometry = feature.get("geometry")
+        if not isinstance(properties, dict) or properties.get("kind") != "track-position":
+            continue
+        if (
+            not isinstance(geometry, dict)
+            or geometry.get("type") != "Point"
+            or not isinstance(geometry.get("coordinates"), list)
+        ):
+            continue
+        coordinates = geometry["coordinates"]
+        if len(coordinates) != 2 or not all(isinstance(value, (int, float)) for value in coordinates):
+            continue
+        feature_id = feature.get("id")
+        if not isinstance(feature_id, str) or not feature_id:
+            continue
+        track_name = properties.get("name")
+        events.append(PointEvent(
+            eventId=f"tracks:{feature_id}",
+            longitude=coordinates[0],
+            latitude=coordinates[1],
+            timestamp=timestamp,
+            properties={
+                "sourceId": "tracks",
+                "trackId": feature_id,
+                "trackName": track_name if isinstance(track_name, str) else feature_id,
+                "routeId": properties.get("routeId"),
+                "state": properties.get("state"),
+            },
+        ))
+    return events
+
+
+class TrackSourcePoller:
+    def __init__(self, processor: EventProcessor, configuration: ConfigurationStore) -> None:
+        self.processor = processor
+        self.configuration = configuration
+
+    @staticmethod
+    def _fetch_geojson(source_url: str) -> dict[str, object]:
+        endpoint = f"{source_url.rstrip('/')}/api/geojson"
+        with urlopen(endpoint, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("TrackSim GeoJSON response must be an object")
+        return payload
+
+    async def poll_once(self) -> int:
+        source_url = self.configuration.configuration.track_source_url
+        if source_url is None:
+            return 0
+        payload = await asyncio.to_thread(self._fetch_geojson, str(source_url))
+        timestamp = datetime.now(timezone.utc).isoformat()
+        queued = 0
+        for event in track_events_from_geojson(payload, str(source_url), timestamp):
+            try:
+                self.processor.enqueue(event)
+                queued += 1
+            except HTTPException as error:
+                if error.status_code != 429:
+                    raise
+                LOGGER.warning("ShapeServer TrackSim poll dropped remaining tracks because the event queue is full")
+                break
+        return queued
+
+    async def run(self) -> None:
+        while True:
+            configuration = self.configuration.configuration
+            try:
+                if configuration.track_source_url is not None:
+                    await self.poll_once()
+            except (OSError, URLError, ValueError, json.JSONDecodeError) as error:
+                LOGGER.warning("ShapeServer TrackSim poll failed: %s", error)
+            await asyncio.sleep(configuration.track_poll_interval_milliseconds / 1_000)
+
+
 shapes = ShapeStore()
 configuration_store = ConfigurationStore(CONFIG_FILE)
 events = EventProcessor(shapes, configuration_store)
@@ -450,12 +546,16 @@ events = EventProcessor(shapes, configuration_store)
 async def lifespan(_: FastAPI):
     events.start()
     worker = asyncio.create_task(events.run())
+    track_poller = asyncio.create_task(TrackSourcePoller(events, configuration_store).run())
     try:
         yield
     finally:
         worker.cancel()
+        track_poller.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await worker
+        with contextlib.suppress(asyncio.CancelledError):
+            await track_poller
 
 
 app = FastAPI(title="Kody ShapeServer", version="1.0.0", lifespan=lifespan)
@@ -494,6 +594,8 @@ def get_manifest() -> dict[str, object]:
                 {"key": "outputUrl", "label": "Output callback URL", "type": "url", "placeholder": "https://example.com/shape-events"},
                 {"key": "processingRate", "label": "Point checks per second", "type": "number", "min": 1, "max": 10_000, "step": 1},
                 {"key": "queueCapacity", "label": "Maximum queued point checks", "type": "number", "min": 1, "max": 100_000, "step": 1},
+                {"key": "trackSourceUrl", "label": "TrackSim service URL", "type": "url", "placeholder": "http://127.0.0.1:8003"},
+                {"key": "trackPollIntervalMilliseconds", "label": "TrackSim poll interval (ms)", "type": "number", "min": 100, "max": 60_000, "step": 100},
             ],
             "actions": [{
                 "label": "Clear local data",

@@ -62,6 +62,16 @@ class TrackStoreTests(unittest.TestCase):
         store.update_scenario(ScenarioCatalogue(), None)
         store.update_aircraft_types(aircraft_types(), None)
 
+    def test_first_authoritative_tick_establishes_clock_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = TrackStore(root / "types.json", root / "scenario.json", clock=lambda: 1_000.0)
+
+            store._tick(25.0)
+
+            self.assertEqual(store.last_tick, 25.0)
+            self.assertEqual(store.simulation_seconds, 0.0)
+
     def test_persists_catalogues_and_renders_route_waypoints_aircraft_and_trail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -114,11 +124,37 @@ class TrackStoreTests(unittest.TestCase):
                 store.update_scenario(invalid, None)
             self.assertEqual(reference.exception.status_code, 422)
 
-            invalid = scenario()
-            invalid.routes[0].legs[0].targetSpeedMetresPerSecond = 1_000
-            with self.assertRaises(HTTPException) as limit:
-                store.update_scenario(invalid, None)
-            self.assertEqual(limit.exception.status_code, 422)
+            aspirational = scenario()
+            aspirational.routes[0].legs[0].targetSpeedMetresPerSecond = 1_000
+            store.update_scenario(aspirational, None)
+
+    def test_clamps_aspirational_target_speed_to_aircraft_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = TrackStore(root / "types.json", root / "scenario.json")
+            self.configure_test_catalogues(store)
+            aspirational = scenario()
+            aspirational.routes[0].legs[1].targetSpeedMetresPerSecond = 1_000
+            store.update_scenario(aspirational, None)
+            runtime = store.runtime["aircraft-1"]
+            runtime.position = [-1, 0]
+            runtime.legStartPosition = [-1, 0]
+
+            store._advance_leg(runtime, aspirational.routes[0], aspirational.aircraft[0], 20)
+
+            self.assertEqual(runtime.speedMetresPerSecond, 100)
+            response = store.response()
+            aircraft = next(feature for feature in response["features"] if feature["id"] == "track:aircraft-1")
+            self.assertEqual(aircraft["properties"]["targetSpeedMetresPerSecond"], 1_000)
+            self.assertEqual(aircraft["properties"]["effectiveTargetSpeedMetresPerSecond"], 100)
+
+            aspirational.routes[0].legs[1].targetSpeedMetresPerSecond = 0
+            store._advance_leg(runtime, aspirational.routes[0], aspirational.aircraft[0], 20)
+            self.assertEqual(runtime.speedMetresPerSecond, 10)
+
+            aspirational.routes[0].legs[1].targetSpeedMetresPerSecond = 55
+            store._advance_leg(runtime, aspirational.routes[0], aspirational.aircraft[0], 20)
+            self.assertEqual(runtime.speedMetresPerSecond, 55)
 
     def test_overflies_each_waypoint_before_rate_limited_turn(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -202,6 +238,20 @@ class TrackStoreTests(unittest.TestCase):
             reset_position = next(item for item in reset["features"] if item["id"] == "track:aircraft-1")["geometry"]["coordinates"]
             self.assertEqual(reset_position, [0, 0])
             self.assertEqual(store.simulation_response()["elapsedSeconds"], 0)
+
+    def test_scenario_update_uses_the_authoritative_simulation_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            clock = [1_000.0]
+            root = Path(directory)
+            store = TrackStore(root / "types.json", root / "scenario.json", clock=lambda: clock[0])
+            self.configure_test_catalogues(store)
+
+            store.update_scenario(scenario(), None, now=120)
+            response = store.response(now=121)
+            aircraft = next(feature for feature in response["features"] if feature["id"] == "track:aircraft-1")
+
+            self.assertEqual(store.simulation_response()["elapsedSeconds"], 1)
+            self.assertNotEqual(aircraft["geometry"]["coordinates"], [0, 0])
 
     def test_opening_workspace_reloads_catalogues_from_disk(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

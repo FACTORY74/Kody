@@ -23,12 +23,13 @@ contract rather than add central-map service-specific interfaces.
 - [`services/shapes`](./services/shapes/README.md) — optional static Shapes GeoJSON service
 - [`services/shape-server`](./services/shape-server/README.md) — in-memory point-containment shapes and output events
 - [`services/shape-server-test`](./services/shape-server-test/README.md) — sample ShapeServer producer
+- [`services/interaction-server`](./services/interaction-server/README.md) — transient ShapeServer interaction layer
 - [`services/tracks`](./services/tracks/README.md) — optional live Tracks GeoJSON service
 
 The central product starts on port 8000, configuration on 8001, Shapes on
 8002, Tracks on 8003, Vector map on 8004, ADS-B on 8005, Satellite map on
 8006, ShapeServer on 8015, ShapeServerTest on 8016, and Copernicus Global
-Mosaic on 8011.
+Mosaic on 8011, and InteractionServer on 8017.
 
 ## Start everything
 

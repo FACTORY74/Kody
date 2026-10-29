@@ -27,8 +27,10 @@ The first startup writes two declarative catalogues beneath the configured
 `GET` and `PUT /api/tracks/scenario` expose the scenario catalogue. Both
 responses contain an opaque `revision`; clients may pass it in `If-Match` on
 updates to prevent overwriting newer data. The service validates route/type
-references and all initial/target speed and altitude values against the
-assigned aircraft type before it persists a scenario.
+references plus each aircraft's initial speed and altitude against its type
+before it persists a scenario. Route target speeds are aspirational: during
+simulation, each aircraft clamps a target below or above its own speed range
+to its nearest valid speed.
 
 Opening TrackSimControl reloads both catalogues from disk. This makes
 external edits available without restarting the service. If either catalogue

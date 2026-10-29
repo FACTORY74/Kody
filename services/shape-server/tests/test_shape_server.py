@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -16,7 +17,9 @@ from kody_shape_server.shape_server import (
     QueuedEvent,
     Shape,
     ShapeStore,
+    TrackSourcePoller,
     contains,
+    track_events_from_geojson,
 )
 
 
@@ -78,7 +81,12 @@ class ShapeServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             configuration = ConfigurationStore(Path(directory) / "config.json")
             configuration.update(
-                shape_server.ShapeServerConfiguration(processingRate=10_000, queueCapacity=1),
+                shape_server.ShapeServerConfiguration(
+                    outputUrl=None,
+                    processingRate=10_000,
+                    queueCapacity=1,
+                    trackSourceUrl=None,
+                ),
                 None,
             )
             store = ShapeStore()
@@ -99,6 +107,7 @@ class ShapeServerTests(unittest.TestCase):
                 for _ in range(100):
                     if client.get("/api/events").json()["matches"]:
                         break
+                    time.sleep(0.01)
                 matches = client.get("/api/events").json()["matches"]
                 self.assertEqual(matches[0]["event"]["eventId"], "inside")
                 self.assertEqual(matches[0]["shape"]["properties"]["shapeId"], "circle")
@@ -134,6 +143,43 @@ class ShapeServerTests(unittest.TestCase):
             processor.deliver.assert_awaited_once()
             self.assertEqual(processor.events()[0]["shape"]["id"], stored.shape.id)
             self.assertEqual(processor.events()[0]["delivery"], "delivered")
+
+    def test_converts_track_positions_and_respects_the_event_queue(self) -> None:
+        payload = {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "id": "track:aircraft-1",
+                "properties": {"kind": "track-position", "name": "Cessna", "routeId": "route-1", "state": "running"},
+                "geometry": {"type": "Point", "coordinates": [-3.2, 53.1]},
+            }, {
+                "type": "Feature",
+                "id": "trail:aircraft-1",
+                "properties": {"kind": "track-trail"},
+                "geometry": {"type": "LineString", "coordinates": []},
+            }],
+        }
+        events = track_events_from_geojson(payload, "http://127.0.0.1:8003", "2026-10-29T20:53:53Z")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].eventId, "tracks:track:aircraft-1")
+        self.assertEqual(events[0].properties["trackName"], "Cessna")
+
+        with tempfile.TemporaryDirectory() as directory:
+            configuration = ConfigurationStore(Path(directory) / "config.json")
+            configuration.update(
+                shape_server.ShapeServerConfiguration(
+                    trackSourceUrl="http://127.0.0.1:8003",
+                    queueCapacity=1,
+                ),
+                None,
+            )
+            processor = EventProcessor(ShapeStore(), configuration)
+            processor.start()
+            poller = TrackSourcePoller(processor, configuration)
+            poller._fetch_geojson = lambda _: payload
+
+            self.assertEqual(asyncio.run(poller.poll_once()), 1)
+            self.assertEqual(asyncio.run(poller.poll_once()), 0)
 
     def test_shapes_are_not_serialized_to_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

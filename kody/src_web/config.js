@@ -12,7 +12,7 @@ function addService(service = {}) {
   serviceCard.querySelector('[name="id"]').value = service.id || "";
   serviceCard.querySelector('[name="type"]').value = service.type || "vecmap";
   serviceCard.querySelector('[name="url"]').value = service.url || "";
-  serviceCard.querySelector(".remove-service").addEventListener("click", () => serviceCard.remove());
+  serviceCard.querySelector("[data-remove-service]").addEventListener("click", () => serviceCard.remove());
   serviceList.append(element);
 }
 

@@ -46,6 +46,11 @@
       "url": "http://127.0.0.1:8003/"
     },
     {
+      "id": "local-interactions",
+      "type": "geojson",
+      "url": "http://127.0.0.1:8017/"
+    },
+    {
       "id": "local-sim-time",
       "type": "workspace",
       "url": "http://127.0.0.1:8012/"
@@ -72,9 +77,9 @@
     }
   ],
   "mapView": {
-    "longitude": -3.3628698780815682,
-    "latitude": 53.10531268063021,
-    "zoom": 10.040000000000031,
+    "longitude": -3.41450396040986,
+    "latitude": 53.10924622688332,
+    "zoom": 11.800000000000022,
     "layers": {
       "satelliteImagery": false,
       "copernicus": true,
@@ -96,6 +101,7 @@
         "local-shapes": false,
         "local-shape-server": true,
         "local-track": true,
+        "local-interactions": true,
         "local-adsb": false,
         "local-ais": false,
         "local-airlanes": false,
@@ -105,6 +111,7 @@
         "local-shapes": 10,
         "local-shape-server": 10,
         "local-track": 6,
+        "local-interactions": 10,
         "local-adsb": 10,
         "local-ais": 7,
         "local-airlanes": 4
@@ -250,6 +257,14 @@
         "module": "kody_shape_server_test.server:app",
         "workingDirectory": "services/shape-server-test",
         "port": 8016,
+        "enabled": true
+      },
+      {
+        "id": "interaction-server",
+        "displayName": "InteractionServer",
+        "module": "kody_interaction_server.interaction_server:app",
+        "workingDirectory": "services/interaction-server",
+        "port": 8017,
         "enabled": true
       }
     ]

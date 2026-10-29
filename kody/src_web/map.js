@@ -2265,7 +2265,7 @@ function renderTrackEditor() {
     fields.className = "track-editor-item-fields";
     fields.append(
       trackEditorInput(`altitude:${leg.id}`, `${leg.id} altitude (m)`, leg.targetAltitudeMetres, { type: "number" }),
-      trackEditorInput(`speed:${leg.id}`, `${leg.id} speed (m/s)`, leg.targetSpeedMetresPerSecond, { type: "number" }),
+      trackEditorInput(`speed:${leg.id}`, `${leg.id} target speed (m/s)`, leg.targetSpeedMetresPerSecond, { type: "number" }),
     );
     const actions = document.createElement("div");
     actions.className = "track-editor-item-actions";
@@ -2534,6 +2534,12 @@ async function sendMiniTimeControlAction(action) {
   if (workspaceSession?.service === simTimeControlService) renderWorkspace();
 }
 
+function confirmSimulationReset() {
+  return window.confirm(
+    "Reset shared simulation time? This returns every track to its initial position.",
+  );
+}
+
 async function updateSimTimeUpdateRate(updatesPerSecond) {
   const service = simTimeControlService;
   const simulationCapability = service?.manifest.capabilities.simulationControls;
@@ -2669,28 +2675,6 @@ function workspaceItemDescription(kind, item) {
   return `${aircraftType?.displayName ?? item.aircraftTypeId} · ${route?.name ?? item.routeId}`;
 }
 
-function aircraftRouteCompatibilityError(aircraftType, route) {
-  if (!aircraftType || !route) {
-    return "Choose an aircraft type and route.";
-  }
-  const { limits } = aircraftType;
-  for (const leg of route.legs) {
-    if (
-      leg.targetSpeedMetresPerSecond < limits.minimumSpeedMetresPerSecond
-      || leg.targetSpeedMetresPerSecond > limits.maximumSpeedMetresPerSecond
-    ) {
-      return `${aircraftType.displayName} cannot use ${route.name}: ${leg.name || leg.id} requires ${leg.targetSpeedMetresPerSecond} m/s, outside its ${limits.minimumSpeedMetresPerSecond}–${limits.maximumSpeedMetresPerSecond} m/s range.`;
-    }
-    if (
-      leg.targetAltitudeMetres < limits.minimumAltitudeMetres
-      || leg.targetAltitudeMetres > limits.maximumAltitudeMetres
-    ) {
-      return `${aircraftType.displayName} cannot use ${route.name}: ${leg.name || leg.id} requires ${leg.targetAltitudeMetres} m, outside its ${limits.minimumAltitudeMetres}–${limits.maximumAltitudeMetres} m range.`;
-    }
-  }
-  return null;
-}
-
 function aircraftInitialStateCompatibilityError(aircraftType, altitude, speed) {
   const { limits } = aircraftType;
   if (speed < limits.minimumSpeedMetresPerSecond || speed > limits.maximumSpeedMetresPerSecond) {
@@ -2700,6 +2684,11 @@ function aircraftInitialStateCompatibilityError(aircraftType, altitude, speed) {
     return `Initial altitude must be within ${limits.minimumAltitudeMetres}–${limits.maximumAltitudeMetres} m for ${aircraftType.displayName}.`;
   }
   return null;
+}
+
+function clampInitialSpeedToAircraftType(speed, aircraftType) {
+  const { minimumSpeedMetresPerSecond, maximumSpeedMetresPerSecond } = aircraftType.limits;
+  return Math.max(minimumSpeedMetresPerSecond, Math.min(maximumSpeedMetresPerSecond, speed));
 }
 
 function waypointDefaultName(index) {
@@ -2765,20 +2754,31 @@ function workspaceCreateItem(kind) {
     color: "#ff9d42",
     initialPosition: [...route.legs[0].waypoint],
     initialAltitudeMetres: route.legs[0].targetAltitudeMetres,
-    initialSpeedMetresPerSecond: Math.max(type.limits.minimumSpeedMetresPerSecond, route.legs[0].targetSpeedMetresPerSecond),
+    initialSpeedMetresPerSecond: clampInitialSpeedToAircraftType(
+      route.legs[0].targetSpeedMetresPerSecond,
+      type,
+    ),
     state: "running",
   };
 }
 
 function workspaceEditItem(kind, item) {
-  workspaceSession.editing = { kind, id: item.id, draft: structuredClone(item), isNew: false };
+  workspaceSession.activePane = kind;
+  workspaceSession.editing = {
+    kind,
+    id: item.id,
+    draft: structuredClone(item),
+    isNew: false,
+    error: null,
+  };
   renderWorkspace();
 }
 
 function workspaceAddItem(kind) {
   try {
     const item = workspaceCreateItem(kind);
-    workspaceSession.editing = { kind, id: item.id, draft: item, isNew: true };
+    workspaceSession.activePane = kind;
+    workspaceSession.editing = { kind, id: item.id, draft: item, isNew: true, error: null };
     renderWorkspace();
   } catch (error) {
     status.textContent = error.message;
@@ -2791,24 +2791,28 @@ async function removeWorkspaceItem(kind, item) {
     if (workspaceSession.scenario.aircraft.some((aircraft) => aircraft.aircraftTypeId === item.id)) {
       throw new Error("Reassign or remove aircraft using this type before removing it.");
     }
-    workspaceSession.aircraftTypes.types = workspaceSession.aircraftTypes.types.filter((candidate) => candidate.id !== item.id);
-    await persistWorkspaceAircraftTypes();
+    const aircraftTypes = structuredClone(workspaceSession.aircraftTypes);
+    aircraftTypes.types = aircraftTypes.types.filter((candidate) => candidate.id !== item.id);
+    await persistWorkspaceAircraftTypes(aircraftTypes);
   } else if (kind === "routes") {
     if (workspaceSession.scenario.aircraft.some((aircraft) => aircraft.routeId === item.id)) {
       throw new Error("Reassign or remove aircraft using this route before removing it.");
     }
-    workspaceSession.scenario.routes = workspaceSession.scenario.routes.filter((candidate) => candidate.id !== item.id);
-    await persistWorkspaceScenario();
+    const scenario = structuredClone(workspaceSession.scenario);
+    scenario.routes = scenario.routes.filter((candidate) => candidate.id !== item.id);
+    await persistWorkspaceScenario(scenario);
   } else {
-    workspaceSession.scenario.aircraft = workspaceSession.scenario.aircraft.filter((candidate) => candidate.id !== item.id);
-    await persistWorkspaceScenario();
+    const scenario = structuredClone(workspaceSession.scenario);
+    scenario.aircraft = scenario.aircraft.filter((candidate) => candidate.id !== item.id);
+    await persistWorkspaceScenario(scenario);
   }
   workspaceSession.editing = null;
   status.textContent = `${workspaceItemTitle(kind, item)} removed.`;
+  renderWorkspace();
 }
 
-async function persistWorkspaceAircraftTypes() {
-  const { service, aircraftTypes, aircraftTypesRevision } = workspaceSession;
+async function persistWorkspaceAircraftTypes(aircraftTypes) {
+  const { service, aircraftTypesRevision } = workspaceSession;
   const response = await fetch(`${service.url}${workspaceSession.definition.resources.aircraftTypes}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", "If-Match": aircraftTypesRevision },
@@ -2824,8 +2828,8 @@ async function persistWorkspaceAircraftTypes() {
   await refreshWorkspaceDefinition();
 }
 
-async function persistWorkspaceScenario() {
-  const { service, scenario, scenarioRevision, scenarioCapability } = workspaceSession;
+async function persistWorkspaceScenario(scenario) {
+  const { service, scenarioRevision, scenarioCapability } = workspaceSession;
   const response = await fetch(`${service.url}${scenarioCapability.scenarioPath}`, {
     method: scenarioCapability.updateMethod || "PUT",
     headers: { "Content-Type": "application/json", [scenarioCapability.revisionHeader]: scenarioRevision },
@@ -2853,9 +2857,14 @@ async function saveWorkspaceItem({ editRouteOnMap = false } = {}) {
     draft.displayName = values.displayName.trim();
     draft.symbol = values.symbol.trim();
     for (const key of Object.keys(draft.limits)) draft.limits[key] = Number(values[`limits.${key}`]);
-    if (editing.isNew) workspaceSession.aircraftTypes.types.push(draft);
-    else Object.assign(workspaceSession.aircraftTypes.types.find((item) => item.id === editing.id), draft);
-    await persistWorkspaceAircraftTypes();
+    const aircraftTypes = structuredClone(workspaceSession.aircraftTypes);
+    if (editing.isNew) aircraftTypes.types.push(draft);
+    else {
+      const index = aircraftTypes.types.findIndex((item) => item.id === editing.id);
+      if (index === -1) throw new Error("Aircraft type no longer exists.");
+      aircraftTypes.types[index] = draft;
+    }
+    await persistWorkspaceAircraftTypes(aircraftTypes);
   } else if (editing.kind === "routes") {
     draft.name = values.name.trim();
     draft.color = values.color;
@@ -2874,9 +2883,14 @@ async function saveWorkspaceItem({ editRouteOnMap = false } = {}) {
       leg.targetAltitudeMetres = Number(values[`altitude.${leg.id}`]);
       leg.targetSpeedMetresPerSecond = Number(values[`speed.${leg.id}`]);
     }
-    if (editing.isNew) workspaceSession.scenario.routes.push(draft);
-    else Object.assign(workspaceSession.scenario.routes.find((item) => item.id === editing.id), draft);
-    await persistWorkspaceScenario();
+    const scenario = structuredClone(workspaceSession.scenario);
+    if (editing.isNew) scenario.routes.push(draft);
+    else {
+      const index = scenario.routes.findIndex((item) => item.id === editing.id);
+      if (index === -1) throw new Error("Route no longer exists.");
+      scenario.routes[index] = draft;
+    }
+    await persistWorkspaceScenario(scenario);
     if (editRouteOnMap) {
       const route = workspaceSession.scenario.routes.find((item) => item.id === editing.id);
       if (!route) throw new Error("Saved route is no longer available for map editing.");
@@ -2894,8 +2908,7 @@ async function saveWorkspaceItem({ editRouteOnMap = false } = {}) {
     );
     const initialAltitudeMetres = Number(values.initialAltitudeMetres);
     const initialSpeedMetresPerSecond = Number(values.initialSpeedMetresPerSecond);
-    const routeError = aircraftRouteCompatibilityError(aircraftType, route);
-    if (routeError) throw new Error(routeError);
+    if (!aircraftType || !route) throw new Error("Choose an aircraft type and route.");
     const initialStateError = aircraftInitialStateCompatibilityError(
       aircraftType,
       initialAltitudeMetres,
@@ -2909,9 +2922,14 @@ async function saveWorkspaceItem({ editRouteOnMap = false } = {}) {
     draft.initialAltitudeMetres = initialAltitudeMetres;
     draft.initialSpeedMetresPerSecond = initialSpeedMetresPerSecond;
     draft.state = values.state;
-    if (editing.isNew) workspaceSession.scenario.aircraft.push(draft);
-    else Object.assign(workspaceSession.scenario.aircraft.find((item) => item.id === editing.id), draft);
-    await persistWorkspaceScenario();
+    const scenario = structuredClone(workspaceSession.scenario);
+    if (editing.isNew) scenario.aircraft.push(draft);
+    else {
+      const index = scenario.aircraft.findIndex((item) => item.id === editing.id);
+      if (index === -1) throw new Error("Aircraft no longer exists.");
+      scenario.aircraft[index] = draft;
+    }
+    await persistWorkspaceScenario(scenario);
   }
   workspaceSession.editing = null;
   status.textContent = `${workspaceItemTitle(editing.kind, draft)} saved.`;
@@ -2926,6 +2944,13 @@ function renderWorkspaceEditor() {
   editorPane.replaceChildren(workspaceHeading(editing.isNew ? `Add ${kind === "aircraftTypes" ? "aircraft type" : kind.slice(0, -1)}` : `Edit ${workspaceItemTitle(kind, draft)}`));
   const fields = document.createElement("div");
   fields.className = "workspace-editor-fields";
+  if (editing.error) {
+    const error = document.createElement("p");
+    error.className = "workspace-editor-error";
+    error.setAttribute("role", "alert");
+    error.textContent = editing.error;
+    fields.append(error);
+  }
   if (kind === "aircraftTypes") {
     fields.append(workspaceField("Name", draft.displayName, { key: "displayName" }), workspaceField("Symbol", draft.symbol, { key: "symbol" }));
     for (const [key, value] of Object.entries(draft.limits)) fields.append(workspaceField(key.replace(/([A-Z])/g, " $1"), value, { key: `limits.${key}`, type: "number" }));
@@ -2954,7 +2979,7 @@ function renderWorkspaceEditor() {
         workspaceField("Longitude", leg.waypoint[0], { key: `longitude.${leg.id}`, type: "number" }),
         workspaceField("Latitude", leg.waypoint[1], { key: `latitude.${leg.id}`, type: "number" }),
         workspaceField("Altitude (m)", leg.targetAltitudeMetres, { key: `altitude.${leg.id}`, type: "number" }),
-        workspaceField("Speed (m/s)", leg.targetSpeedMetresPerSecond, { key: `speed.${leg.id}`, type: "number" }),
+        workspaceField("Target speed (m/s)", leg.targetSpeedMetresPerSecond, { key: `speed.${leg.id}`, type: "number" }),
       );
       const actions = document.createElement("div");
       actions.className = "workspace-waypoint-actions";
@@ -2995,22 +3020,23 @@ function renderWorkspaceEditor() {
       draft.routeId,
       { key: "routeId", options: workspaceSession.scenario.routes.map((item) => ({ value: item.id, label: item.name })) },
     );
-    const enforceCompatibleAssignment = (changedField, previousValue) => {
-      const aircraftTypeId = aircraftTypeField.querySelector("select").value;
-      const routeId = routeField.querySelector("select").value;
-      const aircraftType = workspaceSession.aircraftTypes.types.find((item) => item.id === aircraftTypeId);
-      const route = workspaceSession.scenario.routes.find((item) => item.id === routeId);
-      const error = aircraftRouteCompatibilityError(aircraftType, route);
-      if (error) {
-        changedField.value = previousValue;
-        status.textContent = error;
-      }
-    };
-    aircraftTypeField.querySelector("select").addEventListener("change", (event) => {
-      enforceCompatibleAssignment(event.currentTarget, draft.aircraftTypeId);
-    });
-    routeField.querySelector("select").addEventListener("change", (event) => {
-      enforceCompatibleAssignment(event.currentTarget, draft.routeId);
+    const initialSpeedField = workspaceField(
+      "Initial speed (m/s)",
+      draft.initialSpeedMetresPerSecond,
+      { key: "initialSpeedMetresPerSecond", type: "number" },
+    );
+    const aircraftTypeSelect = aircraftTypeField.querySelector("select");
+    const initialSpeedInput = initialSpeedField.querySelector("input");
+    aircraftTypeSelect.addEventListener("change", () => {
+      const aircraftType = workspaceSession.aircraftTypes.types.find(
+        (item) => item.id === aircraftTypeSelect.value,
+      );
+      const initialSpeed = Number(initialSpeedInput.value);
+      if (!aircraftType || !Number.isFinite(initialSpeed)) return;
+      const adjustedSpeed = clampInitialSpeedToAircraftType(initialSpeed, aircraftType);
+      if (adjustedSpeed === initialSpeed) return;
+      initialSpeedInput.value = String(adjustedSpeed);
+      status.textContent = `Initial speed adjusted to ${adjustedSpeed} m/s for ${aircraftType.displayName}.`;
     });
     fields.append(
       workspaceField("Name", draft.name, { key: "name" }),
@@ -3020,14 +3046,18 @@ function renderWorkspaceEditor() {
       workspaceField("Longitude", draft.initialPosition[0], { key: "longitude", type: "number" }),
       workspaceField("Latitude", draft.initialPosition[1], { key: "latitude", type: "number" }),
       workspaceField("Initial altitude (m)", draft.initialAltitudeMetres, { key: "initialAltitudeMetres", type: "number" }),
-      workspaceField("Initial speed (m/s)", draft.initialSpeedMetresPerSecond, { key: "initialSpeedMetresPerSecond", type: "number" }),
+      initialSpeedField,
       workspaceField("State", draft.state, { key: "state", options: [{ value: "running", label: "Running" }, { value: "stopped", label: "Stopped" }] }),
     );
   }
   const actions = document.createElement("div");
   actions.className = "workspace-editor-actions";
   actions.append(workspaceButton("Cancel", () => { workspaceSession.editing = null; renderWorkspace(); }), workspaceButton("Save", () => {
-    saveWorkspaceItem().catch((error) => { status.textContent = `Unable to save: ${error.message}`; });
+    saveWorkspaceItem().catch((error) => {
+      workspaceSession.editing.error = error.message;
+      status.textContent = `Unable to save: ${error.message}`;
+      renderWorkspace();
+    });
   }, "primary-action"));
   editorPane.append(fields, actions);
   return true;
@@ -3174,6 +3204,10 @@ function renderTerrainAnalysisWorkspace() {
     button.textContent = item.label;
     button.setAttribute("aria-current", String(item.id === pane.id ? "page" : false));
     button.addEventListener("click", () => {
+      if (workspaceSession.editing && item.id !== workspaceSession.activePane) {
+        workspaceSession.editing = null;
+        status.textContent = "Discarded unsaved workspace changes.";
+      }
       workspaceSession.activePane = item.id;
       renderWorkspace();
     });
@@ -3237,6 +3271,10 @@ function renderSimTimeControlWorkspace() {
     button.textContent = item.label;
     button.setAttribute("aria-current", String(item.id === pane.id ? "page" : false));
     button.addEventListener("click", () => {
+      if (workspaceSession.editing && item.id !== workspaceSession.activePane) {
+        workspaceSession.editing = null;
+        status.textContent = "Discarded unsaved workspace changes.";
+      }
       workspaceSession.activePane = item.id;
       renderWorkspace();
     });
@@ -3532,6 +3570,10 @@ function renderWorkspace() {
     button.textContent = item.label;
     button.setAttribute("aria-current", String(item.id === pane.id ? "page" : false));
     button.addEventListener("click", () => {
+      if (workspaceSession.editing && item.id !== workspaceSession.activePane) {
+        workspaceSession.editing = null;
+        status.textContent = "Discarded unsaved workspace changes.";
+      }
       workspaceSession.activePane = item.id;
       renderWorkspace();
     });
@@ -3716,6 +3758,7 @@ async function updateSimTimeControl(action) {
 }
 
 async function resetWorkspaceSimulation() {
+  if (!confirmSimulationReset()) return;
   const { service, simulationCapability } = workspaceSession;
   const response = await fetch(`${service.url}${simulationCapability.resetPath}`, { method: "POST" });
   if (!response.ok) {
@@ -3809,6 +3852,9 @@ async function refreshWorkspaceDefinition() {
   const definition = await response.json();
   validateWorkspaceDefinition(definition);
   workspaceSession.definition = definition;
+  if (!definition.panes.some((pane) => pane.id === workspaceSession.activePane)) {
+    workspaceSession.activePane = definition.panes[0]?.id;
+  }
 }
 
 async function loadWorkspaceCatalogues() {
@@ -4115,6 +4161,9 @@ function renderOverlaySourceControls(savedSelections = {}, savedOpacities = {}) 
     configure.type = "button";
     configure.className = "configure-service";
     const workspace = service.manifest?.capabilities?.workspace;
+    const scenarioEditor = service.manifest?.capabilities?.scenarioEditor;
+    const configuration = service.manifest?.configuration;
+    configure.hidden = !workspace && !scenarioEditor && !configuration;
     configure.dataset.symbol = workspace ? "rocket" : "gear";
     configure.dataset.symbolFallback = workspace ? "🚀" : "⚙";
     configure.textContent = workspace ? "🚀" : "⚙";
@@ -4270,6 +4319,7 @@ trackSimulationToggle.addEventListener("click", async () => {
 });
 trackSimulationReset.addEventListener("click", async () => {
   try {
+    if (!confirmSimulationReset()) return;
     const { service, simulationCapability } = trackEditorSession;
     const response = await fetch(`${service.url}${simulationCapability.resetPath}`, { method: "POST" });
     if (!response.ok) {
@@ -5969,6 +6019,7 @@ miniTimePause.addEventListener("click", () => {
   });
 });
 miniTimeReset.addEventListener("click", () => {
+  if (!confirmSimulationReset()) return;
   sendMiniTimeControlAction("reset").catch((error) => {
     status.textContent = `Unable to reset simulation time: ${error.message}`;
   });

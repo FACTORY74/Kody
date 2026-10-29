@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import time
@@ -25,6 +26,7 @@ SCENARIO_FILE = DATA_ROOT / "tracks" / "scenario.json"
 CONFIG_FILE = ROOT_DIRECTORY / "config" / "tracks.json"
 SIM_TIME_SERVICE_URL = os.environ.get("KODY_SIM_TIME_SERVICE_URL", "http://127.0.0.1:8012").rstrip("/")
 CatalogueModel = TypeVar("CatalogueModel", bound=BaseModel)
+LOGGER = logging.getLogger(__name__)
 
 
 def _coordinate(value: list[float]) -> list[float]:
@@ -301,11 +303,11 @@ class TrackStore:
         self.scenario = self._load_catalogue(scenario_path, ScenarioCatalogue, default_scenario())
         self._validate_scenario(self.scenario, self.aircraft_types)
         self.runtime: dict[str, FlightRuntime] = {}
-        self.last_tick = self.clock()
+        self.last_tick: float | None = None
         self.simulation_seconds = 0.0
         self.simulation_running = True
         self.simulation_control_revision = 0
-        self._reset_runtime()
+        self._reset_runtime("service-start")
 
     @staticmethod
     def _load_catalogue(
@@ -341,10 +343,6 @@ class TrackStore:
                 (leg.targetAltitudeMetres, limits.minimumAltitudeMetres, limits.maximumAltitudeMetres, f"target altitude for {leg.id}")
                 for leg in route.legs
             )
-            values.extend(
-                (leg.targetSpeedMetresPerSecond, limits.minimumSpeedMetresPerSecond, limits.maximumSpeedMetresPerSecond, f"target speed for {leg.id}")
-                for leg in route.legs
-            )
             for value, minimum, maximum, label in values:
                 if not minimum <= value <= maximum:
                     raise ValueError(f"{label} for aircraft {aircraft.id} is outside {aircraft_type.id} limits")
@@ -352,7 +350,13 @@ class TrackStore:
     def _revision(self, catalogue: BaseModel) -> str:
         return hashlib.sha256(json.dumps(catalogue.model_dump(mode="json"), separators=(",", ":"), sort_keys=True).encode("utf-8")).hexdigest()
 
-    def _reset_runtime(self) -> None:
+    def _reset_runtime(self, reason: str) -> None:
+        LOGGER.warning(
+            "TrackSim reset runtime: reason=%s, simulationSeconds=%.3f, lastTick=%s",
+            reason,
+            self.simulation_seconds,
+            self.last_tick,
+        )
         routes = {route.id: route for route in self.scenario.routes}
         self.runtime = {}
         for aircraft in self.scenario.aircraft:
@@ -396,7 +400,7 @@ class TrackStore:
             return
         self.aircraft_types = aircraft_types
         self.scenario       = scenario
-        self._reset_runtime()
+        self._reset_runtime("catalogue-reload")
         self.last_tick           = self.clock() if now is None else now
         self.simulation_seconds  = 0.0
 
@@ -419,7 +423,12 @@ class TrackStore:
             atomic_json_write(self.aircraft_types_path, catalogue.model_dump(mode="json"))
             self.aircraft_types = catalogue
 
-    def update_scenario(self, scenario: ScenarioCatalogue, expected_revision: str | None) -> None:
+    def update_scenario(
+        self,
+        scenario: ScenarioCatalogue,
+        expected_revision: str | None,
+        now: float | None = None,
+    ) -> None:
         with self.lock:
             if expected_revision is not None and expected_revision != self._revision(self.scenario):
                 raise HTTPException(status_code=409, detail="scenario revision is stale")
@@ -429,8 +438,8 @@ class TrackStore:
                 raise HTTPException(status_code=422, detail=str(error)) from error
             atomic_json_write(self.scenario_path, scenario.model_dump(mode="json"))
             self.scenario = scenario
-            self._reset_runtime()
-            self.last_tick = self.clock()
+            self._reset_runtime("scenario-update")
+            self.last_tick = self.clock() if now is None else now
             self.simulation_seconds = 0.0
 
     def clear(self) -> None:
@@ -553,7 +562,7 @@ class TrackStore:
 
     def reset_simulation(self) -> None:
         with self.lock:
-            self._reset_runtime()
+            self._reset_runtime("explicit-reset")
             self.simulation_seconds = 0.0
             self.last_tick = self.clock()
             self.simulation_control_revision += 1
@@ -587,10 +596,14 @@ class TrackStore:
             return
         limits = next(item.limits for item in self.aircraft_types.types if item.id == aircraft.aircraftTypeId)
         leg = route.legs[runtime.activeLegIndex]
+        effective_target_speed = max(
+            limits.minimumSpeedMetresPerSecond,
+            min(limits.maximumSpeedMetresPerSecond, leg.targetSpeedMetresPerSecond),
+        )
         initial_speed = runtime.speedMetresPerSecond
         initial_altitude = runtime.altitudeMetres
         runtime.speedMetresPerSecond = self._move_toward(
-            runtime.speedMetresPerSecond, leg.targetSpeedMetresPerSecond,
+            runtime.speedMetresPerSecond, effective_target_speed,
             limits.maximumAccelerationMetresPerSecondSquared, limits.maximumDecelerationMetresPerSecondSquared, elapsed,
         )
         runtime.altitudeMetres = self._move_toward(
@@ -602,7 +615,7 @@ class TrackStore:
         if distance <= step:
             travel_time = distance / runtime.speedMetresPerSecond if runtime.speedMetresPerSecond > 0 else 0
             runtime.speedMetresPerSecond = self._move_toward(
-                initial_speed, leg.targetSpeedMetresPerSecond,
+                initial_speed, effective_target_speed,
                 limits.maximumAccelerationMetresPerSecondSquared, limits.maximumDecelerationMetresPerSecondSquared, travel_time,
             )
             runtime.altitudeMetres = self._move_toward(
@@ -653,8 +666,16 @@ class TrackStore:
             runtime.legStartPosition = list(runtime.position)
 
     def _tick(self, now: float) -> None:
+        if self.last_tick is None:
+            self.last_tick = now
+            return
         if now < self.last_tick:
-            self._reset_runtime()
+            LOGGER.warning(
+                "TrackSim reset runtime because SimTimeControl moved backwards from %.3f to %.3f seconds",
+                self.last_tick,
+                now,
+            )
+            self._reset_runtime("sim-time-backwards")
             self.simulation_seconds = 0.0
             self.last_tick = now
             self.simulation_control_revision += 1
@@ -705,6 +726,11 @@ class TrackStore:
                 runtime = self.runtime[aircraft.id]
                 route = routes[aircraft.routeId]
                 leg = route.legs[runtime.activeLegIndex]
+                limits = types[aircraft.aircraftTypeId].limits
+                effective_target_speed = max(
+                    limits.minimumSpeedMetresPerSecond,
+                    min(limits.maximumSpeedMetresPerSecond, leg.targetSpeedMetresPerSecond),
+                )
                 distance_to_waypoint, desired_bearing = self._distance_and_bearing(runtime.position, leg.waypoint)
                 leg_length, _ = self._distance_and_bearing(runtime.legStartPosition, leg.waypoint)
                 leg_progress = 1.0 if leg_length == 0 else max(0.0, min(1.0, 1 - distance_to_waypoint / leg_length))
@@ -730,6 +756,7 @@ class TrackStore:
                             "altitudeBarometricFeet": runtime.altitudeMetres * 3.28084,
                             "targetAltitudeMetres": leg.targetAltitudeMetres,
                             "targetSpeedMetresPerSecond": leg.targetSpeedMetresPerSecond,
+                            "effectiveTargetSpeedMetresPerSecond": effective_target_speed,
                             "distanceToWaypointMetres": distance_to_waypoint,
                             "estimatedSecondsToWaypoint": eta_seconds,
                             "legProgress": leg_progress,
@@ -836,7 +863,7 @@ def get_scenario() -> dict[str, object]:
 
 @app.put("/api/tracks/scenario")
 def update_scenario(scenario: ScenarioCatalogue = Body(...), if_match: str | None = Header(default=None)) -> dict[str, object]:
-    track_store.update_scenario(scenario, if_match)
+    track_store.update_scenario(scenario, if_match, shared_simulation_seconds())
     return track_store.scenario_response()
 
 

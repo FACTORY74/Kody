@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kody map</title>
-    <link rel="stylesheet" href="/styles.css?v=20261027b">
+    <link rel="stylesheet" href="/styles.css?v=20261029c">
   </head>
   <body class="map-page">
     <header class="topbar">
@@ -12,7 +12,7 @@
         <span class="brand-mark" aria-hidden="true">K</span>
         <span>
           <strong>Kody</strong>
-          <small>GEODATA</small>
+          <small data-kody-version>Loading version...</small>
         </span>
       </a>
       <div class="location-readout">
@@ -108,8 +108,8 @@
         </div>
         <div id="service-config-actions"></div>
         <div class="dialog-actions">
-          <button type="button" id="service-config-cancel">Cancel</button>
-          <button type="submit">Save</button>
+          <button class="secondary-action" type="button" id="service-config-cancel">Cancel</button>
+          <button class="primary-action" type="submit">Save</button>
         </div>
       </form>
     </dialog>
@@ -133,12 +133,12 @@
         </section>
         <p id="track-editor-status" aria-live="polite"></p>
         <div class="dialog-actions">
-          <button id="track-new-route" type="button">Draw route</button>
-          <button id="track-simulation-toggle" type="button">Pause simulation</button>
-          <button id="track-simulation-reset" type="button">Reset simulation</button>
+          <button id="track-new-route" class="secondary-action" type="button">Draw route</button>
+          <button id="track-simulation-toggle" class="secondary-action" type="button">Pause simulation</button>
+          <button id="track-simulation-reset" class="secondary-action" type="button">Reset simulation</button>
           <button id="track-delete-route" class="danger-action" type="button">Delete route</button>
-          <button id="track-cancel" type="button">Cancel</button>
-          <button id="track-save" type="submit">Save route</button>
+          <button id="track-cancel" class="secondary-action" type="button">Cancel</button>
+          <button id="track-save" class="primary-action" type="submit">Save route</button>
         </div>
       </form>
     </dialog>
@@ -149,7 +149,7 @@
             <p id="workspace-eyebrow" class="eyebrow">Workspace</p>
             <h2 id="workspace-title">Workspace</h2>
           </div>
-          <button id="workspace-close" type="button">Close</button>
+          <button id="workspace-close" class="secondary-action" type="button">Close</button>
         </header>
         <div id="workspace-content">
           <nav id="workspace-navigator" aria-label="Workspace navigator"></nav>
@@ -161,6 +161,7 @@
         </div>
       </section>
     </dialog>
-    <script type="module" src="/map.js?v=20261029d"></script>
+    <script type="module" src="/version.js?v=20261029a"></script>
+    <script type="module" src="/map.js?v=20261029m"></script>
   </body>
 </html>

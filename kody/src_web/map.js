@@ -122,6 +122,7 @@ let overlayServices = [];
 let workspaceServices = [];
 let overlayRevision = null;
 const overlayCollections = new Map();
+const overlayFetchGenerations = new Map();
 const trackPositionTransitions = new Map();
 let symbolServices = [];
 const symbolDefinitions = new Map();
@@ -1726,6 +1727,9 @@ function overlayDisplayName(service) {
   if (service.type === "airlanes") {
     return "AirLanes";
   }
+  if (service.manifest?.serviceId === "shape-server") {
+    return service.displayName;
+  }
   if (service.type === "shapes") {
     return `Shapes: ${service.id}`;
   }
@@ -2483,9 +2487,15 @@ function scheduleLiveOverlayRefresh() {
     (service) => service.manifest?.serviceId === "tracks" && service.enabled,
   );
   const updatesPerSecond = Number(simTimeControlState?.updatesPerSecond);
-  const interval = tracksEnabled && Number.isFinite(updatesPerSecond) && updatesPerSecond > 0
+  const tracksInterval = tracksEnabled && Number.isFinite(updatesPerSecond) && updatesPerSecond > 0
     ? Math.max(1000 / 60, 1000 / updatesPerSecond)
     : 1000;
+  const requestedDataLayerInterval = overlayServices
+    .filter((service) => service.enabled)
+    .map((service) => Number(service.manifest?.dataEndpoint?.refreshIntervalMilliseconds))
+    .filter(Number.isFinite)
+    .map((interval) => Math.max(1000 / 60, Math.min(60_000, interval)));
+  const interval = Math.min(tracksInterval, ...requestedDataLayerInterval);
   if (liveOverlayRefreshTimer !== null && liveOverlayRefreshInterval === interval) {
     return;
   }
@@ -2659,6 +2669,39 @@ function workspaceItemDescription(kind, item) {
   return `${aircraftType?.displayName ?? item.aircraftTypeId} · ${route?.name ?? item.routeId}`;
 }
 
+function aircraftRouteCompatibilityError(aircraftType, route) {
+  if (!aircraftType || !route) {
+    return "Choose an aircraft type and route.";
+  }
+  const { limits } = aircraftType;
+  for (const leg of route.legs) {
+    if (
+      leg.targetSpeedMetresPerSecond < limits.minimumSpeedMetresPerSecond
+      || leg.targetSpeedMetresPerSecond > limits.maximumSpeedMetresPerSecond
+    ) {
+      return `${aircraftType.displayName} cannot use ${route.name}: ${leg.name || leg.id} requires ${leg.targetSpeedMetresPerSecond} m/s, outside its ${limits.minimumSpeedMetresPerSecond}–${limits.maximumSpeedMetresPerSecond} m/s range.`;
+    }
+    if (
+      leg.targetAltitudeMetres < limits.minimumAltitudeMetres
+      || leg.targetAltitudeMetres > limits.maximumAltitudeMetres
+    ) {
+      return `${aircraftType.displayName} cannot use ${route.name}: ${leg.name || leg.id} requires ${leg.targetAltitudeMetres} m, outside its ${limits.minimumAltitudeMetres}–${limits.maximumAltitudeMetres} m range.`;
+    }
+  }
+  return null;
+}
+
+function aircraftInitialStateCompatibilityError(aircraftType, altitude, speed) {
+  const { limits } = aircraftType;
+  if (speed < limits.minimumSpeedMetresPerSecond || speed > limits.maximumSpeedMetresPerSecond) {
+    return `Initial speed must be within ${limits.minimumSpeedMetresPerSecond}–${limits.maximumSpeedMetresPerSecond} m/s for ${aircraftType.displayName}.`;
+  }
+  if (altitude < limits.minimumAltitudeMetres || altitude > limits.maximumAltitudeMetres) {
+    return `Initial altitude must be within ${limits.minimumAltitudeMetres}–${limits.maximumAltitudeMetres} m for ${aircraftType.displayName}.`;
+  }
+  return null;
+}
+
 function waypointDefaultName(index) {
   return `WP${String(index + 1).padStart(2, "0")}`;
 }
@@ -2802,7 +2845,8 @@ async function persistWorkspaceScenario() {
 async function saveWorkspaceItem({ editRouteOnMap = false } = {}) {
   const editing = workspaceSession.editing;
   if (!editing) return;
-  const fields = workspaceInspector.querySelectorAll("[data-workspace-field]");
+  const editorPane = editing.kind === "routes" ? workspacePrimary : workspaceInspector;
+  const fields = editorPane.querySelectorAll("[data-workspace-field]");
   const values = Object.fromEntries([...fields].map((field) => [field.dataset.workspaceField, field.value]));
   const { draft } = editing;
   if (editing.kind === "aircraftTypes") {
@@ -2842,12 +2886,28 @@ async function saveWorkspaceItem({ editRouteOnMap = false } = {}) {
     }
   } else {
     draft.name = values.name.trim();
-    draft.aircraftTypeId = values.aircraftTypeId;
-    draft.routeId = values.routeId;
+    const aircraftType = workspaceSession.aircraftTypes.types.find(
+      (candidate) => candidate.id === values.aircraftTypeId,
+    );
+    const route = workspaceSession.scenario.routes.find(
+      (candidate) => candidate.id === values.routeId,
+    );
+    const initialAltitudeMetres = Number(values.initialAltitudeMetres);
+    const initialSpeedMetresPerSecond = Number(values.initialSpeedMetresPerSecond);
+    const routeError = aircraftRouteCompatibilityError(aircraftType, route);
+    if (routeError) throw new Error(routeError);
+    const initialStateError = aircraftInitialStateCompatibilityError(
+      aircraftType,
+      initialAltitudeMetres,
+      initialSpeedMetresPerSecond,
+    );
+    if (initialStateError) throw new Error(initialStateError);
+    draft.aircraftTypeId = aircraftType.id;
+    draft.routeId = route.id;
     draft.color = values.color;
     draft.initialPosition = [Number(values.longitude), Number(values.latitude)];
-    draft.initialAltitudeMetres = Number(values.initialAltitudeMetres);
-    draft.initialSpeedMetresPerSecond = Number(values.initialSpeedMetresPerSecond);
+    draft.initialAltitudeMetres = initialAltitudeMetres;
+    draft.initialSpeedMetresPerSecond = initialSpeedMetresPerSecond;
     draft.state = values.state;
     if (editing.isNew) workspaceSession.scenario.aircraft.push(draft);
     else Object.assign(workspaceSession.scenario.aircraft.find((item) => item.id === editing.id), draft);
@@ -2925,10 +2985,37 @@ function renderWorkspaceEditor() {
       fields.append(group);
     }
   } else {
+    const aircraftTypeField = workspaceField(
+      "Aircraft type",
+      draft.aircraftTypeId,
+      { key: "aircraftTypeId", options: workspaceSession.aircraftTypes.types.map((item) => ({ value: item.id, label: item.displayName })) },
+    );
+    const routeField = workspaceField(
+      "Route",
+      draft.routeId,
+      { key: "routeId", options: workspaceSession.scenario.routes.map((item) => ({ value: item.id, label: item.name })) },
+    );
+    const enforceCompatibleAssignment = (changedField, previousValue) => {
+      const aircraftTypeId = aircraftTypeField.querySelector("select").value;
+      const routeId = routeField.querySelector("select").value;
+      const aircraftType = workspaceSession.aircraftTypes.types.find((item) => item.id === aircraftTypeId);
+      const route = workspaceSession.scenario.routes.find((item) => item.id === routeId);
+      const error = aircraftRouteCompatibilityError(aircraftType, route);
+      if (error) {
+        changedField.value = previousValue;
+        status.textContent = error;
+      }
+    };
+    aircraftTypeField.querySelector("select").addEventListener("change", (event) => {
+      enforceCompatibleAssignment(event.currentTarget, draft.aircraftTypeId);
+    });
+    routeField.querySelector("select").addEventListener("change", (event) => {
+      enforceCompatibleAssignment(event.currentTarget, draft.routeId);
+    });
     fields.append(
       workspaceField("Name", draft.name, { key: "name" }),
-      workspaceField("Aircraft type", draft.aircraftTypeId, { key: "aircraftTypeId", options: workspaceSession.aircraftTypes.types.map((item) => ({ value: item.id, label: item.displayName })) }),
-      workspaceField("Route", draft.routeId, { key: "routeId", options: workspaceSession.scenario.routes.map((item) => ({ value: item.id, label: item.name })) }),
+      aircraftTypeField,
+      routeField,
       workspaceField("Color", draft.color, { key: "color", type: "color" }),
       workspaceField("Longitude", draft.initialPosition[0], { key: "longitude", type: "number" }),
       workspaceField("Latitude", draft.initialPosition[1], { key: "latitude", type: "number" }),
@@ -4716,27 +4803,32 @@ async function refreshShapes() {
     return;
   }
   const results = await Promise.all(services.map(async (service) => {
+    const key = overlayKey(service);
+    const generation = (overlayFetchGenerations.get(key) ?? 0) + 1;
+    overlayFetchGenerations.set(key, generation);
     try {
       const response = await fetch(`${service.url}${service.endpoint}`);
       if (!response.ok) {
         throw new Error(`returned ${response.status}`);
       }
-      return { service, collection: await response.json() };
+      return { service, key, generation, collection: await response.json() };
     } catch (error) {
-      return { service, error };
+      return { service, key, generation, error };
     }
   }));
   const unavailableServices = [];
   const unavailableLiveData = [];
   for (const result of results) {
-    const key = overlayKey(result.service);
+    if (overlayFetchGenerations.get(result.key) !== result.generation) {
+      continue;
+    }
     if (result.error) {
       unavailableServices.push(result.service.url);
     } else {
       if (result.service.manifest?.serviceId === "tracks") {
         updateTrackPositionTransitions(result.collection);
       }
-      overlayCollections.set(key, result.collection);
+      overlayCollections.set(result.key, result.collection);
       if (typeof result.collection.source?.lastError === "string") {
         unavailableLiveData.push(`${overlayDisplayName(result.service)}: ${result.collection.source.lastError}`);
       }
@@ -5249,6 +5341,7 @@ async function loadConfiguration(restoreMapView = true) {
       endpoint: item.manifest?.dataEndpoint?.path ?? "/api/geojson",
       enabled: true,
     }));
+  scheduleLiveOverlayRefresh();
   workspaceServices = runningServices
     .filter((item) => item.type === "workspace")
     .filter((item) => item.manifest?.capabilities?.workspace);

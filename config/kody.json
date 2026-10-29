@@ -36,6 +36,11 @@
       "url": "http://127.0.0.1:8002/"
     },
     {
+      "id": "local-shape-server",
+      "type": "shapes",
+      "url": "http://127.0.0.1:8015/"
+    },
+    {
       "id": "local-track",
       "type": "geojson",
       "url": "http://127.0.0.1:8003/"
@@ -67,15 +72,15 @@
     }
   ],
   "mapView": {
-    "longitude": -3.0070378673347307,
-    "latitude": 53.35197938490064,
-    "zoom": 11.240000000000027,
+    "longitude": -3.3628698780815682,
+    "latitude": 53.10531268063021,
+    "zoom": 10.040000000000031,
     "layers": {
       "satelliteImagery": false,
-      "copernicus": false,
+      "copernicus": true,
       "terrain": false,
       "esaDem": false,
-      "worldcover": true,
+      "worldcover": false,
       "vectorMap": false,
       "grid": true,
       "gridCrosshair": true,
@@ -88,8 +93,9 @@
       "vectorOpacity": 2,
       "gridOpacity": 2,
       "dataSources": {
-        "local-shapes": true,
-        "local-track": false,
+        "local-shapes": false,
+        "local-shape-server": true,
+        "local-track": true,
         "local-adsb": false,
         "local-ais": false,
         "local-airlanes": false,
@@ -97,6 +103,7 @@
       },
       "dataSourceOpacity": {
         "local-shapes": 10,
+        "local-shape-server": 10,
         "local-track": 6,
         "local-adsb": 10,
         "local-ais": 7,
@@ -227,6 +234,22 @@
         "module": "kody_worldcover.server:app",
         "workingDirectory": "services/worldcover",
         "port": 8014,
+        "enabled": true
+      },
+      {
+        "id": "shape-server",
+        "displayName": "ShapeServer",
+        "module": "kody_shape_server.shape_server:app",
+        "workingDirectory": "services/shape-server",
+        "port": 8015,
+        "enabled": true
+      },
+      {
+        "id": "shape-server-test",
+        "displayName": "ShapeServerTest sample producer",
+        "module": "kody_shape_server_test.server:app",
+        "workingDirectory": "services/shape-server-test",
+        "port": 8016,
         "enabled": true
       }
     ]

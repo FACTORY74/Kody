@@ -1,0 +1,1 @@
+"""Kody ShapeServer sample producer."""

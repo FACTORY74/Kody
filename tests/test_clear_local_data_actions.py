@@ -22,6 +22,7 @@ class ClearLocalDataManifestTests(unittest.TestCase):
             "satmap": import_module("kody_satmap.server").get_manifest(),
             "terrain": import_module("kody_terrain.server").get_manifest(),
             "shapes": import_module("kody_shapes.shapes_service").get_manifest(),
+            "shape-server": import_module("kody_shape_server.shape_server").get_manifest(),
             "tracks": import_module("kody_tracks.track_service").get_manifest(),
             "adsb": import_module("kody_adsb.adsb_service").get_manifest(),
             "ais": import_module("kody_ais.ais_service").get_manifest(),

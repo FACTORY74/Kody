@@ -54,3 +54,7 @@ Use the Terrain cog to set **LOS bearings**, **LOS sample distance (metres)**,
 **LOS distance limit (metres)**, and **LOS observer height (metres)**. The
 default is 72 bearings, 250 metre samples, a 20 kilometre limit, and a 2 metre
 observer height. Only one LOS calculation can run at a time.
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

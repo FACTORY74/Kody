@@ -11,3 +11,7 @@ port 8016.
 It is enabled in the root launcher and targets `http://127.0.0.1:8015` by
 default. Set `KODY_SHAPE_SERVER_URL` before launching it to target another
 ShapeServer instance.
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

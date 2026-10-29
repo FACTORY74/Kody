@@ -46,3 +46,7 @@ python -m uvicorn kody_shapes.shapes_service:app --host 127.0.0.1 --port 8002
 
 Register `http://127.0.0.1:8002/` as an optional **Shapes** connection. The
 central product continues working if this service is absent.
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

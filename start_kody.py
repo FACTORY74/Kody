@@ -1,3 +1,14 @@
+# Kody — General-Purpose Mapping Application
+#
+# A Python-based mapping application with a JavaScript/HTML web interface and a plugin architecture for extending functionality.
+#
+# Copyright (c) 2026 Factory74
+#
+# SPDX-License-Identifier: MIT
+#
+# Distributed under the MIT License. See LICENSE for details.
+# Provided "AS IS", without warranty of any kind.
+
 """Start all enabled Kody services defined in the central runtime configuration."""
 
 from __future__ import annotations
@@ -76,11 +87,16 @@ def process_is_running(process_id: int) -> bool:
     if os.name == "nt":
         import ctypes
 
-        process_handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, process_id)
+        process_handle = ctypes.windll.kernel32.OpenProcess(0x00101000, False, process_id)
         if not process_handle:
             return False
-        ctypes.windll.kernel32.CloseHandle(process_handle)
-        return True
+        try:
+            exit_code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == 259
+        finally:
+            ctypes.windll.kernel32.CloseHandle(process_handle)
     try:
         os.kill(process_id, 0)
     except ProcessLookupError:

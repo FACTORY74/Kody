@@ -1,4 +1,17 @@
+# Kody — General-Purpose Mapping Application
+#
+# A Python-based mapping application with a JavaScript/HTML web interface and a plugin architecture for extending functionality.
+#
+# Copyright (c) 2026 Factory74
+#
+# SPDX-License-Identifier: MIT
+#
+# Distributed under the MIT License. See LICENSE for details.
+# Provided "AS IS", without warranty of any kind.
+
+import tempfile
 import unittest
+from pathlib import Path
 
 from fastapi import HTTPException
 
@@ -81,3 +94,28 @@ class SimulationTimeStoreTests(unittest.TestCase):
         self.assertEqual(events[3]["state"]["status"], "stopped")
         self.assertEqual(events[4]["state"]["revision"], reset["revision"])
         self.assertEqual(events[4]["state"]["elapsedSeconds"], 0.0)
+
+    def test_restores_running_clock_after_service_restart(self) -> None:
+        clock = [100.0]
+        wall_clock = [1_000.0]
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "sim-time.json"
+            original = SimulationTimeStore(
+                clock=lambda: clock[0],
+                wall_clock=lambda: wall_clock[0],
+                state_path=state_path,
+            )
+            original.apply_action(SimulationControlAction(action="start"), "0")
+            clock[0] += 5
+            wall_clock[0] += 5
+            self.assertEqual(original.response()["elapsedSeconds"], 5.0)
+
+            wall_clock[0] += 2
+            restarted = SimulationTimeStore(
+                clock=lambda: clock[0],
+                wall_clock=lambda: wall_clock[0],
+                state_path=state_path,
+            )
+
+            self.assertEqual(restarted.response()["elapsedSeconds"], 7.0)
+            self.assertEqual(restarted.response()["status"], "running")

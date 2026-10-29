@@ -22,6 +22,8 @@ The first startup writes two declarative catalogues beneath the configured
 - `tracks\aircraft-types.json` defines reusable aircraft limits and symbols.
 - `tracks\scenario.json` defines routes, straight-line legs, aircraft, and
   completion policies.
+- `tracks\runtime.json` is a service-managed checkpoint of live aircraft
+  progression. Do not edit it manually.
 
 `GET` and `PUT /api/tracks/aircraft-types` expose the aircraft-type catalogue.
 `GET` and `PUT /api/tracks/scenario` expose the scenario catalogue. Both
@@ -32,10 +34,8 @@ before it persists a scenario. Route target speeds are aspirational: during
 simulation, each aircraft clamps a target below or above its own speed range
 to its nearest valid speed.
 
-Opening TrackSimControl reloads both catalogues from disk. This makes
-external edits available without restarting the service. If either catalogue
-changed, the service validates the pair and resets the live simulation to its
-initial state.
+Catalogue changes are accepted through the revision-checked API. Opening
+TrackSimControl never reloads files or resets the live simulation.
 
 The GeoJSON layer publishes routes, selectable waypoints, live selectable
 aircraft, and rolling trails. Routes support `despawn`, `restart`, `loop`,
@@ -55,9 +55,13 @@ and the [common workspace design](../../workspaces/README.md).
 TrackSimControl depends on SimTimeControl for its authoritative elapsed time.
 The Tracks service reads `GET /api/sim-time` from the configured
 `KODY_SIM_TIME_SERVICE_URL` (default `http://127.0.0.1:8012`) whenever it
-updates published data or opens its workspace. TrackSim advances only while
-that shared elapsed time increases. If SimTimeControl resets to an earlier
-elapsed value, TrackSim resets every aircraft to its route's initial state.
+updates published data or opens its workspace. SimTimeControl persists its
+elapsed clock under `KODY_DATA_DIRECTORY`, and Tracks persists its
+scenario-matched runtime checkpoint. A normal service or launcher restart
+therefore resumes the shared clock and aircraft progression rather than
+returning tracks to their starts. TrackSim advances only while that shared
+elapsed time increases. An explicit SimTimeControl reset is the only clock
+rewind that resets every aircraft to its route's initial state.
 
 The former Tracks-local `PUT /api/tracks/simulation` and
 `POST /api/tracks/simulation/reset` endpoints now return `409`; consumers
@@ -93,3 +97,7 @@ waypoint handle is draggable, each drop persists immediately, and Escape
 returns to the Routes workspace pane rather than reopening the former
 scenario dialog. Route editors also provide Add waypoint and Remove controls;
 every route keeps at least two waypoints.
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

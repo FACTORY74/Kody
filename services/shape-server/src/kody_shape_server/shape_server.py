@@ -1,3 +1,14 @@
+# Kody — General-Purpose Mapping Application
+#
+# A Python-based mapping application with a JavaScript/HTML web interface and a plugin architecture for extending functionality.
+#
+# Copyright (c) 2026 Factory74
+#
+# SPDX-License-Identifier: MIT
+#
+# Distributed under the MIT License. See LICENSE for details.
+# Provided "AS IS", without warranty of any kind.
+
 """In-memory shapes, point containment events, and output delivery for Kody."""
 
 from __future__ import annotations
@@ -160,7 +171,7 @@ class ShapeServerConfiguration(BaseModel):
     queue_capacity: int = Field(default=250, alias="queueCapacity", ge=1, le=100_000)
     track_source_url: HttpUrl | None = Field(default="http://127.0.0.1:8003", alias="trackSourceUrl")
     track_poll_interval_milliseconds: int = Field(
-        default=1_000,
+        default=100,
         alias="trackPollIntervalMilliseconds",
         ge=100,
         le=60_000,

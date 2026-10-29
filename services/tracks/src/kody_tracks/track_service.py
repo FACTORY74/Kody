@@ -1,3 +1,14 @@
+# Kody — General-Purpose Mapping Application
+#
+# A Python-based mapping application with a JavaScript/HTML web interface and a plugin architecture for extending functionality.
+#
+# Copyright (c) 2026 Factory74
+#
+# SPDX-License-Identifier: MIT
+#
+# Distributed under the MIT License. See LICENSE for details.
+# Provided "AS IS", without warranty of any kind.
+
 """Persistent route-based aircraft simulation service for the Kody map."""
 
 from __future__ import annotations
@@ -19,10 +30,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
 
 TRAIL_DURATION_SECONDS = 300
+INTEGRATION_STEP_SECONDS = 1.0
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
 DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
 AIRCRAFT_TYPES_FILE = DATA_ROOT / "tracks" / "aircraft-types.json"
 SCENARIO_FILE = DATA_ROOT / "tracks" / "scenario.json"
+RUNTIME_FILE = DATA_ROOT / "tracks" / "runtime.json"
 CONFIG_FILE = ROOT_DIRECTORY / "config" / "tracks.json"
 SIM_TIME_SERVICE_URL = os.environ.get("KODY_SIM_TIME_SERVICE_URL", "http://127.0.0.1:8012").rstrip("/")
 CatalogueModel = TypeVar("CatalogueModel", bound=BaseModel)
@@ -46,7 +59,7 @@ CompletionPolicy = Literal["despawn", "restart", "loop", "hold", "reverse"]
 AircraftState = Literal["running", "paused"]
 
 
-def shared_simulation_seconds() -> float:
+def shared_simulation_clock() -> tuple[float, str]:
     try:
         with urlopen(f"{SIM_TIME_SERVICE_URL}/api/sim-time", timeout=1) as response:
             payload = json.load(response)
@@ -55,7 +68,14 @@ def shared_simulation_seconds() -> float:
     elapsed_seconds = payload.get("elapsedSeconds")
     if not isinstance(elapsed_seconds, (int, float)) or isinstance(elapsed_seconds, bool) or elapsed_seconds < 0:
         raise HTTPException(status_code=503, detail="SimTimeControl returned an invalid elapsed time")
-    return float(elapsed_seconds)
+    revision = payload.get("revision")
+    if not isinstance(revision, str) or not revision:
+        raise HTTPException(status_code=503, detail="SimTimeControl returned an invalid revision")
+    return float(elapsed_seconds), revision
+
+
+def shared_simulation_seconds() -> float:
+    return shared_simulation_clock()[0]
 
 
 class TracksConfiguration(BaseModel):
@@ -198,6 +218,16 @@ class FlightRuntime(BaseModel):
     trail: list[Coordinate] = Field(default_factory=list)
 
 
+class RuntimeCheckpoint(BaseModel):
+    schemaVersion: Literal[3] = 3
+    scenarioRevision: str = Field(min_length=1)
+    scenarioStartSeconds: float = Field(ge=0)
+    lastTick: float = Field(ge=0)
+    lastClockRevision: str = Field(min_length=1)
+    simulationSeconds: float = Field(ge=0)
+    runtime: dict[str, FlightRuntime]
+
+
 class SimulationControls(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -293,9 +323,11 @@ class TrackStore:
         scenario_path: Path = SCENARIO_FILE,
         clock: Callable[[], float] = time.time,
         configuration: TracksConfiguration | None = None,
+        runtime_path: Path | None = None,
     ) -> None:
         self.aircraft_types_path = aircraft_types_path
         self.scenario_path = scenario_path
+        self.runtime_path = runtime_path or scenario_path.with_name("runtime.json")
         self.clock = clock
         self.configuration = configuration or TracksConfiguration()
         self.lock = Lock()
@@ -303,11 +335,14 @@ class TrackStore:
         self.scenario = self._load_catalogue(scenario_path, ScenarioCatalogue, default_scenario())
         self._validate_scenario(self.scenario, self.aircraft_types)
         self.runtime: dict[str, FlightRuntime] = {}
-        self.last_tick: float | None = None
+        self.last_tick = 0.0
+        self.last_clock_revision = "0"
+        self.scenario_start_seconds = 0.0
         self.simulation_seconds = 0.0
         self.simulation_running = True
         self.simulation_control_revision = 0
-        self._reset_runtime("service-start")
+        self._last_persisted_tick: float | None = None
+        self._restore_runtime_checkpoint()
 
     @staticmethod
     def _load_catalogue(
@@ -350,6 +385,56 @@ class TrackStore:
     def _revision(self, catalogue: BaseModel) -> str:
         return hashlib.sha256(json.dumps(catalogue.model_dump(mode="json"), separators=(",", ":"), sort_keys=True).encode("utf-8")).hexdigest()
 
+    def _restore_runtime_checkpoint(self) -> None:
+        if not self.runtime_path.is_file():
+            self._reset_runtime("service-start")
+            return
+        try:
+            checkpoint_data = json.loads(self.runtime_path.read_text(encoding="utf-8"))
+            if checkpoint_data.get("schemaVersion") != 3:
+                LOGGER.info("TrackSim discarded a legacy runtime checkpoint without a scenario epoch")
+                self._reset_runtime("legacy-checkpoint")
+                return
+            checkpoint = RuntimeCheckpoint.model_validate(checkpoint_data)
+        except (OSError, ValidationError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"tracks runtime checkpoint is invalid: cannot read {self.runtime_path.name}") from error
+        expected_aircraft_ids = {aircraft.id for aircraft in self.scenario.aircraft}
+        if (
+            checkpoint.scenarioRevision != self._revision(self.scenario)
+            or set(checkpoint.runtime) != expected_aircraft_ids
+        ):
+            LOGGER.info("TrackSim discarded a runtime checkpoint that does not match the current scenario")
+            self._reset_runtime("scenario-checkpoint-mismatch")
+            return
+        self.runtime = checkpoint.runtime
+        self.scenario_start_seconds = checkpoint.scenarioStartSeconds
+        self.last_tick = checkpoint.lastTick
+        self.last_clock_revision = checkpoint.lastClockRevision
+        self.simulation_seconds = checkpoint.simulationSeconds
+        self._last_persisted_tick = checkpoint.lastTick
+        LOGGER.info(
+            "TrackSim restored runtime checkpoint at %.3f simulation seconds",
+            self.simulation_seconds,
+        )
+
+    def _persist_runtime_checkpoint(self, force: bool = False) -> None:
+        if (
+            not force
+            and self._last_persisted_tick is not None
+            and self.last_tick - self._last_persisted_tick < INTEGRATION_STEP_SECONDS
+        ):
+            return
+        checkpoint = RuntimeCheckpoint(
+            scenarioRevision=self._revision(self.scenario),
+            scenarioStartSeconds=self.scenario_start_seconds,
+            lastTick=self.last_tick,
+            lastClockRevision=self.last_clock_revision,
+            simulationSeconds=self.simulation_seconds,
+            runtime=self.runtime,
+        )
+        atomic_json_write(self.runtime_path, checkpoint.model_dump(mode="json"))
+        self._last_persisted_tick = self.last_tick
+
     def _reset_runtime(self, reason: str) -> None:
         LOGGER.warning(
             "TrackSim reset runtime: reason=%s, simulationSeconds=%.3f, lastTick=%s",
@@ -380,30 +465,6 @@ class TrackStore:
         with self.lock:
             self.configuration = configuration
 
-    def _reload_catalogues(self, now: float | None = None) -> None:
-        aircraft_types = self._load_catalogue(
-            self.aircraft_types_path,
-            AircraftTypeCatalogue,
-            default_aircraft_types(),
-        )
-        scenario = self._load_catalogue(
-            self.scenario_path,
-            ScenarioCatalogue,
-            default_scenario(),
-        )
-        self._validate_scenario(scenario, aircraft_types)
-        changed = (
-            self._revision(self.aircraft_types) != self._revision(aircraft_types)
-            or self._revision(self.scenario) != self._revision(scenario)
-        )
-        if not changed:
-            return
-        self.aircraft_types = aircraft_types
-        self.scenario       = scenario
-        self._reset_runtime("catalogue-reload")
-        self.last_tick           = self.clock() if now is None else now
-        self.simulation_seconds  = 0.0
-
     def aircraft_types_response(self) -> dict[str, object]:
         with self.lock:
             return {"revision": self._revision(self.aircraft_types), **self.aircraft_types.model_dump(mode="json")}
@@ -428,6 +489,7 @@ class TrackStore:
         scenario: ScenarioCatalogue,
         expected_revision: str | None,
         now: float | None = None,
+        clock_revision: str | None = None,
     ) -> None:
         with self.lock:
             if expected_revision is not None and expected_revision != self._revision(self.scenario):
@@ -440,26 +502,36 @@ class TrackStore:
             self.scenario = scenario
             self._reset_runtime("scenario-update")
             self.last_tick = self.clock() if now is None else now
+            self.last_clock_revision = clock_revision or self.last_clock_revision
+            self.scenario_start_seconds = self.last_tick
             self.simulation_seconds = 0.0
+            self._persist_runtime_checkpoint(force=True)
 
     def clear(self) -> None:
         self.update_scenario(ScenarioCatalogue(), None)
 
-    def simulation_response(self, now: float | None = None) -> dict[str, object]:
+    def simulation_response(
+        self,
+        now: float | None = None,
+        clock_revision: str | None = None,
+    ) -> dict[str, object]:
         with self.lock:
             if now is not None:
-                self._tick(now)
+                self._tick(now, clock_revision)
             return {
                 "revision": str(self.simulation_control_revision),
                 "running": self.simulation_running,
                 "elapsedSeconds": self.simulation_seconds,
             }
 
-    def workspace_response(self, now: float | None = None) -> dict[str, object]:
+    def workspace_response(
+        self,
+        now: float | None = None,
+        clock_revision: str | None = None,
+    ) -> dict[str, object]:
         with self.lock:
             if now is not None:
-                self._tick(now)
-            self._reload_catalogues(now)
+                self._tick(now, clock_revision)
             type_by_id = {aircraft_type.id: aircraft_type for aircraft_type in self.aircraft_types.types}
             scenario = self.scenario
             return {
@@ -565,7 +637,10 @@ class TrackStore:
             self._reset_runtime("explicit-reset")
             self.simulation_seconds = 0.0
             self.last_tick = self.clock()
+            self.last_clock_revision = "0"
+            self.scenario_start_seconds = self.last_tick
             self.simulation_control_revision += 1
+            self._persist_runtime_checkpoint(force=True)
 
     @staticmethod
     def _distance_and_bearing(origin: Coordinate, destination: Coordinate) -> tuple[float, float]:
@@ -665,11 +740,20 @@ class TrackStore:
             runtime.activeLegIndex += runtime.direction
             runtime.legStartPosition = list(runtime.position)
 
-    def _tick(self, now: float) -> None:
-        if self.last_tick is None:
-            self.last_tick = now
-            return
+    def _tick(self, now: float, clock_revision: str | None = None) -> None:
         if now < self.last_tick:
+            if (
+                clock_revision is not None
+                and self.last_clock_revision is not None
+                and clock_revision == self.last_clock_revision
+            ):
+                LOGGER.info(
+                    "TrackSim ignored stale SimTimeControl sample %.9f after %.9f at revision %s",
+                    now,
+                    self.last_tick,
+                    clock_revision,
+                )
+                return
             LOGGER.warning(
                 "TrackSim reset runtime because SimTimeControl moved backwards from %.3f to %.3f seconds",
                 self.last_tick,
@@ -678,25 +762,40 @@ class TrackStore:
             self._reset_runtime("sim-time-backwards")
             self.simulation_seconds = 0.0
             self.last_tick = now
+            self.last_clock_revision = clock_revision or self.last_clock_revision
+            self.scenario_start_seconds = now
             self.simulation_control_revision += 1
+            self._persist_runtime_checkpoint(force=True)
             return
-        elapsed = min(max(now - self.last_tick, 0), 10)
+        elapsed = now - self.last_tick
         self.last_tick = now
+        if clock_revision is not None:
+            self.last_clock_revision = clock_revision
         if not self.simulation_running:
+            self._persist_runtime_checkpoint()
             return
-        self.simulation_seconds += elapsed
         routes = {route.id: route for route in self.scenario.routes}
-        for aircraft in self.scenario.aircraft:
-            runtime = self.runtime[aircraft.id]
-            self._advance_leg(runtime, routes[aircraft.routeId], aircraft, elapsed)
-            runtime.trail.append(list(runtime.position))
-            maximum_samples = self.configuration.trail_duration_seconds + 1
-            if len(runtime.trail) > maximum_samples:
-                del runtime.trail[:-maximum_samples]
+        remaining = elapsed
+        while remaining > 0:
+            step = min(remaining, INTEGRATION_STEP_SECONDS)
+            self.simulation_seconds += step
+            for aircraft in self.scenario.aircraft:
+                runtime = self.runtime[aircraft.id]
+                self._advance_leg(runtime, routes[aircraft.routeId], aircraft, step)
+                runtime.trail.append(list(runtime.position))
+                maximum_samples = self.configuration.trail_duration_seconds + 1
+                if len(runtime.trail) > maximum_samples:
+                    del runtime.trail[:-maximum_samples]
+            remaining -= step
+        self._persist_runtime_checkpoint()
 
-    def response(self, now: float | None = None) -> dict[str, object]:
+    def response(
+        self,
+        now: float | None = None,
+        clock_revision: str | None = None,
+    ) -> dict[str, object]:
         with self.lock:
-            self._tick(self.clock() if now is None else now)
+            self._tick(self.clock() if now is None else now, clock_revision)
             routes = {route.id: route for route in self.scenario.routes}
             types = {item.id: item for item in self.aircraft_types.types}
             features: list[dict[str, object]] = []
@@ -842,7 +941,8 @@ def update_configuration(configuration: TracksConfiguration, if_match: str | Non
 
 @app.get("/api/workspace")
 def get_workspace() -> dict[str, object]:
-    return track_store.workspace_response(shared_simulation_seconds())
+    elapsed_seconds, clock_revision = shared_simulation_clock()
+    return track_store.workspace_response(elapsed_seconds, clock_revision)
 
 
 @app.get("/api/tracks/aircraft-types")
@@ -863,13 +963,15 @@ def get_scenario() -> dict[str, object]:
 
 @app.put("/api/tracks/scenario")
 def update_scenario(scenario: ScenarioCatalogue = Body(...), if_match: str | None = Header(default=None)) -> dict[str, object]:
-    track_store.update_scenario(scenario, if_match, shared_simulation_seconds())
+    elapsed_seconds, clock_revision = shared_simulation_clock()
+    track_store.update_scenario(scenario, if_match, elapsed_seconds, clock_revision)
     return track_store.scenario_response()
 
 
 @app.get("/api/tracks/simulation")
 def get_simulation() -> dict[str, object]:
-    return track_store.simulation_response(shared_simulation_seconds())
+    elapsed_seconds, clock_revision = shared_simulation_clock()
+    return track_store.simulation_response(elapsed_seconds, clock_revision)
 
 
 @app.put("/api/tracks/simulation")
@@ -893,4 +995,5 @@ def clear_local_data() -> dict[str, str]:
 
 @app.get("/api/geojson")
 def get_track() -> dict[str, object]:
-    return track_store.response(shared_simulation_seconds())
+    elapsed_seconds, clock_revision = shared_simulation_clock()
+    return track_store.response(elapsed_seconds, clock_revision)

@@ -29,3 +29,7 @@ dotted rectangular boundary and filters returned positions and trails to it, so
 the visible vessel area matches the subscribed service area exactly. The
 **Subscription half-size (km)** setting is the distance from the configured
 centre to each north/south edge; longitude span is adjusted for latitude.
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

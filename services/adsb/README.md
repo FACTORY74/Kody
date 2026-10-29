@@ -37,3 +37,7 @@ address.
 
 Use **ADS-B live flights → Set Origin Here** from the map context menu to move
 the local ADS-B search centre to the selected map point.
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

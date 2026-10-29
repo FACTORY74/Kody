@@ -42,3 +42,7 @@ build parent tiles for imagery already in the local cache.
 **Download Viewport At 10m** covers the current viewport with zoom-14 local
 tiles and requests imagery no finer than the Global Mosaic's native 10m
 resolution. It then generates the lower-zoom tile pyramid when enabled.
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

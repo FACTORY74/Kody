@@ -40,6 +40,14 @@ each enabled GeoJSON layer every second; ShapeServer increments the collection
 revision on every create, update, delete, or clear, so the map redraws the
 current shapes after the next refresh.
 
+When configured with its default TrackSim source, ShapeServer polls TrackSim
+every 100 ms (10 Hz) and submits each track position through the same bounded
+event queue. This improves detection for brief track/shape crossings while
+the configured processing-rate and queue-capacity limits continue to protect
+the service. A repeated containment callback for the same track/shape pair
+updates the InteractionLayer circle to the newer point and renews its
+one-second lifetime.
+
 ```powershell
 Set-Location services\shape-server
 python -m venv .venv
@@ -48,3 +56,7 @@ pip install -r requirements.txt
 $env:PYTHONPATH = "$PWD\src"
 python -m uvicorn kody_shape_server.shape_server:app --host 127.0.0.1 --port 8015
 ```
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

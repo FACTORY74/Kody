@@ -29,3 +29,7 @@ subscriber receives a `state` event immediately, then receives ordered
 receives a `sync` event at the configured update rate. Every
 event body is the current simulation state, and transition events include an
 SSE event ID for reconnection.
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

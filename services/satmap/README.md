@@ -26,3 +26,7 @@ disable it when staging native imagery without generating its previews.
 
 Use **Build overview tiles** from the Satellite map cog to create the same
 ancestor pyramid for imagery already present in the library.
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

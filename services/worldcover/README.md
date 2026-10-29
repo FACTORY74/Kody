@@ -16,3 +16,7 @@ pip install -r requirements.txt
 $env:PYTHONPATH = "$PWD\src"
 python -m uvicorn kody_worldcover.server:app --host 127.0.0.1 --port 8014
 ```
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

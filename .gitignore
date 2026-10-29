@@ -7,6 +7,8 @@
 /data_starter/terrain
 /data_starter/vecmap/maps
 /data_starter/vecmap/imports
+/data_starter/sim-time.json
+/data_starter/tracks/runtime.json
 /config/copernicus.json
 /services/vecmap/data/vecmap/maps
 *.gpkg

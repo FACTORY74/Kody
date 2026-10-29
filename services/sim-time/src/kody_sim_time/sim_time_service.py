@@ -1,10 +1,23 @@
+# Kody — General-Purpose Mapping Application
+#
+# A Python-based mapping application with a JavaScript/HTML web interface and a plugin architecture for extending functionality.
+#
+# Copyright (c) 2026 Factory74
+#
+# SPDX-License-Identifier: MIT
+#
+# Distributed under the MIT License. See LICENSE for details.
+# Provided "AS IS", without warranty of any kind.
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import RLock
 from typing import AsyncIterator, Callable, Literal
 
@@ -14,6 +27,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 LOGGER = logging.getLogger(__name__)
+ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
+DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
+STATE_FILE = DATA_ROOT / "sim-time.json"
 
 
 class SimulationControlAction(BaseModel):
@@ -24,23 +40,70 @@ class SimulationUpdateRate(BaseModel):
     updates_per_second: int = Field(alias="updatesPerSecond", ge=1, le=60)
 
 
+class PersistedSimulationTime(BaseModel):
+    schemaVersion: Literal[1] = 1
+    elapsedSeconds: float = Field(ge=0)
+    updatesPerSecond: float = Field(ge=1, le=60)
+    status: Literal["stopped", "running", "paused"]
+    revision: int = Field(ge=0)
+    savedAtUnixSeconds: float = Field(ge=0)
+
+
 class SimulationTimeStore:
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+        state_path: Path | None = None,
+    ) -> None:
         self._clock = clock
+        self._wall_clock = wall_clock
+        self._state_path = state_path
         self._lock = RLock()
-        self._elapsed_seconds = 0.0
-        self._updates_per_second = 1.0
-        self._status: Literal["stopped", "running", "paused"] = "stopped"
+        persisted = self._load_state()
+        self._elapsed_seconds = persisted.elapsedSeconds if persisted else 0.0
+        self._updates_per_second = persisted.updatesPerSecond if persisted else 1.0
+        self._status: Literal["stopped", "running", "paused"] = persisted.status if persisted else "stopped"
+        if persisted and self._status == "running":
+            self._elapsed_seconds += max(0.0, self._wall_clock() - persisted.savedAtUnixSeconds)
         self._last_updated = clock()
-        self._revision = 0
+        self._revision = persisted.revision if persisted else 0
+        self._last_persisted_elapsed_seconds = self._elapsed_seconds
         self._event_id = 0
         self._events: list[dict[str, object]] = []
+        self._persist()
+
+    def _load_state(self) -> PersistedSimulationTime | None:
+        if self._state_path is None or not self._state_path.is_file():
+            return None
+        try:
+            return PersistedSimulationTime.model_validate_json(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise RuntimeError(f"simulation-time state is invalid: cannot read {self._state_path.name}") from error
+
+    def _persist(self) -> None:
+        if self._state_path is None:
+            return
+        state = PersistedSimulationTime(
+            elapsedSeconds=self._elapsed_seconds,
+            updatesPerSecond=self._updates_per_second,
+            status=self._status,
+            revision=self._revision,
+            savedAtUnixSeconds=self._wall_clock(),
+        )
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+        temporary_path.write_text(state.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        temporary_path.replace(self._state_path)
+        self._last_persisted_elapsed_seconds = self._elapsed_seconds
 
     def _advance(self) -> None:
         now = self._clock()
         if self._status == "running":
             self._elapsed_seconds += max(0.0, now - self._last_updated)
         self._last_updated = now
+        if abs(self._elapsed_seconds - self._last_persisted_elapsed_seconds) >= 1:
+            self._persist()
 
     def response(self) -> dict[str, object]:
         with self._lock:
@@ -88,6 +151,7 @@ class SimulationTimeStore:
                 )
             self._status = next_status
             self._revision += 1
+            self._persist()
             self._record_event({
                 "start": "started",
                 "pause": "paused",
@@ -104,6 +168,7 @@ class SimulationTimeStore:
             if update.updates_per_second != self._updates_per_second:
                 self._updates_per_second = update.updates_per_second
                 self._revision += 1
+                self._persist()
                 self._record_event("rate-changed")
             return self._state()
 
@@ -113,6 +178,7 @@ class SimulationTimeStore:
             self._status = "stopped"
             self._last_updated = self._clock()
             self._revision += 1
+            self._persist()
             self._record_event("reset")
             return self._state()
 
@@ -122,7 +188,7 @@ class SimulationTimeStore:
             return [event for event in self._events if event["id"] > event_id]
 
 
-store = SimulationTimeStore()
+store = SimulationTimeStore(state_path=STATE_FILE)
 app = FastAPI(title="Kody Simulation Time Service", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,

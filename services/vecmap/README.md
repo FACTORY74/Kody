@@ -58,3 +58,7 @@ layer name, so this depth styling also applies without a reimport.
 Natural Earth data is public domain. Satellite imagery and terrain are
 independently owned by [`services/satmap`](../satmap/README.md) and
 [`services/terrain`](../terrain/README.md).
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

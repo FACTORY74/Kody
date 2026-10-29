@@ -45,3 +45,7 @@ course-orientable symbols for `sailboat`, `yacht`, `fishing_boat`, `tug`,
 `high_speed_craft`, `military_ship`, `law_enforcement_boat`, and
 `service_boat`. AIS category mapping can select these names when static vessel
 type data is available.
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

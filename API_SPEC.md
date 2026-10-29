@@ -16,6 +16,28 @@ services MUST implement the normative contract below. Existing services SHOULD
 migrate their manifests and endpoints to it before the central map client
 removes its legacy adapters.
 
+## Service endpoint inventories
+
+This specification defines common contracts. The complete REST endpoint
+inventory for each deployed service is maintained alongside that service:
+
+- [ADS-B](./services/adsb/API.md)
+- [AirLanes](./services/airlanes/API.md)
+- [AIS](./services/ais/API.md)
+- [Copernicus](./services/copernicus/API.md)
+- [ESA DEM](./services/esa-dem/API.md)
+- [InteractionServer](./services/interaction-server/API.md)
+- [SatMap](./services/satmap/API.md)
+- [Shapes](./services/shapes/API.md)
+- [ShapeServer](./services/shape-server/API.md)
+- [ShapeServerTest](./services/shape-server-test/API.md)
+- [SimTimeControl](./services/sim-time/API.md)
+- [Symbols](./services/symbols/API.md)
+- [Terrain](./services/terrain/API.md)
+- [TrackSim](./services/tracks/API.md)
+- [VecMap](./services/vecmap/API.md)
+- [WorldCover](./services/worldcover/API.md)
+
 ## 1. General rules
 
 ### 1.1 Base URL and transport

@@ -15,6 +15,9 @@ All map microservices implement, or are migrating to, the shared
 [microservice API specification](./API_SPEC.md). New services must follow this
 contract rather than add central-map service-specific interfaces.
 
+Each service directory also contains an `API.md` endpoint inventory; the
+[service endpoint index](./API_SPEC.md#service-endpoint-inventories) links to
+all of them.
 
 - [`kody`](./kody/README.md) — central browser UI and configuration service
 - [`services/vecmap`](./services/vecmap/README.md) — offline vector map API, data, and package tooling

@@ -1,3 +1,15 @@
+# Kody — General-Purpose Mapping Application
+#
+# A Python-based mapping application with a JavaScript/HTML web interface and a plugin architecture for extending functionality.
+#
+# Copyright (c) 2026 Factory74
+#
+# SPDX-License-Identifier: MIT
+#
+# Distributed under the MIT License. See LICENSE for details.
+# Provided "AS IS", without warranty of any kind.
+
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -62,7 +74,7 @@ class TrackStoreTests(unittest.TestCase):
         store.update_scenario(ScenarioCatalogue(), None)
         store.update_aircraft_types(aircraft_types(), None)
 
-    def test_first_authoritative_tick_establishes_clock_baseline(self) -> None:
+    def test_first_authoritative_tick_replays_from_simulation_origin(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = TrackStore(root / "types.json", root / "scenario.json", clock=lambda: 1_000.0)
@@ -70,7 +82,51 @@ class TrackStoreTests(unittest.TestCase):
             store._tick(25.0)
 
             self.assertEqual(store.last_tick, 25.0)
-            self.assertEqual(store.simulation_seconds, 0.0)
+            self.assertEqual(store.simulation_seconds, 25.0)
+
+    def test_discards_legacy_checkpoint_and_replays_from_simulation_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = TrackStore(root / "types.json", root / "scenario.json", clock=lambda: 0.0)
+            self.configure_test_catalogues(original)
+            original.update_scenario(scenario(), None, now=0)
+            original.response(now=5)
+
+            checkpoint_path = root / "runtime.json"
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            checkpoint["schemaVersion"] = 1
+            checkpoint.pop("scenarioStartSeconds")
+            checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+            restarted = TrackStore(root / "types.json", root / "scenario.json", clock=lambda: 20.0)
+            restarted.response(now=20)
+
+            self.assertEqual(restarted.simulation_seconds, 20.0)
+            self.assertNotEqual(restarted.runtime["aircraft-1"].position, [0, 0])
+
+    def test_restores_runtime_checkpoint_after_service_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clock = [100.0]
+            original = TrackStore(root / "types.json", root / "scenario.json", clock=lambda: clock[0])
+            self.configure_test_catalogues(original)
+            original.update_scenario(scenario(), None, now=clock[0])
+            clock[0] += 3
+            moved = original.response()
+            moved_position = next(
+                item for item in moved["features"] if item["id"] == "track:aircraft-1"
+            )["geometry"]["coordinates"]
+
+            restarted = TrackStore(root / "types.json", root / "scenario.json", clock=lambda: clock[0])
+            clock[0] += 1
+            resumed = restarted.response()
+            resumed_position = next(
+                item for item in resumed["features"] if item["id"] == "track:aircraft-1"
+            )["geometry"]["coordinates"]
+
+            self.assertNotEqual(moved_position, [0, 0])
+            self.assertNotEqual(resumed_position, [0, 0])
+            self.assertGreater(restarted.simulation_seconds, original.simulation_seconds)
 
     def test_persists_catalogues_and_renders_route_waypoints_aircraft_and_trail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -239,6 +295,31 @@ class TrackStoreTests(unittest.TestCase):
             self.assertEqual(reset_position, [0, 0])
             self.assertEqual(store.simulation_response()["elapsedSeconds"], 0)
 
+    def test_ignores_out_of_order_clock_samples_at_the_same_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = TrackStore(root / "types.json", root / "scenario.json", clock=lambda: 0.0)
+            self.configure_test_catalogues(store)
+            store.update_scenario(scenario(), None, now=0, clock_revision="1")
+            current = store.response(now=10, clock_revision="1")
+            current_position = next(
+                item for item in current["features"] if item["id"] == "track:aircraft-1"
+            )["geometry"]["coordinates"]
+
+            stale = store.response(now=9.999, clock_revision="1")
+            stale_position = next(
+                item for item in stale["features"] if item["id"] == "track:aircraft-1"
+            )["geometry"]["coordinates"]
+
+            self.assertEqual(stale_position, current_position)
+            self.assertEqual(store.simulation_seconds, 10)
+
+            reset = store.response(now=0, clock_revision="2")
+            reset_position = next(
+                item for item in reset["features"] if item["id"] == "track:aircraft-1"
+            )["geometry"]["coordinates"]
+            self.assertEqual(reset_position, [0, 0])
+
     def test_scenario_update_uses_the_authoritative_simulation_clock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             clock = [1_000.0]
@@ -253,20 +334,25 @@ class TrackStoreTests(unittest.TestCase):
             self.assertEqual(store.simulation_response()["elapsedSeconds"], 1)
             self.assertNotEqual(aircraft["geometry"]["coordinates"], [0, 0])
 
-    def test_opening_workspace_reloads_catalogues_from_disk(self) -> None:
+    def test_opening_workspace_does_not_reload_catalogues_or_reset_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            store = TrackStore(root / "types.json", root / "scenario.json")
+            clock = [1_000.0]
+            store = TrackStore(root / "types.json", root / "scenario.json", clock=lambda: clock[0])
             self.configure_test_catalogues(store)
-            store.update_scenario(scenario(), None)
+            store.update_scenario(scenario(), None, now=clock[0])
             reloaded_types = aircraft_types()
             reloaded_types.types[0].displayName = "Reloaded test plane"
             store.aircraft_types_path.write_text(
                 reloaded_types.model_dump_json(indent=2),
                 encoding="utf-8",
             )
+            clock[0] += 2
 
-            with patch.object(track_service, "track_store", store):
+            with (
+                patch.object(track_service, "track_store", store),
+                patch.object(track_service, "shared_simulation_clock", return_value=(clock[0], "1")),
+            ):
                 client = TestClient(track_service.app)
                 workspace = client.get("/api/workspace")
                 types     = client.get("/api/tracks/aircraft-types")
@@ -274,10 +360,11 @@ class TrackStoreTests(unittest.TestCase):
             self.assertEqual(workspace.status_code, 200)
             self.assertEqual(
                 workspace.json()["panes"][1]["summary"]["items"][0]["title"],
-                "Reloaded test plane",
+                "Test plane",
             )
             self.assertEqual(types.status_code, 200)
-            self.assertEqual(types.json()["types"][0]["displayName"], "Reloaded test plane")
+            self.assertEqual(types.json()["types"][0]["displayName"], "Test plane")
+            self.assertGreater(store.simulation_seconds, 0)
 
     def test_endpoints_expose_persisted_scenario_capability(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

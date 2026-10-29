@@ -39,3 +39,7 @@ Set-Location services\airlanes
 $env:PYTHONPATH = "$PWD\src"
 python -m uvicorn kody_airlanes.airlanes_service:app --host 127.0.0.1 --port 8009
 ```
+
+## REST API
+
+See the complete endpoint inventory in [API.md](./API.md).

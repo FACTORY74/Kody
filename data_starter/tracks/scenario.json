@@ -1,0 +1,183 @@
+{
+  "schemaVersion": 1,
+  "routes": [
+    {
+      "id": "south-coast-patrol",
+      "name": "South coast patrol",
+      "color": "#38c8ec",
+      "completionPolicy": "loop",
+      "legs": [
+        {
+          "id": "leg-a",
+          "name": "WP01",
+          "waypoint": [
+            -0.7032932415918935,
+            51.28465027865616
+          ],
+          "targetAltitudeMetres": 1200.0,
+          "targetSpeedMetresPerSecond": 100.0
+        },
+        {
+          "id": "leg-b",
+          "name": "WP02",
+          "waypoint": [
+            -0.7612461392150749,
+            51.226894090321004
+          ],
+          "targetAltitudeMetres": 1400.0,
+          "targetSpeedMetresPerSecond": 100.0
+        },
+        {
+          "id": "waypoint-25c605ac-f302-4fa2-a20c-8266bdd31919",
+          "name": "WP03",
+          "waypoint": [
+            -0.6357926947786723,
+            51.211032550879715
+          ],
+          "targetAltitudeMetres": 1400.0,
+          "targetSpeedMetresPerSecond": 100.0
+        },
+        {
+          "id": "leg-c",
+          "name": "WP04",
+          "waypoint": [
+            -0.6563001574762382,
+            51.24452131805235
+          ],
+          "targetAltitudeMetres": 1800.0,
+          "targetSpeedMetresPerSecond": 100.0
+        },
+        {
+          "id": "leg-d",
+          "name": "WP05",
+          "waypoint": [
+            -0.590360772603816,
+            51.266438822754786
+          ],
+          "targetAltitudeMetres": 1300.0,
+          "targetSpeedMetresPerSecond": 100.0
+        }
+      ]
+    },
+    {
+      "id": "route-0fce34ec-2093-48cd-a264-57b518350252",
+      "name": "New route",
+      "color": "#38c8ec",
+      "completionPolicy": "loop",
+      "legs": [
+        {
+          "id": "waypoint-1",
+          "name": "WP01",
+          "waypoint": [
+            -1.0213107388804303,
+            51.35009672015696
+          ],
+          "targetAltitudeMetres": 1000.0,
+          "targetSpeedMetresPerSecond": 80.0
+        },
+        {
+          "id": "waypoint-0ed008fa-c489-4d42-8c2a-f8fe519f450a",
+          "name": "WP02",
+          "waypoint": [
+            -1.0305982144219286,
+            51.31517461574995
+          ],
+          "targetAltitudeMetres": 1000.0,
+          "targetSpeedMetresPerSecond": 80.0
+        },
+        {
+          "id": "waypoint-2",
+          "name": "WP03",
+          "waypoint": [
+            -0.9839042897284571,
+            51.32661069291274
+          ],
+          "targetAltitudeMetres": 1000.0,
+          "targetSpeedMetresPerSecond": 80.0
+        }
+      ]
+    },
+    {
+      "id": "route-72644b99-7315-4f69-9ff5-cb8e2876e0c7",
+      "name": "Intersection Route",
+      "color": "#38c8ec",
+      "completionPolicy": "loop",
+      "legs": [
+        {
+          "id": "waypoint-1",
+          "name": "WP01",
+          "waypoint": [
+            -3.456096424091129,
+            53.06140654200207
+          ],
+          "targetAltitudeMetres": 1000.0,
+          "targetSpeedMetresPerSecond": 74.0
+        },
+        {
+          "id": "waypoint-17ae0ce3-3a94-46cf-8408-a87a0f4205e6",
+          "name": "WP02",
+          "waypoint": [
+            -3.3008150077564267,
+            53.106165760413816
+          ],
+          "targetAltitudeMetres": 1000.0,
+          "targetSpeedMetresPerSecond": 80.0
+        },
+        {
+          "id": "waypoint-2",
+          "name": "WP02",
+          "waypoint": [
+            -3.45450149289087,
+            53.19263155582887
+          ],
+          "targetAltitudeMetres": 1000.0,
+          "targetSpeedMetresPerSecond": 80.0
+        }
+      ]
+    }
+  ],
+  "aircraft": [
+    {
+      "id": "patrol-01",
+      "name": "Patrol 01",
+      "aircraftTypeId": "light-turboprop",
+      "routeId": "south-coast-patrol",
+      "color": "#ffd166",
+      "initialPosition": [
+        -0.72,
+        51.28
+      ],
+      "initialAltitudeMetres": 1200.0,
+      "initialSpeedMetresPerSecond": 80.0,
+      "state": "running"
+    },
+    {
+      "id": "aircraft-a87c491e-3929-4cd3-a777-5560f133bee7",
+      "name": "Extra 300",
+      "aircraftTypeId": "type-e903a2a7-1aff-4f62-8875-5e42889f400d",
+      "routeId": "route-0fce34ec-2093-48cd-a264-57b518350252",
+      "color": "#ffffff",
+      "initialPosition": [
+        -0.7032932415918935,
+        51.28465027865616
+      ],
+      "initialAltitudeMetres": 1200.0,
+      "initialSpeedMetresPerSecond": 100.0,
+      "state": "running"
+    },
+    {
+      "id": "aircraft-14640689-0815-4e59-8bc7-c12c3f8ea7c2",
+      "name": "Cessna",
+      "aircraftTypeId": "light-turboprop",
+      "routeId": "route-72644b99-7315-4f69-9ff5-cb8e2876e0c7",
+      "color": "#37ff00",
+      "initialPosition": [
+        -0.7032932415918935,
+        51.28465027865616
+      ],
+      "initialAltitudeMetres": 1200.0,
+      "initialSpeedMetresPerSecond": 63.0,
+      "state": "running"
+    }
+  ]
+}

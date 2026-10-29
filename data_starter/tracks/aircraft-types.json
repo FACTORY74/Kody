@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "types": [
+    {
+      "id": "light-turboprop",
+      "displayName": "Light turboprop",
+      "symbol": "plane",
+      "limits": {
+        "minimumSpeedMetresPerSecond": 55.0,
+        "maximumSpeedMetresPerSecond": 150.0,
+        "minimumAltitudeMetres": 0.0,
+        "maximumAltitudeMetres": 9000.0,
+        "maximumClimbRateMetresPerSecond": 12.0,
+        "maximumDescentRateMetresPerSecond": 15.0,
+        "maximumTurnRateDegreesPerSecond": 3.5,
+        "maximumBankAngleDegrees": 30.0,
+        "maximumAccelerationMetresPerSecondSquared": 2.5,
+        "maximumDecelerationMetresPerSecondSquared": 3.5
+      }
+    },
+    {
+      "id": "type-e903a2a7-1aff-4f62-8875-5e42889f400d",
+      "displayName": "Extra 300",
+      "symbol": "plane",
+      "limits": {
+        "minimumSpeedMetresPerSecond": 30.0,
+        "maximumSpeedMetresPerSecond": 110.0,
+        "minimumAltitudeMetres": 0.0,
+        "maximumAltitudeMetres": 5000.0,
+        "maximumClimbRateMetresPerSecond": 18.0,
+        "maximumDescentRateMetresPerSecond": 20.0,
+        "maximumTurnRateDegreesPerSecond": 18.0,
+        "maximumBankAngleDegrees": 75.0,
+        "maximumAccelerationMetresPerSecondSquared": 6.0,
+        "maximumDecelerationMetresPerSecondSquared": 6.0
+      }
+    },
+    {
+      "id": "type-ba42b7df-f3ec-4ebc-b624-e483aa915331",
+      "displayName": "Cessna 172",
+      "symbol": "plane",
+      "limits": {
+        "minimumSpeedMetresPerSecond": 24.0,
+        "maximumSpeedMetresPerSecond": 63.0,
+        "minimumAltitudeMetres": 0.0,
+        "maximumAltitudeMetres": 4100.0,
+        "maximumClimbRateMetresPerSecond": 3.7,
+        "maximumDescentRateMetresPerSecond": 5.0,
+        "maximumTurnRateDegreesPerSecond": 3.5,
+        "maximumBankAngleDegrees": 60.0,
+        "maximumAccelerationMetresPerSecondSquared": 1.4,
+        "maximumDecelerationMetresPerSecondSquared": 2.0
+      }
+    },
+    {
+      "id": "type-3ab2c18f-5dcd-41f7-96ae-24458478e19f",
+      "displayName": "Pavania Tornado",
+      "symbol": "plane",
+      "limits": {
+        "minimumSpeedMetresPerSecond": 70.0,
+        "maximumSpeedMetresPerSecond": 650.0,
+        "minimumAltitudeMetres": 0.0,
+        "maximumAltitudeMetres": 15000.0,
+        "maximumClimbRateMetresPerSecond": 70.0,
+        "maximumDescentRateMetresPerSecond": 100.0,
+        "maximumTurnRateDegreesPerSecond": 12.0,
+        "maximumBankAngleDegrees": 67.0,
+        "maximumAccelerationMetresPerSecondSquared": 14.0,
+        "maximumDecelerationMetresPerSecondSquared": 10.0
+      }
+    },
+    {
+      "id": "type-6bdf3426-ad46-4563-b37e-7895f1908c8a",
+      "displayName": "Airbus A300M",
+      "symbol": "plane",
+      "limits": {
+        "minimumSpeedMetresPerSecond": 60.0,
+        "maximumSpeedMetresPerSecond": 235.0,
+        "minimumAltitudeMetres": 0.0,
+        "maximumAltitudeMetres": 11300.0,
+        "maximumClimbRateMetresPerSecond": 10.0,
+        "maximumDescentRateMetresPerSecond": 15.0,
+        "maximumTurnRateDegreesPerSecond": 2.5,
+        "maximumBankAngleDegrees": 45.0,
+        "maximumAccelerationMetresPerSecondSquared": 1.5,
+        "maximumDecelerationMetresPerSecondSquared": 2.5
+      }
+    }
+  ]
+}

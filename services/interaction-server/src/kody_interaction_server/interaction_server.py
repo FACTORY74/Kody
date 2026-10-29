@@ -9,7 +9,12 @@
 # Distributed under the MIT License. See LICENSE for details.
 # Provided "AS IS", without warranty of any kind.
 
-"""Temporary map markers for ShapeServer track-containment callbacks."""
+"""Render short-lived map markers for ShapeServer containment callbacks.
+
+Each incoming track/shape match becomes a 500 metre GeoJSON circle. Repeated
+matches for the same track and shape replace the marker at its latest position
+and extend its one-second lifetime.
+"""
 
 from __future__ import annotations
 
@@ -48,11 +53,13 @@ class ActiveInteraction:
 
 
 def circle_coordinates(longitude: float, latitude: float) -> list[list[float]]:
+    """Approximate the configured-radius circle as a closed GeoJSON polygon ring."""
     origin_latitude = math.radians(latitude)
     origin_longitude = math.radians(longitude)
     angular_distance = CIRCLE_RADIUS_METRES / EARTH_RADIUS_METRES
     coordinates: list[list[float]] = []
     for index in range(CIRCLE_SEGMENTS + 1):
+        # Include the final zero-bearing point so the GeoJSON ring is closed.
         bearing = math.tau * index / CIRCLE_SEGMENTS
         point_latitude = math.asin(
             math.sin(origin_latitude) * math.cos(angular_distance)
@@ -67,6 +74,8 @@ def circle_coordinates(longitude: float, latitude: float) -> list[list[float]]:
 
 
 class InteractionStore:
+    """Thread-safe storage for active, automatically expiring interactions."""
+
     def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self.clock = clock
         self.lock = Lock()
@@ -74,6 +83,7 @@ class InteractionStore:
 
     @staticmethod
     def _key(event: InteractionEvent) -> str:
+        """Return the stable key shared by repeated matches for one track/shape pair."""
         point_event = event.event
         shape_properties = event.shape.get("properties")
         shape_id = (
@@ -86,21 +96,26 @@ class InteractionStore:
             raise ValueError("interaction event must include event.eventId")
         if not isinstance(shape_id, str) or not shape_id:
             raise ValueError("interaction event must include shape.properties.shapeId")
+        # The key intentionally ignores timestamps so a new match refreshes its marker.
         return f"{event_id}:{shape_id}"
 
     def record(self, event: InteractionEvent) -> ActiveInteraction:
+        """Store or refresh one interaction at its latest location and expiry time."""
         interaction = ActiveInteraction(
             key=self._key(event),
             event=event,
             expires_at=self.clock() + CIRCLE_LIFETIME_SECONDS,
         )
         with self.lock:
+            # Assignment replaces the previous marker for the same track/shape pair.
             self.interactions[interaction.key] = interaction
         return interaction
 
     def _active(self) -> list[ActiveInteraction]:
+        """Remove expired interactions and return a consistent active snapshot."""
         now = self.clock()
         with self.lock:
+            # Expiry is performed on reads so no separate cleanup task is required.
             self.interactions = {
                 key: interaction
                 for key, interaction in self.interactions.items()
@@ -109,6 +124,7 @@ class InteractionStore:
             return list(self.interactions.values())
 
     def geojson_response(self) -> dict[str, object]:
+        """Convert active interactions into the GeoJSON map-layer response."""
         features: list[dict[str, object]] = []
         for interaction in self._active():
             point_event = interaction.event.event
@@ -135,12 +151,14 @@ class InteractionStore:
                 },
                 "geometry": {
                     "type": "Polygon",
+                    # Calculate the circle around the most recently matched position.
                     "coordinates": [circle_coordinates(float(longitude), float(latitude))],
                 },
             })
         return {"type": "FeatureCollection", "features": features}
 
     def clear(self) -> None:
+        """Remove every active interaction immediately."""
         with self.lock:
             self.interactions.clear()
 
@@ -157,6 +175,7 @@ app.add_middleware(
 
 @app.get("/api/kody/manifest")
 def get_manifest() -> dict[str, object]:
+    """Advertise this service as a frequently refreshed GeoJSON data layer."""
     return {
         "kodyApiVersion": "1",
         "serviceId": "interaction-server",
@@ -174,16 +193,19 @@ def get_manifest() -> dict[str, object]:
 
 @app.post("/api/interactions", status_code=status.HTTP_202_ACCEPTED)
 def post_interaction(event: InteractionEvent) -> dict[str, object]:
+    """Accept a ShapeServer activity and refresh its transient interaction marker."""
     interaction = interactions.record(event)
     return {"key": interaction.key, "expiresAt": interaction.expires_at}
 
 
 @app.get("/api/interactions/geojson")
 def get_interactions_geojson() -> dict[str, object]:
+    """Return only interaction circles that have not yet expired."""
     return interactions.geojson_response()
 
 
 @app.post("/api/actions/clear-local-data")
 def clear_local_data() -> dict[str, str]:
+    """Clear all active interaction markers for the local service instance."""
     interactions.clear()
     return {"message": "Cleared active interactions."}

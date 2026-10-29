@@ -9,7 +9,18 @@
 # Distributed under the MIT License. See LICENSE for details.
 # Provided "AS IS", without warranty of any kind.
 
-"""A small process that continuously exercises the ShapeServer CRUD API."""
+"""Continuously exercise ShapeServer CRUD operations with visible sample shapes.
+
+On startup, the service creates a circle, a rectangle, and four annular
+sectors. It then updates the rectangle and sectors five times per second so
+that a ShapeServer map layer and its point-containment processing can be
+observed under regular edits. At the start of each ten-second rotation, it
+also removes and recreates a transient sector to exercise deletion and
+creation.
+
+The target ShapeServer base URL is configured with ``KODY_SHAPE_SERVER_URL``;
+it defaults to the local ShapeServer service.
+"""
 
 from __future__ import annotations
 
@@ -29,6 +40,13 @@ ROTATION_SECONDS = 10
 
 
 def request(method: str, path: str, payload: dict[str, object] | None = None) -> dict[str, object] | None:
+    """Call a ShapeServer endpoint and return its JSON response when present.
+
+    The synchronous standard-library request is deliberately run in a worker
+    thread by the caller so the service's animation loop remains responsive.
+    HTTP errors are left intact for the caller to distinguish expected
+    create/delete races from operational failures.
+    """
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = {"Content-Type": "application/json"} if body is not None else {}
     with urlopen(Request(f"{SHAPE_SERVER_URL}{path}", data=body, headers=headers, method=method), timeout=3) as response:
@@ -36,6 +54,13 @@ def request(method: str, path: str, payload: dict[str, object] | None = None) ->
 
 
 async def exercise_shapes() -> None:
+    """Create the sample shapes, then continuously animate their definitions.
+
+    Existing startup shapes are updated after a ``409 Conflict`` response,
+    which makes service restarts idempotent. The timer is anchored to the
+    event loop's monotonic clock so request duration does not progressively
+    slow the configured five updates per second cadence.
+    """
     static_shapes = [
         {"id": "shape-server-test-circle", "type": "circle", "name": "Test circle", "center": [-3.3808, 53.1348], "radius": 4_000},
         {"id": "shape-server-test-rectangle", "type": "rectangle", "name": "Rotating test rectangle", "origin": [-3.32, 53.13], "width": 6_000, "height": 2_000, "angle": 0},
@@ -114,6 +139,7 @@ async def exercise_shapes() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Run the sample-shape producer for the FastAPI application's lifetime."""
     task = asyncio.create_task(exercise_shapes())
     try:
         yield
@@ -128,4 +154,5 @@ app = FastAPI(title="Kody ShapeServerTest", version="1.0.0", lifespan=lifespan)
 
 @app.get("/api/status")
 def get_status() -> dict[str, str]:
+    """Report the configured ShapeServer target and producer availability."""
     return {"shapeServerUrl": SHAPE_SERVER_URL, "message": "ShapeServer sample producer is running."}

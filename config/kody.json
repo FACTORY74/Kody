@@ -77,9 +77,9 @@
     }
   ],
   "mapView": {
-    "longitude": -3.488637158350741,
-    "latitude": 53.1372103162879,
-    "zoom": 12.199999999999987,
+    "longitude": -3.4462428745154057,
+    "latitude": 53.061072746868696,
+    "zoom": 13.800000000000011,
     "layers": {
       "satelliteImagery": false,
       "copernicus": true,
@@ -96,7 +96,7 @@
       "esaDemOpacity": 8,
       "worldcoverOpacity": 4,
       "vectorOpacity": 2,
-      "gridOpacity": 2,
+      "gridOpacity": 3,
       "dataSources": {
         "local-shapes": false,
         "local-shape-server": true,

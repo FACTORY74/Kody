@@ -31,6 +31,9 @@ POST /api/events
 matches and callback delivery results. The service tests each shape's bounding
 box before executing its type-specific containment check. Events over the
 configured capacity receive `429` and are not discarded silently.
+The pure shape definitions, bounds calculations, GeoJSON-ring generation, and
+exact containment checks are isolated in
+[`shape_intersections.py`](./src/kody_shape_server/shape_intersections.py).
 
 Connect `http://127.0.0.1:8015/` as a Shapes service in Kody, then use its
 configuration dialog to set the output callback URL, processing rate, and

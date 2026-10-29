@@ -77,9 +77,9 @@
     }
   ],
   "mapView": {
-    "longitude": -3.4462428745154057,
-    "latitude": 53.061072746868696,
-    "zoom": 13.800000000000011,
+    "longitude": -3.4326033829376854,
+    "latitude": 53.071995730226796,
+    "zoom": 13.400000000000013,
     "layers": {
       "satelliteImagery": false,
       "copernicus": true,

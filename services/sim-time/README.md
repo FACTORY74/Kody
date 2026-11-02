@@ -9,7 +9,7 @@ server-sent events; it does not publish map tiles or data features.
 Set-Location services\sim-time
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r ..\..\requirements.txt
 $env:PYTHONPATH = "$PWD\src"
 python -m uvicorn kody_sim_time.sim_time_service:app --host 127.0.0.1 --port 8012
 ```

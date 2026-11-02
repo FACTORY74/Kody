@@ -7,7 +7,7 @@ view. It is independent of every map-data or overlay implementation.
 Set-Location kody
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r ..\requirements.txt
 $env:PYTHONPATH = "$PWD\src"
 python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```

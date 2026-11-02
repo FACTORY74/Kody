@@ -1,0 +1,30 @@
+# Kody offline setup commands for Windows
+#
+# Prerequisite: install 64-bit Python 3.15.x before disconnecting from the
+# internet. The repository's wheels/ directory contains all Kody runtime
+# dependencies and their transitive dependencies for CPython 3.15 on Windows.
+#
+# Run the following commands from the repository root in PowerShell.
+
+# Confirm that the required interpreter is installed.
+py -3.15 --version
+
+# Create an isolated project environment.
+py -3.15 -m venv .venv
+
+# Install every product and service dependency without contacting PyPI.
+.\.venv\Scripts\python.exe -m pip install --no-index --find-links .\wheels --requirement .\requirements.txt
+
+# Confirm the installed dependency graph is internally consistent.
+.\.venv\Scripts\python.exe -m pip check
+
+# Start all enabled Kody services.
+.\.venv\Scripts\python.exe .\start_kody.py
+
+# Open the map application after startup.
+# http://127.0.0.1:8000/
+
+
+# Wheelhouse maintenance (requires internet access; do not run during an
+# offline installation). Re-run after changing requirements.txt.
+.\.venv\Scripts\python.exe -m pip download --only-binary=:all: --find-links .\wheels --dest .\wheels --requirement .\requirements.txt

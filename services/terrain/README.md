@@ -8,7 +8,7 @@ colourised topographical PNG XYZ tiles at `/api/raster/{z}/{x}/{y}` on port
 Set-Location services\terrain
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r ..\..\requirements.txt
 $env:PYTHONPATH = "$PWD\src"
 python -m uvicorn kody_terrain.server:app --host 127.0.0.1 --port 8010
 ```
@@ -26,7 +26,7 @@ identify their projection. For example, `NorthWales.asc` uses
 `world-mercator`, which preserves its latitude alignment with its equivalent
 GeoTIFF.
 
-Every import writes 256×256 compressed numeric terrain chunks beside its
+Every import writes 256Ã—256 compressed numeric terrain chunks beside its
 `source.asc`. These chunks support bounded elevation and LOS lookups without
 loading a large source grid. For existing packages imported before this layout,
 select **Build numeric terrain chunks** in the Terrain cog to convert them

@@ -19,6 +19,14 @@ Each service directory also contains an `API.md` endpoint inventory; the
 [service endpoint index](./API_SPEC.md#service-endpoint-inventories) links to
 all of them.
 
+## Offline installation
+
+The bundled [`wheels`](./wheels/) directory contains the complete Windows
+CPython 3.15 dependency wheelhouse for Kody and its services. Follow
+[`command_lines.txt`](./command_lines.txt) from the repository root to create
+the virtual environment and install dependencies without contacting PyPI.
+
+
 - [`kody`](./kody/README.md) — central browser UI and configuration service
 - [`services/vecmap`](./services/vecmap/README.md) — offline vector map API, data, and package tooling
 - [`services/satmap`](./services/satmap/README.md) — offline satellite imagery API and tiles

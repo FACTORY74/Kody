@@ -16,7 +16,7 @@ large areas. Downloaded data include numerical EGM2008-height samples as well
 as rendered local terrain tiles, so `/api/elevation` and
 `/api/terrain/profile` remain available without another remote request.
 
-Copernicus DEM attribution: © DLR e.V. 2010-2014 and © Airbus Defence and
+Copernicus DEM attribution: Â© DLR e.V. 2010-2014 and Â© Airbus Defence and
 Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA;
 all rights reserved.
 
@@ -24,7 +24,7 @@ all rights reserved.
 Set-Location services\esa-dem
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r ..\..\requirements.txt
 $env:PYTHONPATH = "$PWD\src"
 python -m uvicorn kody_esa_dem.server:app --host 127.0.0.1 --port 8013
 ```

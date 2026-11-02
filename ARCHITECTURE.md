@@ -23,6 +23,16 @@ and rolling-log retention. [`start_kody.py`](./start_kody.py) launches all
 enabled entries without importing their source code, so service ownership and
 data boundaries remain independent.
 
+Local map services are declared once through each runtime entry's
+`mapService` identity. The configuration service derives their browser URL
+from the runtime host and port; only endpoints not launched by Kody are stored
+in the separate `externalServices` collection. Configuration reads return a
+strong `ETag`, and writes must return that value in `If-Match`. Each update is
+an atomic, resource-scoped mutation, so unrelated map-view and service-catalog
+changes do not overwrite one another. During the browser-client transition,
+requests without `If-Match` are accepted as logged legacy writes; current
+clients always use the revision header.
+
 ## Extension capabilities
 
 A service may declare any combination of these independent manifest
@@ -61,9 +71,11 @@ reads SimTimeControl's elapsed seconds server-to-server, advances only when
 that value increases, and rewinds its non-persisted flight runtime when the
 shared clock resets.
 
-Each tree contains its own `requirements.txt`, `src/`, tests, and local
-runbook. Install its requirements and set `PYTHONPATH` to that tree's `src`
-directory before starting it.
+The repository root contains the single consolidated
+[`requirements.txt`](./requirements.txt) for Kody and every service. Each tree
+contains its own `src/`, tests, and local runbook. Install the root
+requirements and set `PYTHONPATH` to that tree's `src` directory before
+starting it.
 
 ## Shared map context
 

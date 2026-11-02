@@ -12,7 +12,7 @@ the service migrates any legacy WebP cache files into the database.
 Set-Location services\copernicus
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r ..\..\requirements.txt
 $env:PYTHONPATH = "$PWD\src"
 python -m uvicorn kody_copernicus.server:app --host 127.0.0.1 --port 8011
 ```
@@ -25,7 +25,7 @@ published bounds and tile zoom, then request the latest available Global Mosaic
 tile for each required quad tile. Downloads that exceed 64 requests require a
 confirmation in the configuration dialog.
 
-Each Process API source request is limited to a 10° × 10° geographic extent.
+Each Process API source request is limited to a 10Â° Ã— 10Â° geographic extent.
 Larger local map tiles are divided into a uniform grid of source requests and
 composited into one cached 256px tile.
 

@@ -10,8 +10,16 @@
 # Provided "AS IS", without warranty of any kind.
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+import config_service
 from config_service import (
+    ApplicationConfiguration,
+    ConfigurationStore,
     MapView,
     RuntimeConfiguration,
     ServiceConfiguration,
@@ -21,6 +29,121 @@ from config_service import (
 
 
 class MapViewTests(unittest.TestCase):
+    def test_migrates_legacy_local_services_to_runtime_map_services(self) -> None:
+        configuration = ApplicationConfiguration.model_validate(
+            {
+                "services": [
+                    {
+                        "id": "local-shapes",
+                        "type": "shapes",
+                        "url": "http://127.0.0.1:8002/",
+                    }
+                ],
+                "runtime": {
+                    "host": "127.0.0.1",
+                    "services": [
+                        {
+                            "id": "shapes",
+                            "displayName": "Shapes service",
+                            "module": "kody_shapes.shapes_service:app",
+                            "workingDirectory": "services/shapes",
+                            "port": 8002,
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertEqual(configuration.external_services, [])
+        self.assertEqual(
+            configuration.runtime.services[0].map_service.model_dump(by_alias=True),
+            {"id": "local-shapes", "type": "shapes"},
+        )
+
+    def test_derives_local_service_catalog_and_rejects_stale_mutations(self) -> None:
+        configuration = ApplicationConfiguration.model_validate(
+            {
+                "externalServices": [],
+                "runtime": {
+                    "host": "127.0.0.1",
+                    "services": [
+                        {
+                            "id": "shapes",
+                            "displayName": "Shapes service",
+                            "module": "kody_shapes.shapes_service:app",
+                            "workingDirectory": "services/shapes",
+                            "port": 8002,
+                            "mapService": {"id": "local-shapes", "type": "shapes"},
+                        }
+                    ],
+                },
+            }
+        )
+        with TemporaryDirectory() as directory:
+            store = ConfigurationStore(Path(directory) / "kody.json")
+            store.write(configuration)
+            snapshot, _ = store.snapshot()
+
+            catalog = store.services(snapshot)
+            self.assertEqual(catalog.services[0].id, "local-shapes")
+            self.assertEqual(str(catalog.services[0].url), "http://127.0.0.1:8002/")
+            self.assertTrue(catalog.services[0].managed)
+
+            data_directory_revision = store.revision_for(snapshot.data_directory)
+            data_directory, next_revision = store.update_data_directory(
+                "updated-data",
+                data_directory_revision,
+            )
+            self.assertEqual(data_directory, "updated-data")
+            self.assertNotEqual(next_revision, data_directory_revision)
+            with self.assertRaises(HTTPException) as error:
+                store.update_data_directory(
+                    "other-data",
+                    data_directory_revision,
+                )
+            self.assertEqual(error.exception.status_code, 409)
+
+    def test_configuration_routes_return_and_require_resource_etags(self) -> None:
+        configuration = ApplicationConfiguration.model_validate(
+            {"externalServices": [], "runtime": {"services": []}}
+        )
+        with TemporaryDirectory() as directory:
+            store = ConfigurationStore(Path(directory) / "kody.json")
+            store.write(configuration)
+            with patch.object(config_service, "configuration_store", store), TestClient(
+                config_service.app
+            ) as client:
+                initial = client.get(
+                    "/api/config/data-directory",
+                    headers={"Origin": "http://127.0.0.1:8000"},
+                )
+                self.assertEqual(initial.status_code, 200)
+                revision = initial.headers["etag"]
+                self.assertIn("etag", initial.headers["access-control-expose-headers"].lower())
+
+                legacy = client.put(
+                    "/api/config/data-directory",
+                    json={"dataDirectory": "legacy-updated-data"},
+                )
+                self.assertEqual(legacy.status_code, 200)
+                legacy_revision = legacy.headers["etag"]
+                self.assertNotEqual(legacy_revision, revision)
+
+                updated = client.put(
+                    "/api/config/data-directory",
+                    headers={"If-Match": legacy_revision},
+                    json={"dataDirectory": "updated-data"},
+                )
+                self.assertEqual(updated.status_code, 200)
+                self.assertNotEqual(updated.headers["etag"], legacy_revision)
+
+                stale = client.put(
+                    "/api/config/data-directory",
+                    headers={"If-Match": revision},
+                    json={"dataDirectory": "other-data"},
+                )
+                self.assertEqual(stale.status_code, 409)
+
     def test_map_view_defaults_and_accepts_persisted_layer_selection(self) -> None:
         defaults = MapView.model_validate({"longitude": 0, "latitude": 0, "zoom": 1})
         self.assertFalse(defaults.layers.satellite_imagery)

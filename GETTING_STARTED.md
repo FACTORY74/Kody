@@ -15,9 +15,13 @@ then install the requirements for the Kody application and all services:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-Get-ChildItem -Path .\kody, .\services -Recurse -Filter requirements.txt |
-    ForEach-Object { python -m pip install -r $_.FullName }
+python -m pip install --no-index --find-links .\wheels -r .\requirements.txt
 ```
+
+The bundled [`wheels`](./wheels/) directory supports this installation without
+internet access on 64-bit Windows with Python 3.15. See
+[`command_lines.txt`](./command_lines.txt) for the complete offline setup
+sequence.
 
 ## 2. Start Kody
 

@@ -1,92 +1,16 @@
 {
-  "services": [
-    {
-      "id": "local-vecmap",
-      "type": "vecmap",
-      "url": "http://127.0.0.1:8004/"
-    },
-    {
-      "id": "local-satmap",
-      "type": "satmap",
-      "url": "http://127.0.0.1:8006/"
-    },
-    {
-      "id": "local-copernicus",
-      "type": "copernicus",
-      "url": "http://127.0.0.1:8011/"
-    },
-    {
-      "id": "local-terrain",
-      "type": "terrain",
-      "url": "http://127.0.0.1:8010/"
-    },
-    {
-      "id": "local-esa-dem",
-      "type": "esa-dem",
-      "url": "http://127.0.0.1:8013/"
-    },
-    {
-      "id": "local-worldcover",
-      "type": "worldcover",
-      "url": "http://127.0.0.1:8014/"
-    },
-    {
-      "id": "local-shapes",
-      "type": "shapes",
-      "url": "http://127.0.0.1:8002/"
-    },
-    {
-      "id": "local-shape-server",
-      "type": "shapes",
-      "url": "http://127.0.0.1:8015/"
-    },
-    {
-      "id": "local-track",
-      "type": "geojson",
-      "url": "http://127.0.0.1:8003/"
-    },
-    {
-      "id": "local-interactions",
-      "type": "geojson",
-      "url": "http://127.0.0.1:8017/"
-    },
-    {
-      "id": "local-sim-time",
-      "type": "workspace",
-      "url": "http://127.0.0.1:8012/"
-    },
-    {
-      "id": "local-adsb",
-      "type": "adsb",
-      "url": "http://127.0.0.1:8005/"
-    },
-    {
-      "id": "local-ais",
-      "type": "ais",
-      "url": "http://127.0.0.1:8008/"
-    },
-    {
-      "id": "local-airlanes",
-      "type": "airlanes",
-      "url": "http://127.0.0.1:8009/"
-    },
-    {
-      "id": "local-symbols",
-      "type": "symbols",
-      "url": "http://127.0.0.1:8007/"
-    }
-  ],
+  "externalServices": [],
   "mapView": {
-    "longitude": -3.4326033829376854,
-    "latitude": 53.071995730226796,
-    "zoom": 13.400000000000013,
+    "longitude": -3.392908434610348,
+    "latitude": 53.106912468623015,
+    "zoom": 11.800000000000018,
     "layers": {
       "satelliteImagery": false,
       "copernicus": true,
       "terrain": false,
       "esaDem": false,
       "worldcover": false,
-      "vectorMap": true,
+      "vectorMap": false,
       "grid": true,
       "gridCrosshair": true,
       "displayMiniTimeControl": true,
@@ -99,22 +23,22 @@
       "gridOpacity": 3,
       "dataSources": {
         "local-shapes": false,
-        "local-shape-server": true,
         "local-track": true,
-        "local-interactions": true,
         "local-adsb": false,
         "local-ais": false,
         "local-airlanes": false,
+        "local-shape-server": true,
+        "local-interactions": true,
         "local-symbols": true
       },
       "dataSourceOpacity": {
         "local-shapes": 10,
-        "local-shape-server": 10,
         "local-track": 6,
-        "local-interactions": 10,
         "local-adsb": 10,
         "local-ais": 7,
-        "local-airlanes": 4
+        "local-airlanes": 4,
+        "local-shape-server": 10,
+        "local-interactions": 10
       }
     }
   },
@@ -129,7 +53,8 @@
         "module": "app:app",
         "workingDirectory": "kody",
         "port": 8000,
-        "enabled": true
+        "enabled": true,
+        "mapService": null
       },
       {
         "id": "kody-config",
@@ -137,7 +62,8 @@
         "module": "config_service:app",
         "workingDirectory": "kody",
         "port": 8001,
-        "enabled": true
+        "enabled": true,
+        "mapService": null
       },
       {
         "id": "shapes",
@@ -145,7 +71,11 @@
         "module": "kody_shapes.shapes_service:app",
         "workingDirectory": "services/shapes",
         "port": 8002,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-shapes",
+          "type": "shapes"
+        }
       },
       {
         "id": "tracks",
@@ -153,7 +83,11 @@
         "module": "kody_tracks.track_service:app",
         "workingDirectory": "services/tracks",
         "port": 8003,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-track",
+          "type": "geojson"
+        }
       },
       {
         "id": "vecmap",
@@ -161,7 +95,11 @@
         "module": "kody_vecmap.server:app",
         "workingDirectory": "services/vecmap",
         "port": 8004,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-vecmap",
+          "type": "vecmap"
+        }
       },
       {
         "id": "adsb",
@@ -169,7 +107,11 @@
         "module": "kody_adsb.adsb_service:app",
         "workingDirectory": "services/adsb",
         "port": 8005,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-adsb",
+          "type": "adsb"
+        }
       },
       {
         "id": "satmap",
@@ -177,7 +119,11 @@
         "module": "kody_satmap.server:app",
         "workingDirectory": "services/satmap",
         "port": 8006,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-satmap",
+          "type": "satmap"
+        }
       },
       {
         "id": "symbols",
@@ -185,7 +131,11 @@
         "module": "kody_symbols.symbol_service:app",
         "workingDirectory": "services/symbols",
         "port": 8007,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-symbols",
+          "type": "symbols"
+        }
       },
       {
         "id": "copernicus",
@@ -193,7 +143,11 @@
         "module": "kody_copernicus.server:app",
         "workingDirectory": "services/copernicus",
         "port": 8011,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-copernicus",
+          "type": "copernicus"
+        }
       },
       {
         "id": "ais",
@@ -201,7 +155,11 @@
         "module": "kody_ais.ais_service:app",
         "workingDirectory": "services/ais",
         "port": 8008,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-ais",
+          "type": "ais"
+        }
       },
       {
         "id": "airlanes",
@@ -209,7 +167,11 @@
         "module": "kody_airlanes.airlanes_service:app",
         "workingDirectory": "services/airlanes",
         "port": 8009,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-airlanes",
+          "type": "airlanes"
+        }
       },
       {
         "id": "terrain",
@@ -217,7 +179,11 @@
         "module": "kody_terrain.server:app",
         "workingDirectory": "services/terrain",
         "port": 8010,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-terrain",
+          "type": "terrain"
+        }
       },
       {
         "id": "sim-time",
@@ -225,7 +191,11 @@
         "module": "kody_sim_time.sim_time_service:app",
         "workingDirectory": "services/sim-time",
         "port": 8012,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-sim-time",
+          "type": "workspace"
+        }
       },
       {
         "id": "esa-dem",
@@ -233,7 +203,11 @@
         "module": "kody_esa_dem.server:app",
         "workingDirectory": "services/esa-dem",
         "port": 8013,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-esa-dem",
+          "type": "esa-dem"
+        }
       },
       {
         "id": "worldcover",
@@ -241,7 +215,11 @@
         "module": "kody_worldcover.server:app",
         "workingDirectory": "services/worldcover",
         "port": 8014,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-worldcover",
+          "type": "worldcover"
+        }
       },
       {
         "id": "shape-server",
@@ -249,7 +227,11 @@
         "module": "kody_shape_server.shape_server:app",
         "workingDirectory": "services/shape-server",
         "port": 8015,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-shape-server",
+          "type": "shapes"
+        }
       },
       {
         "id": "shape-server-test",
@@ -257,7 +239,8 @@
         "module": "kody_shape_server_test.server:app",
         "workingDirectory": "services/shape-server-test",
         "port": 8016,
-        "enabled": true
+        "enabled": true,
+        "mapService": null
       },
       {
         "id": "interaction-server",
@@ -265,7 +248,11 @@
         "module": "kody_interaction_server.interaction_server:app",
         "workingDirectory": "services/interaction-server",
         "port": 8017,
-        "enabled": true
+        "enabled": true,
+        "mapService": {
+          "id": "local-interactions",
+          "type": "geojson"
+        }
       }
     ]
   }

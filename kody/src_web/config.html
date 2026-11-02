@@ -37,7 +37,7 @@
       <section class="config-intro">
         <p class="eyebrow">Connected platform</p>
         <h2>Service connections</h2>
-        <p>Attach map and overlay services to this workspace. Changes are saved by the configuration service in <code>config/kody.json</code>.</p>
+        <p>Local services are managed by the Kody runtime. Add external map and overlay services here; changes are saved by the configuration service in <code>config/kody.json</code>.</p>
       </section>
       <form id="data-directory-form" class="data-library-card">
         <div class="data-library-copy">
@@ -65,12 +65,12 @@
       <section class="service" aria-label="Service connection">
         <p class="service-card-title">Service connection</p>
         <label>Identifier <input name="id" required pattern="[A-Za-z0-9_\-]+" maxlength="64"></label>
-        <label>Type <select name="type"><option value="vecmap">Vector map</option><option value="satmap">Satellite map</option><option value="terrain">Terrain</option><option value="geojson">GeoJSON</option><option value="shapes">Shapes</option><option value="adsb">ADS-B</option><option value="ais">AIS vessels</option><option value="airlanes">AirLanes</option><option value="symbols">Symbols</option></select></label>
+        <label>Type <select name="type"><option value="vecmap">Vector map</option><option value="satmap">Satellite map</option><option value="copernicus">Copernicus imagery</option><option value="terrain">Terrain</option><option value="esa-dem">ESA download terrain</option><option value="worldcover">WorldCover</option><option value="geojson">GeoJSON</option><option value="shapes">Shapes</option><option value="adsb">ADS-B</option><option value="ais">AIS vessels</option><option value="airlanes">AirLanes</option><option value="symbols">Symbols</option><option value="workspace">Workspace</option></select></label>
         <label>URL <input name="url" required type="url" placeholder="https://example.com"></label>
         <button class="danger-action" data-remove-service type="button">Remove</button>
       </section>
     </template>
     <script type="module" src="/version.js?v=20261029a"></script>
-    <script type="module" src="/config.js?v=20261029d"></script>
+    <script type="module" src="/config.js?v=20261102b"></script>
   </body>
 </html>

@@ -124,6 +124,8 @@ let vectorTileRevision = null;
 let vectorTileZooms = [0];
 let savedMapStateVersion = 0;
 let mapViewSaveInProgress = false;
+let mapViewRevision = null;
+let imageryLayerDrawOrder = ["imagery", "copernicus"];
 let rasterRevision = null;
 let copernicusRevision = null;
 let terrainRevision = null;
@@ -281,6 +283,13 @@ function renderMapServiceControls(layers) {
     checkbox.type = "checkbox";
     checkbox.checked = details.visible;
     checkbox.addEventListener("change", () => {
+      if (checkbox.checked && (service.type === "satmap" || service.type === "copernicus")) {
+        const layerName = service.type === "satmap" ? "imagery" : "copernicus";
+        imageryLayerDrawOrder = [
+          ...imageryLayerDrawOrder.filter((name) => name !== layerName),
+          layerName,
+        ];
+      }
       mapStateVersion += 1;
       updateMapAttribution();
       refreshMap();
@@ -4580,7 +4589,17 @@ function draw() {
   context.clearRect(0, 0, width, height);
   context.fillStyle = "#202020";
   context.fillRect(0, 0, width, height);
-  Object.values(layers).forEach((layer) => {
+  const drawOrder = [
+    layers.vector,
+    ...imageryLayerDrawOrder.map((name) => layers[name]),
+    layers.terrain,
+    layers.esaDem,
+    layers.worldcover,
+    layers.shapes,
+    layers.grid,
+    layers.measurement,
+  ];
+  drawOrder.forEach((layer) => {
     if (layer.isVisible()) {
       layer.draw();
     }
@@ -5381,6 +5400,7 @@ async function loadConfiguration(restoreMapView = true) {
     throw new Error("configuration service did not return the map settings");
   }
   const configuration = await servicesResponse.json();
+  mapViewRevision = mapViewResponse.headers.get("ETag");
   configuredServices = configuration.services;
   configuredMapServices = configuration.services.filter((service) => ["vecmap", "satmap", "copernicus", "terrain", "esa-dem", "worldcover"].includes(service.type));
   const runningServices = await registeredRunningServices(configuration.services);
@@ -5537,7 +5557,10 @@ async function saveMapView() {
   try {
     const response = await fetch(`${configurationServiceUrl}/api/config/map-view`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(mapViewRevision ? { "If-Match": mapViewRevision } : {}),
+      },
       body: JSON.stringify({
         longitude: center.longitude,
         latitude: center.latitude,
@@ -5567,6 +5590,7 @@ async function saveMapView() {
     if (!response.ok) {
       throw new Error(`configuration service returned ${response.status}`);
     }
+    mapViewRevision = response.headers.get("ETag");
     savedMapStateVersion = version;
   } catch (error) {
     status.textContent = `Unable to save map view: ${error.message}`;
@@ -5605,10 +5629,17 @@ function saveMapViewOnExit() {
       gridOpacity: layerOpacity.grid,
     },
   });
-  navigator.sendBeacon(
-    `${configurationServiceUrl}/api/config/map-view`,
-    new Blob([payload], { type: "application/json" }),
-  );
+  fetch(`${configurationServiceUrl}/api/config/map-view`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      ...(mapViewRevision ? { "If-Match": mapViewRevision } : {}),
+    },
+    body: payload,
+    keepalive: true,
+  }).catch((error) => {
+    console.error("Unable to save map view before page exit:", error);
+  });
 }
 
 tileWorker.addEventListener("message", (event) => {

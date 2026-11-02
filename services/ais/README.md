@@ -7,7 +7,7 @@ strongest in coastal areas.
 
 ```powershell
 Set-Location services\ais
-pip install -r requirements.txt
+pip install -r ..\..\requirements.txt
 $env:PYTHONPATH = "$PWD\src"
 python -m uvicorn kody_ais.ais_service:app --host 127.0.0.1 --port 8008
 ```
@@ -21,7 +21,7 @@ rescue, passenger, cargo, tanker, high-speed, military, law-enforcement, or
 service vessel. The generic `ship` symbol remains the fallback for missing or
 unknown type data.
 
-Use **AIS vessels → Set Origin Here** from the map context menu to move the
+Use **AIS vessels â†’ Set Origin Here** from the map context menu to move the
 local AIS subscription centre to the selected map point.
 
 OpenSeaFeed receives a rectangular subscription envelope. Kody draws that same

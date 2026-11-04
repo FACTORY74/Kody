@@ -13,28 +13,24 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from datetime import UTC, datetime
 from functools import lru_cache
 from io import BytesIO
-from math import atan, ceil, exp, floor, log, pi
+from math import atan, floor, log, pi
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 from threading import Lock
-from time import time_ns
 from typing import Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel, Field
 import numpy
 import rasterio
+from maptiles import WebPQuadTreeStore, standard_tile_response
 from rasterio.enums import Resampling
 from rasterio.errors import RasterioIOError
 from rasterio.transform import from_bounds
@@ -112,62 +108,13 @@ class WorldCoverConfiguration(BaseModel):
     """Empty configuration model required by the shared action dialog."""
 
 
-class WorldCoverTileStore:
-    """SQLite-backed sparse WebP quadtree for local WorldCover tiles."""
+def tile_store(directory: Path | None = None) -> WebPQuadTreeStore:
+    """Return the standardized SQLite/WebP storage owned by this service."""
 
-    def __init__(self, directory: Path) -> None:
-        self.directory = directory
-        self.path = directory / "tiles.sqlite"
-
-    def _connect(self) -> sqlite3.Connection:
-        self.directory.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path)
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = NORMAL")
-        connection.execute("CREATE TABLE IF NOT EXISTS tiles (zoom INTEGER NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL, image_webp BLOB NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (zoom, x, y))")
-        connection.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        row = connection.execute(
-            "SELECT value FROM metadata WHERE key = 'tile_format_version'"
-        ).fetchone()
-        if row is None or row[0] != TILE_FORMAT_VERSION:
-            connection.execute("DELETE FROM tiles")
-            connection.execute("DELETE FROM metadata WHERE key = 'revision'")
-            connection.execute(
-                "INSERT INTO metadata (key, value) VALUES ('tile_format_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (TILE_FORMAT_VERSION,),
-            )
-        return connection
-
-    @contextmanager
-    def _connection(self):
-        connection = self._connect()
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
-
-    def get(self, zoom: int, x: int, y: int) -> bytes | None:
-        with self._connection() as connection:
-            row = connection.execute("SELECT image_webp FROM tiles WHERE zoom = ? AND x = ? AND y = ?", (zoom, x, y)).fetchone()
-        return bytes(row[0]) if row is not None else None
-
-    def put(self, zoom: int, x: int, y: int, image_webp: bytes) -> None:
-        with self._connection() as connection:
-            connection.execute("INSERT INTO tiles (zoom, x, y, image_webp, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(zoom, x, y) DO UPDATE SET image_webp = excluded.image_webp, updated_at = excluded.updated_at", (zoom, x, y, image_webp, datetime.now(UTC).isoformat()))
-
-    def revision(self) -> str:
-        with self._connection() as connection:
-            row = connection.execute("SELECT value FROM metadata WHERE key = 'revision'").fetchone()
-        return str(row[0]) if row is not None else ""
-
-    def set_revision(self) -> None:
-        with self._connection() as connection:
-            connection.execute("INSERT INTO metadata (key, value) VALUES ('revision', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (datetime.now(UTC).isoformat(),))
-
-
-def tile_store(directory: Path | None = None) -> WorldCoverTileStore:
-    return WorldCoverTileStore(WORLDCOVER_TILE_DIRECTORY if directory is None else directory)
+    return WebPQuadTreeStore(
+        WORLDCOVER_TILE_DIRECTORY if directory is None else directory,
+        format_version=TILE_FORMAT_VERSION,
+    )
 
 
 def longitude_tile(longitude: float, zoom: int) -> int:
@@ -420,7 +367,7 @@ download_state = DownloadState()
 def manifest() -> dict[str, object]:
     return {
         "kodyApiVersion": "1", "serviceId": "worldcover", "displayName": "ESA WorldCover 2021",
-        "capabilities": {"tileLayer": {"kind": "raster-tile", "tilePathTemplate": "/api/raster/{z}/{x}/{y}", "revisionPath": "/api/raster/revision", "contentTypes": ["image/webp"], "tileSizePixels": 256, "minZoom": 0, "maxZoom": MAX_NATIVE_ZOOM}},
+        "capabilities": {"tileLayer": {"kind": "raster-tile", "tilePathTemplate": "/api/tiles/{z}/{x}/{y}", "revisionPath": "/api/tiles/revision", "contentTypes": ["image/webp"], "tileSizePixels": 256, "minZoom": 0, "maxZoom": MAX_NATIVE_ZOOM}},
         "attribution": ATTRIBUTION,
         "configuration": {"readPath": "/api/config", "writePath": "/api/config", "fields": [], "actions": [
             {"label": "Download current viewport", "path": "/api/actions/download-current-viewport", "statusPath": "/api/actions/download-current-viewport", "confirmationPath": "/api/actions/assess-current-viewport", "method": "POST"},
@@ -444,19 +391,23 @@ def put_config(
     return {"revision": "worldcover-v1"}
 
 
-@app.get("/api/raster/revision")
+@app.get("/api/tiles/revision")
+@app.get("/api/raster/revision", deprecated=True)
 def revision() -> dict[str, str]:
     return {"revision": tile_store().revision()}
 
 
-@app.get("/api/raster/{zoom}/{x}/{y}")
-def raster(zoom: int, x: int, y: int) -> Response:
-    if not 0 <= zoom <= MAX_NATIVE_ZOOM or not 0 <= x < 2**zoom or not 0 <= y < 2**zoom:
-        raise HTTPException(status_code=422, detail="invalid raster tile coordinates")
-    tile = cached_raster(zoom, x, y)
-    if tile is None:
-        raise HTTPException(status_code=404, detail="local ESA WorldCover raster tile is unavailable")
-    return Response(content=tile, media_type="image/webp")
+@app.get("/api/tiles/{zoom}/{x}/{y}")
+@app.get("/api/raster/{zoom}/{x}/{y}", deprecated=True)
+def raster(zoom: int, x: int, y: int):
+    return standard_tile_response(
+        zoom,
+        x,
+        y,
+        cached_raster,
+        maximum_zoom=MAX_NATIVE_ZOOM,
+        missing_detail="local ESA WorldCover raster tile is unavailable",
+    )
 
 
 @app.get("/api/actions/assess-current-viewport")

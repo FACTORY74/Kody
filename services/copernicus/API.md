@@ -29,8 +29,10 @@ This document records the REST endpoints implemented by this service. Paths are 
 | `PUT` | `/api/config` | Validate and persist service configuration. |
 | `GET` | `/api/kody/manifest` | Return the Kody capability manifest. |
 | `GET` | `/api/mosaics` | Return mosaics. |
-| `GET` | `/api/raster/revision` | Return raster revision. |
-| `GET` | `/api/raster/{zoom}/{x}/{y}` | Return raster tile. |
+| `GET` | `/api/tiles/revision` | Return the standardized WebP tile revision. |
+| `GET` | `/api/tiles/{zoom}/{x}/{y}` | Return a standardized WebP map tile. |
+| `GET` | `/api/raster/revision` | Deprecated compatibility alias for `/api/tiles/revision`. |
+| `GET` | `/api/raster/{zoom}/{x}/{y}` | Deprecated compatibility alias for `/api/tiles/{zoom}/{x}/{y}`. |
 
 ## Request models and response formats
 

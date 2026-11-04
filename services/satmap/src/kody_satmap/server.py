@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from functools import lru_cache
 from io import BytesIO
 from math import atan, ceil, exp, floor, log, log2, pi, sin, sinh, tan
@@ -25,9 +24,9 @@ from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel, Field
+from maptiles import WebPQuadTreeStore, standard_tile_response
 
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
 DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
@@ -36,8 +35,15 @@ WEB_MERCATOR_HALF_WORLD = 20037508.342789244
 EARTH_RADIUS_METRES = 6378137
 
 
+def satellite_tile_store(directory: Path | None = None) -> WebPQuadTreeStore:
+    """Return the service-owned SQLite/WebP satellite imagery store."""
+
+    return WebPQuadTreeStore(SATELLITE_DIRECTORY if directory is None else directory)
+
+
 def initialize_data_directory() -> None:
     SATELLITE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    satellite_tile_store().migrate_legacy_images()
 
 
 initialize_data_directory()
@@ -143,70 +149,52 @@ def web_mercator_to_world_mercator(x: float, y: float) -> tuple[float, float]:
 
 
 def compose_parent_level(
-    directory: Path, child_zoom: int, child_tiles: set[tuple[int, int]]
+    store: WebPQuadTreeStore, child_zoom: int, child_tiles: set[tuple[int, int]]
 ) -> set[tuple[int, int]]:
     parent_zoom = child_zoom - 1
     parent_tiles = {(x // 2, y // 2) for x, y in child_tiles}
     for parent_x, parent_y in parent_tiles:
-            destination = directory / str(parent_zoom) / str(parent_x) / f"{parent_y}.png"
-            if destination.is_file():
-                with Image.open(destination) as existing:
-                    parent = existing.convert("RGBA")
-            else:
-                parent = Image.new("RGBA", (256, 256))
-            for child_x, child_y in child_tiles:
-                if child_x // 2 != parent_x or child_y // 2 != parent_y:
-                    continue
-                child_path = directory / str(child_zoom) / str(child_x) / f"{child_y}.png"
-                with Image.open(child_path) as source:
-                    child = source.convert("RGBA").resize((128, 128), Image.Resampling.LANCZOS)
-                parent.alpha_composite(child, ((child_x % 2) * 128, (child_y % 2) * 128))
-                child.close()
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            parent.save(destination)
-            parent.close()
+        existing = store.get(parent_zoom, parent_x, parent_y)
+        if existing is not None:
+            with Image.open(BytesIO(existing)) as source:
+                parent = source.convert("RGBA")
+        else:
+            parent = Image.new("RGBA", (256, 256))
+        for child_x, child_y in child_tiles:
+            if child_x // 2 != parent_x or child_y // 2 != parent_y:
+                continue
+            child_payload = store.get(child_zoom, child_x, child_y)
+            if child_payload is None:
+                continue
+            with Image.open(BytesIO(child_payload)) as source:
+                child = source.convert("RGBA").resize((128, 128), Image.Resampling.LANCZOS)
+            parent.alpha_composite(child, ((child_x % 2) * 128, (child_y % 2) * 128))
+            child.close()
+        store.put_image(parent_zoom, parent_x, parent_y, parent)
+        parent.close()
     return parent_tiles
 
 
 def compose_parent_tiles(
-    directory: Path, native_zoom: int, native_tiles: set[tuple[int, int]]
+    store: WebPQuadTreeStore, native_zoom: int, native_tiles: set[tuple[int, int]]
 ) -> int:
     """Build transparent ancestors so imported imagery is visible below its native zoom."""
 
     child_tiles = native_tiles
     written_tiles = 0
     for child_zoom in range(native_zoom, 0, -1):
-        child_tiles = compose_parent_level(directory, child_zoom, child_tiles)
+        child_tiles = compose_parent_level(store, child_zoom, child_tiles)
         written_tiles += len(child_tiles)
     return written_tiles
 
 
-def tile_coordinates(directory: Path, zoom: int) -> set[tuple[int, int]]:
-    zoom_directory = directory / str(zoom)
-    if not zoom_directory.is_dir():
-        return set()
-    coordinates = set()
-    for path in zoom_directory.glob("*/*"):
-        if not path.is_file() or path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
-            continue
-        try:
-            coordinates.add((int(path.parent.name), int(path.stem)))
-        except ValueError:
-            continue
-    return coordinates
-
-
-def rebuild_overview_tiles(directory: Path) -> int:
-    zooms = [
-        int(path.name)
-        for path in directory.iterdir()
-        if path.is_dir() and path.name.isdigit() and 0 <= int(path.name) <= 18
-    ]
+def rebuild_overview_tiles(store: WebPQuadTreeStore) -> int:
+    zooms = store.zooms()
     written_tiles = 0
     for zoom in range(max(zooms, default=0), 0, -1):
-        child_tiles = tile_coordinates(directory, zoom)
+        child_tiles = store.coordinates(zoom)
         if child_tiles:
-            written_tiles += len(compose_parent_level(directory, zoom, child_tiles))
+            written_tiles += len(compose_parent_level(store, zoom, child_tiles))
     return written_tiles
 
 
@@ -270,12 +258,11 @@ def import_georeferenced_png(filename: str, rebuild_pyramid: bool = True) -> str
     tile_span = 2 * WEB_MERCATOR_HALF_WORLD / tiles_per_axis
     written_tiles = 0
     native_tiles = set()
+    store = satellite_tile_store()
     for y in range(minimum_y, maximum_y + 1):
         for x in range(minimum_x, maximum_x + 1):
             tile_left = -WEB_MERCATOR_HALF_WORLD + x * tile_span
             tile_top = WEB_MERCATOR_HALF_WORLD - y * tile_span
-            destination = SATELLITE_DIRECTORY / str(native_zoom) / str(x) / f"{y}.png"
-            destination.parent.mkdir(parents=True, exist_ok=True)
             if source_projection == "world-mercator":
                 def source_pixel(target_x: float, target_y: float) -> tuple[float, float]:
                     source_x, source_y = web_mercator_to_world_mercator(target_x, target_y)
@@ -302,38 +289,30 @@ def import_georeferenced_png(filename: str, rebuild_pyramid: bool = True) -> str
                     (tile_top - tile_span - source_top) / pixel_height,
                 )
                 patch = source_image.crop(crop).resize((256, 256), Image.Resampling.LANCZOS)
-            if destination.is_file():
-                with Image.open(destination) as existing:
-                    tile = existing.convert("RGBA")
+            existing = store.get(native_zoom, x, y)
+            if existing is not None:
+                with Image.open(BytesIO(existing)) as source:
+                    tile = source.convert("RGBA")
                 tile.alpha_composite(patch)
                 patch.close()
             else:
                 tile = patch
-            tile.save(destination)
+            store.put_image(native_zoom, x, y, tile)
             tile.close()
             native_tiles.add((x, y))
             written_tiles += 1
     source_image.close()
     ancestor_tiles = (
-        compose_parent_tiles(SATELLITE_DIRECTORY, native_zoom, native_tiles)
+        compose_parent_tiles(store, native_zoom, native_tiles)
         if rebuild_pyramid
         else 0
     )
-    marker = SATELLITE_DIRECTORY / ".revision"
-    marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+    store.set_revision()
     cached_raster_tile_bytes.cache_clear()
     message = f"Imported {written_tiles} satellite tiles at zoom {native_zoom}."
     if rebuild_pyramid:
         message += f" Updated {ancestor_tiles} impacted lower-zoom tiles."
     return message
-
-
-def raster_tile_path(directory: Path, zoom: int, x: int, y: int) -> Path | None:
-    for extension in (".png", ".jpg", ".jpeg", ".webp"):
-        path = directory / str(zoom) / str(x) / f"{y}{extension}"
-        if path.is_file():
-            return path
-    return None
 
 
 def child_tile_from_parent(parent: Image.Image, x: int, y: int) -> Image.Image:
@@ -351,9 +330,9 @@ def child_tile_from_parent(parent: Image.Image, x: int, y: int) -> Image.Image:
 
 
 def raster_tile_image(directory: Path, zoom: int, x: int, y: int) -> Image.Image | None:
-    path = raster_tile_path(directory, zoom, x, y)
-    if path is not None:
-        with Image.open(path) as source:
+    payload = satellite_tile_store(directory).get(zoom, x, y)
+    if payload is not None:
+        with Image.open(BytesIO(payload)) as source:
             tile = source.convert("RGBA")
         if tile.getchannel("A").getextrema() == (255, 255) or zoom == 0:
             return tile
@@ -380,7 +359,7 @@ def raster_tile_bytes(directory: Path, zoom: int, x: int, y: int) -> bytes | Non
     if tile is None:
         return None
     output = BytesIO()
-    tile.save(output, format="PNG")
+    tile.save(output, format="WEBP", quality=90, method=6)
     tile.close()
     return output.getvalue()
 
@@ -401,20 +380,23 @@ configuration_store = ConfigurationStore()
 import_state = ImportState()
 
 
-@app.get("/api/raster/revision")
+@app.get("/api/tiles/revision")
+@app.get("/api/raster/revision", deprecated=True)
 def get_raster_revision() -> dict[str, str]:
-    marker = SATELLITE_DIRECTORY / ".revision"
-    return {"revision": marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""}
+    return {"revision": satellite_tile_store().revision()}
 
 
-@app.get("/api/raster/{zoom}/{x}/{y}")
-def get_raster_tile(zoom: int, x: int, y: int) -> Response:
-    if not 0 <= zoom <= 18 or not 0 <= x < 2**zoom or not 0 <= y < 2**zoom:
-        raise HTTPException(status_code=422, detail="invalid raster tile coordinates")
-    tile = cached_raster_tile_bytes(zoom, x, y)
-    if tile is not None:
-        return Response(content=tile, media_type="image/png")
-    raise HTTPException(status_code=404, detail="local raster tile is unavailable")
+@app.get("/api/tiles/{zoom}/{x}/{y}")
+@app.get("/api/raster/{zoom}/{x}/{y}", deprecated=True)
+def get_raster_tile(zoom: int, x: int, y: int):
+    return standard_tile_response(
+        zoom,
+        x,
+        y,
+        cached_raster_tile_bytes,
+        maximum_zoom=18,
+        missing_detail="local raster tile is unavailable",
+    )
 
 
 @app.get("/api/kody/manifest")
@@ -423,6 +405,17 @@ def get_manifest() -> dict[str, object]:
         "kodyApiVersion": "1",
         "serviceId": "satellite-map",
         "displayName": "Satellite map",
+        "capabilities": {
+            "tileLayer": {
+                "kind": "raster-tile",
+                "tilePathTemplate": "/api/tiles/{z}/{x}/{y}",
+                "revisionPath": "/api/tiles/revision",
+                "contentTypes": ["image/webp"],
+                "tileSizePixels": 256,
+                "minZoom": 0,
+                "maxZoom": 18,
+            }
+        },
         "configuration": {
             "readPath": "/api/config",
             "writePath": "/api/config",
@@ -498,9 +491,9 @@ def build_overview_tiles(background_tasks: BackgroundTasks) -> dict[str, str]:
 
     def process() -> None:
         try:
-            count = rebuild_overview_tiles(SATELLITE_DIRECTORY)
-            marker = SATELLITE_DIRECTORY / ".revision"
-            marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+            store = satellite_tile_store()
+            count = rebuild_overview_tiles(store)
+            store.set_revision()
             cached_raster_tile_bytes.cache_clear()
             import_state.complete(f"Built {count} lower-zoom overview tiles.")
         except Exception as error:

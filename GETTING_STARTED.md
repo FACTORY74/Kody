@@ -25,11 +25,16 @@ sequence.
 
 ## 2. Start Kody
 
-From the repository root, run:
+From the repository root, run the standalone application:
 
 ```powershell
-python .\start_kody.py
+.\.venv\Scripts\python.exe .\main.py
 ```
+
+Alternatively, double-click [`Kody.cmd`](./Kody.cmd). Both entrypoints start
+the application and every enabled service defined in
+[`config/kody.json`](./config/kody.json); no development agent or manual
+per-service startup is required.
 
 Open <http://127.0.0.1:8000/> in a browser. In the map's **Layers** panel,
 enable **Satellite imagery**, **Terrain**, and **Vector map** as required.

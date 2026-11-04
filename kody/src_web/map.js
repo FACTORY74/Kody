@@ -98,7 +98,7 @@ const requestedCopernicusTileKeys = new Set();
 const requestedTerrainTileKeys = new Set();
 const requestedEsaDemTileKeys = new Set();
 const requestedWorldcoverTileKeys = new Set();
-const tileWorker = new Worker("/tile-worker.js?v=20261022a");
+const tileWorker = new Worker("/tile-worker.js?v=20261104a");
 let vectorMapServiceUrl = window.location.origin;
 let satelliteMapServiceUrl = window.location.origin;
 let copernicusServiceUrl = window.location.origin;
@@ -4660,23 +4660,23 @@ function vectorTileZoom() {
 }
 
 function rasterTileKey({ zoom, x, y }) {
-  return `${satelliteMapServiceUrl}/raster/${zoom}/${x}/${y}`;
+  return `${satelliteMapServiceUrl}/tiles/${zoom}/${x}/${y}`;
 }
 
 function copernicusTileKey({ zoom, x, y }) {
-  return `${copernicusServiceUrl}/raster/${zoom}/${x}/${y}`;
+  return `${copernicusServiceUrl}/tiles/${zoom}/${x}/${y}`;
 }
 
 function terrainTileKey({ zoom, x, y }) {
-  return `${terrainServiceUrl}/raster/${zoom}/${x}/${y}`;
+  return `${terrainServiceUrl}/tiles/${zoom}/${x}/${y}`;
 }
 
 function esaDemTileKey({ zoom, x, y }) {
-  return `${esaDemServiceUrl}/raster/${zoom}/${x}/${y}`;
+  return `${esaDemServiceUrl}/tiles/${zoom}/${x}/${y}`;
 }
 
 function worldcoverTileKey({ zoom, x, y }) {
-  return `${worldcoverServiceUrl}/raster/${zoom}/${x}/${y}`;
+  return `${worldcoverServiceUrl}/tiles/${zoom}/${x}/${y}`;
 }
 
 function exactCachedTiles(zoom, cache, keyForTile) {
@@ -4780,7 +4780,7 @@ async function refreshRasterRevision() {
     return;
   }
 
-  const response = await fetch(`${satelliteMapServiceUrl}/api/raster/revision`);
+  const response = await fetch(`${satelliteMapServiceUrl}/api/tiles/revision`);
   if (!response.ok) {
     throw new Error(`satellite map service returned ${response.status} for raster revision`);
   }
@@ -4796,7 +4796,7 @@ async function refreshCopernicusRevision() {
   if (!mapServices.has("copernicus") || !copernicusLayer?.checked) {
     return;
   }
-  const response = await fetch(`${copernicusServiceUrl}/api/raster/revision`);
+  const response = await fetch(`${copernicusServiceUrl}/api/tiles/revision`);
   if (!response.ok) {
     throw new Error(`Copernicus service returned ${response.status} for raster revision`);
   }
@@ -4835,7 +4835,7 @@ async function refreshTerrainRevision() {
   if (!mapServices.has("terrain") || !terrainLayer.checked) {
     return;
   }
-  const response = await fetch(`${terrainServiceUrl}/api/raster/revision`);
+  const response = await fetch(`${terrainServiceUrl}/api/tiles/revision`);
   if (!response.ok) {
     throw new Error(`terrain service returned ${response.status} for raster revision`);
   }
@@ -4851,7 +4851,7 @@ async function refreshEsaDemRevision() {
   if (!mapServices.has("esa-dem") || !esaDemLayer?.checked) {
     return;
   }
-  const response = await fetch(`${esaDemServiceUrl}/api/raster/revision`);
+  const response = await fetch(`${esaDemServiceUrl}/api/tiles/revision`);
   if (!response.ok) {
     throw new Error(`ESA Download Terrain service returned ${response.status} for raster revision`);
   }
@@ -4867,7 +4867,7 @@ async function refreshWorldcoverRevision() {
   if (!mapServices.has("worldcover") || !worldcoverLayer?.checked) {
     return;
   }
-  const response = await fetch(`${worldcoverServiceUrl}/api/raster/revision`);
+  const response = await fetch(`${worldcoverServiceUrl}/api/tiles/revision`);
   if (!response.ok) {
     throw new Error(`ESA WorldCover 2021 service returned ${response.status} for raster revision`);
   }

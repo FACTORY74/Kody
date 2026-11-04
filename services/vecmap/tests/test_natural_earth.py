@@ -421,7 +421,7 @@ class NativeTileStoreTests(unittest.TestCase):
             self.assertEqual(payload[8:12], b"WEBP")
             self.assertLess(len(payload), 20_000)
             self.assertEqual(cache.read_tile(0, 0, 0), payload)
-            self.assertTrue((Path(directory) / "raster-tiles.sqlite").is_file())
+            self.assertTrue((Path(directory) / "tiles.sqlite").is_file())
 
     def test_raster_revision_ignores_geopackage_timestamp_but_tracks_imports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -571,11 +571,14 @@ class NativeTileStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             cache = NaturalEarthRasterCache(Path(directory), "revision")
             render_count = 0
+            output = BytesIO()
+            Image.new("RGB", (1, 1), "red").save(output, format="WEBP")
+            payload = output.getvalue()
 
             def render() -> bytes:
                 nonlocal render_count
                 render_count += 1
-                return b"rendered-webp"
+                return payload
 
             with ThreadPoolExecutor(max_workers=4) as executor:
                 paths = list(
@@ -586,22 +589,25 @@ class NativeTileStoreTests(unittest.TestCase):
                 )
 
             self.assertEqual(render_count, 1)
-            self.assertEqual(paths, [b"rendered-webp"] * 4)
-            self.assertEqual(cache.read_tile(3, 4, 2), b"rendered-webp")
+            self.assertEqual(paths, [payload] * 4)
+            self.assertEqual(cache.read_tile(3, 4, 2), payload)
 
     def test_legacy_raster_tiles_are_migrated_into_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             maps_directory = Path(directory)
             legacy_path = maps_directory / "raster-tiles" / "revision" / "3" / "4" / "2.webp"
             legacy_path.parent.mkdir(parents=True)
-            legacy_path.write_bytes(b"rendered-webp")
+            output = BytesIO()
+            Image.new("RGB", (1, 1), "red").save(output, format="WEBP")
+            payload = output.getvalue()
+            legacy_path.write_bytes(payload)
 
             self.assertEqual(NaturalEarthRasterCache.migrate_legacy_files(maps_directory), 1)
 
             self.assertFalse(legacy_path.exists())
             self.assertEqual(
                 NaturalEarthRasterCache(maps_directory, "revision").read_tile(3, 4, 2),
-                b"rendered-webp",
+                payload,
             )
 
     def test_raster_route_renders_and_persists_a_cold_tile(self) -> None:

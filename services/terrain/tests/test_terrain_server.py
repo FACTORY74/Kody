@@ -38,10 +38,20 @@ from kody_terrain.server import (
     terrain_profile,
     terrain_tile_image,
     terrain_packages,
+    terrain_package_tile_store,
 )
 
 
 class TerrainTests(unittest.TestCase):
+    def assert_pixel_color_near(
+        self, actual: tuple[int, ...], expected: tuple[int, int, int, int]
+    ) -> None:
+        self.assertIn(len(actual), (3, 4))
+        for value, expected_value in zip(actual[:3], expected[:3]):
+            self.assertLessEqual(abs(value - expected_value), 2)
+        if len(actual) == 4:
+            self.assertEqual(actual[3], expected[3])
+
     def test_terrain_profile_samples_the_requested_line_and_reports_missing_coverage(self) -> None:
         request = TerrainProfileRequest(
             start=TerrainProfilePoint(longitude=-1, latitude=50),
@@ -117,7 +127,8 @@ class TerrainTests(unittest.TestCase):
             (imports / "terrain.asc").write_text("ncols 2\nnrows 2\nxllcorner -1\nyllcorner 50\ncellsize 1\n1 2\n3 4\n", encoding="utf-8")
             with patch("kody_terrain.server.IMPORTS_DIRECTORY", imports), patch("kody_terrain.server.TERRAIN_DIRECTORY", root / "terrain"):
                 result = import_terrain("terrain.asc")
-                overviews = list((root / "terrain" / "packages").glob("*/tiles/0/**/*.png"))
+                package_directory = next((root / "terrain" / "packages").iterdir())
+                overviews = terrain_package_tile_store(package_directory).coordinates(0)
                 numeric_tiles = list((root / "terrain" / "packages").glob("*/numeric-tiles/**/*.f32.gz"))
         self.assertIn("Imported 2×2 terrain cells", result)
         self.assertTrue(overviews)
@@ -185,8 +196,12 @@ class TerrainTests(unittest.TestCase):
 
         self.assertIsNotNone(tile)
         with Image.open(BytesIO(tile)) as image:
-            self.assertEqual(image.getpixel((0, 0)), (20, 40, 60, 255))
-            self.assertEqual(image.getpixel((10, 10)), (200, 120, 40, 255))
+            self.assert_pixel_color_near(
+                image.getpixel((0, 0)), (20, 40, 60, 255)
+            )
+            self.assert_pixel_color_near(
+                image.getpixel((10, 10)), (200, 120, 40, 255)
+            )
 
     def test_higher_display_zoom_is_derived_from_the_best_available_package_tile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -202,7 +217,9 @@ class TerrainTests(unittest.TestCase):
 
         self.assertIsNotNone(tile)
         with Image.open(BytesIO(tile)) as image:
-            self.assertEqual(image.getpixel((128, 128)), (20, 40, 60, 255))
+            self.assert_pixel_color_near(
+                image.getpixel((128, 128)), (20, 40, 60, 255)
+            )
 
     def test_parent_derived_tile_preserves_binary_no_data_alpha(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -245,7 +262,9 @@ class TerrainTests(unittest.TestCase):
 
         self.assertIsNotNone(tile)
         with Image.open(BytesIO(tile)) as image:
-            self.assertEqual(image.getpixel((128, 128)), (200, 120, 40, 255))
+            self.assert_pixel_color_near(
+                image.getpixel((128, 128)), (200, 120, 40, 255)
+            )
 
     def test_elevation_lookup_uses_the_highest_resolution_covering_package(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

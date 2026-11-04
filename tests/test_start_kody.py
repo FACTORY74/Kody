@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import main as kody_main
 from start_kody import (
     ConfigurationError,
     LauncherLock,
@@ -112,6 +113,12 @@ class RuntimeConfigurationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ConfigurationError, "already running"):
                 LauncherLock(lock_path).acquire()
+
+    def test_root_entrypoint_starts_the_shared_service_launcher(self) -> None:
+        with patch("main.start_kody_main", return_value=17) as launcher_main:
+            self.assertEqual(kody_main.main(), 17)
+
+        launcher_main.assert_called_once_with()
 
 
 if __name__ == "__main__":

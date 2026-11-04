@@ -31,8 +31,10 @@ This document records the REST endpoints implemented by this service. Paths are 
 | `DELETE` | `/api/los-rosette` | Clear los rosette. |
 | `GET` | `/api/los-rosette` | Return los rosette. |
 | `GET` | `/api/palette` | Return palette. |
-| `GET` | `/api/raster/revision` | Return raster revision. |
-| `GET` | `/api/raster/{zoom}/{x}/{y}` | Return raster tile. |
+| `GET` | `/api/tiles/revision` | Return the standardized WebP tile revision. |
+| `GET` | `/api/tiles/{zoom}/{x}/{y}` | Return a standardized WebP map tile. |
+| `GET` | `/api/raster/revision` | Deprecated compatibility alias for `/api/tiles/revision`. |
+| `GET` | `/api/raster/{zoom}/{x}/{y}` | Deprecated compatibility alias for `/api/tiles/{zoom}/{x}/{y}`. |
 | `POST` | `/api/terrain/profile` | Create terrain profile. |
 | `GET` | `/api/workspace` | Return the structured workspace model. |
 

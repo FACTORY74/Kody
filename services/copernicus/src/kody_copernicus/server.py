@@ -16,13 +16,11 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 import hashlib
-from contextlib import contextmanager
 from io import BytesIO
 from math import atan, ceil, cos, exp, floor, log, log2, pi, sin, sinh, tan
 from pathlib import Path
 import os
 import shutil
-import sqlite3
 from threading import Lock, RLock
 from typing import Any, Literal
 from urllib.error import HTTPError, URLError
@@ -30,10 +28,10 @@ from urllib.request import urlopen
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel, Field, field_validator
 import requests
+from maptiles import WebPQuadTreeStore, standard_tile_response
 
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
 REPOSITORY_DIRECTORY = Path(__file__).resolve().parents[4]
@@ -75,152 +73,10 @@ function evaluatePixel(sample) {
 """
 
 
-class CopernicusTileStore:
-    """SQLite-backed local WebP tile cache."""
+def tile_store(directory: Path | None = None) -> WebPQuadTreeStore:
+    """Return the standardized SQLite/WebP storage owned by this service."""
 
-    def __init__(self, directory: Path) -> None:
-        self.directory = directory
-        self.path = directory / "tiles.sqlite"
-
-    def _connect(self) -> sqlite3.Connection:
-        self.directory.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path)
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = NORMAL")
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tiles (
-                zoom INTEGER NOT NULL,
-                x INTEGER NOT NULL,
-                y INTEGER NOT NULL,
-                image_webp BLOB NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (zoom, x, y)
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-            """
-        )
-        return connection
-
-    @contextmanager
-    def _connection(self):
-        connection = self._connect()
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
-
-    def migrate_legacy_files(self) -> int:
-        files: list[tuple[Path, int, int, int]] = []
-        for path in self.directory.glob("*/*/*.webp"):
-            if not path.is_file():
-                continue
-            try:
-                files.append(
-                    (path, int(path.parents[1].name), int(path.parent.name), int(path.stem))
-                )
-            except ValueError:
-                continue
-        revision_marker = self.directory / ".revision"
-        if not files and not revision_marker.is_file():
-            return 0
-        migrated = 0
-        with self._connection() as connection:
-            for path, zoom, x, y in files:
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO tiles (zoom, x, y, image_webp, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (zoom, x, y, path.read_bytes(), datetime.now(UTC).isoformat()),
-                )
-                migrated += 1
-            if revision_marker.is_file():
-                connection.execute(
-                    """
-                    INSERT INTO metadata (key, value) VALUES ('revision', ?)
-                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                    """,
-                    (revision_marker.read_text(encoding="utf-8").strip(),),
-                )
-        for path, _, _, _ in files:
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        for directory in sorted(
-            (path for path in self.directory.glob("*/*") if path.is_dir()),
-            reverse=True,
-        ):
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
-        if revision_marker.is_file():
-            revision_marker.unlink()
-        return migrated
-
-    def get(self, zoom: int, x: int, y: int) -> bytes | None:
-        with self._connection() as connection:
-            row = connection.execute(
-                "SELECT image_webp FROM tiles WHERE zoom = ? AND x = ? AND y = ?",
-                (zoom, x, y),
-            ).fetchone()
-        return bytes(row[0]) if row is not None else None
-
-    def put(self, zoom: int, x: int, y: int, image_webp: bytes) -> None:
-        with self._connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO tiles (zoom, x, y, image_webp, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(zoom, x, y) DO UPDATE SET
-                    image_webp = excluded.image_webp,
-                    updated_at = excluded.updated_at
-                """,
-                (zoom, x, y, image_webp, datetime.now(UTC).isoformat()),
-            )
-
-    def coordinates(self, zoom: int) -> set[tuple[int, int]]:
-        with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT x, y FROM tiles WHERE zoom = ?", (zoom,)
-            ).fetchall()
-        return {(int(x), int(y)) for x, y in rows}
-
-    def zooms(self) -> list[int]:
-        with self._connection() as connection:
-            rows = connection.execute("SELECT DISTINCT zoom FROM tiles").fetchall()
-        return sorted(int(row[0]) for row in rows)
-
-    def revision(self) -> str:
-        with self._connection() as connection:
-            row = connection.execute(
-                "SELECT value FROM metadata WHERE key = 'revision'"
-            ).fetchone()
-        return str(row[0]) if row is not None else ""
-
-    def set_revision(self) -> None:
-        with self._connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO metadata (key, value) VALUES ('revision', ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                """,
-                (datetime.now(UTC).isoformat(),),
-            )
-
-
-def tile_store(directory: Path | None = None) -> CopernicusTileStore:
-    return CopernicusTileStore(COPERNICUS_DIRECTORY if directory is None else directory)
+    return WebPQuadTreeStore(COPERNICUS_DIRECTORY if directory is None else directory)
 
 
 def initialize_data_directory() -> None:
@@ -1142,19 +998,23 @@ def load_mosaic_options() -> None:
     mosaic_option_store.load(configuration_store.configuration)
 
 
-@app.get("/api/raster/revision")
+@app.get("/api/tiles/revision")
+@app.get("/api/raster/revision", deprecated=True)
 def get_raster_revision() -> dict[str, str]:
     return {"revision": tile_store().revision()}
 
 
-@app.get("/api/raster/{zoom}/{x}/{y}")
-def get_raster_tile(zoom: int, x: int, y: int) -> Response:
-    if not 0 <= zoom <= 18 or not 0 <= x < 2**zoom or not 0 <= y < 2**zoom:
-        raise HTTPException(status_code=422, detail="invalid raster tile coordinates")
-    tile = cached_raster_tile_bytes(zoom, x, y)
-    if tile is not None:
-        return Response(content=tile, media_type="image/webp")
-    raise HTTPException(status_code=404, detail="local raster tile is unavailable")
+@app.get("/api/tiles/{zoom}/{x}/{y}")
+@app.get("/api/raster/{zoom}/{x}/{y}", deprecated=True)
+def get_raster_tile(zoom: int, x: int, y: int):
+    return standard_tile_response(
+        zoom,
+        x,
+        y,
+        cached_raster_tile_bytes,
+        maximum_zoom=18,
+        missing_detail="local raster tile is unavailable",
+    )
 
 
 @app.get("/api/kody/manifest")
@@ -1163,6 +1023,17 @@ def get_manifest() -> dict[str, object]:
         "kodyApiVersion": "1",
         "serviceId": "copernicus",
         "displayName": "Copernicus",
+        "capabilities": {
+            "tileLayer": {
+                "kind": "raster-tile",
+                "tilePathTemplate": "/api/tiles/{z}/{x}/{y}",
+                "revisionPath": "/api/tiles/revision",
+                "contentTypes": ["image/webp"],
+                "tileSizePixels": 256,
+                "minZoom": 0,
+                "maxZoom": 18,
+            }
+        },
         "configuration": {
             "readPath": "/api/config",
             "writePath": "/api/config",

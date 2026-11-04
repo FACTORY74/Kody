@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from array import array
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from functools import lru_cache
 from io import BytesIO
 from math import asin, asinh, atan2, ceil, cos, floor, isfinite, log, pi, sin, sinh
@@ -33,10 +32,10 @@ from urllib.request import urlopen
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel, Field
 import requests
+from maptiles import WebPQuadTreeStore, standard_tile_response
 
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
 REPOSITORY_DIRECTORY = Path(__file__).resolve().parents[4]
@@ -161,12 +160,18 @@ def numeric_path(zoom: int, x: int, y: int) -> Path:
     return DEM_DIRECTORY / "numeric" / str(zoom) / str(x) / f"{y}.f32.gz"
 
 
-def image_path(zoom: int, x: int, y: int) -> Path:
-    return DEM_DIRECTORY / "tiles" / str(zoom) / str(x) / f"{y}.png"
+def dem_tile_store() -> WebPQuadTreeStore:
+    """Return the service-owned rendered DEM tile store."""
+
+    return WebPQuadTreeStore(DEM_DIRECTORY)
 
 
-def revision_path() -> Path:
-    return DEM_DIRECTORY / ".revision"
+def initialize_data_directory() -> None:
+    DEM_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    dem_tile_store().migrate_legacy_images(DEM_DIRECTORY / "tiles")
+
+
+initialize_data_directory()
 
 
 def longitude_tile(longitude: float, zoom: int) -> int:
@@ -241,9 +246,7 @@ def write_tile(zoom: int, x: int, y: int, values: array) -> None:
         output.write(values.tobytes())
     image = Image.new("RGBA", (TILE_SIZE, TILE_SIZE))
     image.putdata([terrain_colour(value) if isfinite(value) else (0, 0, 0, 0) for value in values])
-    rendered = image_path(zoom, x, y)
-    rendered.parent.mkdir(parents=True, exist_ok=True)
-    image.save(rendered, format="PNG", optimize=True)
+    dem_tile_store().put_image(zoom, x, y, image)
     image.close()
 
 
@@ -270,13 +273,11 @@ def parent_tiles(zoom: int, tiles: set[tuple[int, int]]) -> int:
             parent = Image.new("RGBA", (256, 256))
             for child_x, child_y in children:
                 if child_x // 2 == parent_x and child_y // 2 == parent_y:
-                    path = image_path(child_zoom, child_x, child_y)
-                    if path.is_file():
-                        with Image.open(path) as child:
+                    payload = dem_tile_store().get(child_zoom, child_x, child_y)
+                    if payload is not None:
+                        with Image.open(BytesIO(payload)) as child:
                             parent.alpha_composite(child.convert("RGBA").resize((128, 128), Image.Resampling.LANCZOS), ((child_x % 2) * 128, (child_y % 2) * 128))
-            path = image_path(child_zoom - 1, parent_x, parent_y)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            parent.save(path, format="PNG", optimize=True)
+            dem_tile_store().put_image(child_zoom - 1, parent_x, parent_y, parent)
             parent.close()
         written += len(parents)
         children = parents
@@ -292,8 +293,7 @@ def download_viewport(configuration: DemConfiguration, requested_zoom: int | Non
     for index, (x, y) in enumerate(tiles, start=1):
         download_state.update(f"Downloading GLO-30 elevation tile {index} of {len(tiles)} at zoom {zoom}.")
         download_tile(session, access_token, zoom, x, y)
-    revision_path().parent.mkdir(parents=True, exist_ok=True)
-    revision_path().write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+    dem_tile_store().set_revision()
     cached_raster.cache_clear()
     overview_count = parent_tiles(zoom, set(tiles)) if configuration.rebuild_pyramid_with_download else 0
     detail = f" at {label}" if label else ""
@@ -338,8 +338,7 @@ def elevation(longitude: float, latitude: float) -> float | None:
 
 @lru_cache(maxsize=512)
 def cached_raster(zoom: int, x: int, y: int) -> bytes | None:
-    path = image_path(zoom, x, y)
-    return path.read_bytes() if path.is_file() else None
+    return dem_tile_store().get(zoom, x, y)
 
 
 app = FastAPI(title="Kody ESA Download Terrain", version="0.1.0")
@@ -350,7 +349,7 @@ download_state = DownloadState()
 
 @app.get("/api/kody/manifest")
 def manifest() -> dict[str, object]:
-    return {"kodyApiVersion": "1", "serviceId": "esa-dem", "displayName": "ESA Download Terrain", "capabilities": {"tileLayer": {"kind": "raster-tile", "tilePathTemplate": "/api/raster/{z}/{x}/{y}", "revisionPath": "/api/raster/revision", "contentTypes": ["image/png"], "tileSizePixels": 256, "minZoom": 0, "maxZoom": 18}}, "attribution": ATTRIBUTION, "configuration": {"readPath": "/api/config", "writePath": "/api/config", "fields": [{"key": "clientId", "label": "Copernicus client ID", "type": "string", "required": True}, {"key": "clientSecret", "label": "Copernicus client secret", "type": "password", "required": False, "secretStoredKey": "clientSecretSaved"}, {"key": "rebuildPyramidWithDownload", "label": "Rebuild tile pyramid after download", "type": "boolean"}], "actions": [{"label": "Download current viewport", "path": "/api/actions/download-current-viewport", "statusPath": "/api/actions/download-current-viewport", "confirmationPath": "/api/actions/assess-current-viewport", "method": "POST"}, {"label": "Download viewport at GLO-30 resolution", "path": "/api/actions/download-viewport-at-glo-30", "statusPath": "/api/actions/download-viewport-at-glo-30", "confirmationPath": "/api/actions/assess-viewport-at-glo-30", "method": "POST"}, {"label": "Clear local data", "path": "/api/actions/clear-local-data", "method": "POST", "confirmationMessage": "Clear all downloaded ESA GLO-30 terrain data? This cannot be undone."}]}}
+    return {"kodyApiVersion": "1", "serviceId": "esa-dem", "displayName": "ESA Download Terrain", "capabilities": {"tileLayer": {"kind": "raster-tile", "tilePathTemplate": "/api/tiles/{z}/{x}/{y}", "revisionPath": "/api/tiles/revision", "contentTypes": ["image/webp"], "tileSizePixels": 256, "minZoom": 0, "maxZoom": 18}}, "attribution": ATTRIBUTION, "configuration": {"readPath": "/api/config", "writePath": "/api/config", "fields": [{"key": "clientId", "label": "Copernicus client ID", "type": "string", "required": True}, {"key": "clientSecret", "label": "Copernicus client secret", "type": "password", "required": False, "secretStoredKey": "clientSecretSaved"}, {"key": "rebuildPyramidWithDownload", "label": "Rebuild tile pyramid after download", "type": "boolean"}], "actions": [{"label": "Download current viewport", "path": "/api/actions/download-current-viewport", "statusPath": "/api/actions/download-current-viewport", "confirmationPath": "/api/actions/assess-current-viewport", "method": "POST"}, {"label": "Download viewport at GLO-30 resolution", "path": "/api/actions/download-viewport-at-glo-30", "statusPath": "/api/actions/download-viewport-at-glo-30", "confirmationPath": "/api/actions/assess-viewport-at-glo-30", "method": "POST"}, {"label": "Clear local data", "path": "/api/actions/clear-local-data", "method": "POST", "confirmationMessage": "Clear all downloaded ESA GLO-30 terrain data? This cannot be undone."}]}}
 
 
 @app.get("/api/config")
@@ -363,19 +362,23 @@ def put_config(configuration: DemConfiguration, if_match: str | None = Header(de
     return configuration_store.update(configuration, if_match)
 
 
-@app.get("/api/raster/revision")
+@app.get("/api/tiles/revision")
+@app.get("/api/raster/revision", deprecated=True)
 def revision() -> dict[str, str]:
-    return {"revision": revision_path().read_text(encoding="utf-8") if revision_path().is_file() else ""}
+    return {"revision": dem_tile_store().revision()}
 
 
-@app.get("/api/raster/{zoom}/{x}/{y}")
-def raster(zoom: int, x: int, y: int) -> Response:
-    if not 0 <= zoom <= 18 or not 0 <= x < 2**zoom or not 0 <= y < 2**zoom:
-        raise HTTPException(status_code=422, detail="invalid raster tile coordinates")
-    tile = cached_raster(zoom, x, y)
-    if tile is None:
-        raise HTTPException(status_code=404, detail="local ESA DEM raster tile is unavailable")
-    return Response(content=tile, media_type="image/png")
+@app.get("/api/tiles/{zoom}/{x}/{y}")
+@app.get("/api/raster/{zoom}/{x}/{y}", deprecated=True)
+def raster(zoom: int, x: int, y: int):
+    return standard_tile_response(
+        zoom,
+        x,
+        y,
+        cached_raster,
+        maximum_zoom=18,
+        missing_detail="local ESA DEM raster tile is unavailable",
+    )
 
 
 @app.get("/api/elevation")

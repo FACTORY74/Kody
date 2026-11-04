@@ -24,6 +24,7 @@ from pathlib import Path
 from threading import Lock
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from maptiles import WebPQuadTreeStore
 from .math import MapMath
 from .native_tiles import NativeTileStore
 from .vector_theme import VectorStyle
@@ -61,16 +62,15 @@ class NaturalEarthRasterCache:
     def __init__(self, maps_directory: Path, revision: str) -> None:
         self.maps_directory = maps_directory
         self.revision = revision
-        self.path = maps_directory / "raster-tiles.sqlite"
-        self._initialize_database()
+        self.store = WebPQuadTreeStore(
+            maps_directory,
+            database_name="tiles.sqlite",
+            namespace=revision,
+        )
+        self.path = self.store.path
 
     def _initialize_database(self) -> None:
-        with self._locks_guard:
-            lock = self._database_locks.setdefault(self.path, Lock())
-        with lock:
-            if self.path.is_file():
-                return
-            self._create_database()
+        """Retained for compatibility with callers of the legacy cache wrapper."""
 
     def _create_database(self) -> None:
         self.maps_directory.mkdir(parents=True, exist_ok=True)
@@ -112,28 +112,10 @@ class NaturalEarthRasterCache:
         return self.path, self.revision
 
     def read_tile(self, zoom: int, x: int, y: int) -> bytes | None:
-        with self._connection() as connection:
-            row = connection.execute(
-                """
-                SELECT image_webp
-                FROM raster_tiles
-                WHERE revision = ? AND zoom = ? AND x = ? AND y = ?
-                """,
-                (self.revision, zoom, x, y),
-            ).fetchone()
-        return bytes(row[0]) if row is not None else None
+        return self.store.get(zoom, x, y)
 
     def write_tile(self, zoom: int, x: int, y: int, payload: bytes) -> None:
-        with self._connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO raster_tiles (revision, zoom, x, y, image_webp)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(revision, zoom, x, y) DO UPDATE SET
-                    image_webp = excluded.image_webp
-                """,
-                (self.revision, zoom, x, y, payload),
-            )
+        self.store.put(zoom, x, y, payload)
 
     def get_or_render(
         self,
@@ -176,16 +158,8 @@ class NaturalEarthRasterCache:
                 continue
         if not files:
             return 0
-        cache = cls(maps_directory, files[0][1])
-        with cache._connection() as connection:
-            for path, revision, zoom, x, y in files:
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO raster_tiles (revision, zoom, x, y, image_webp)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (revision, zoom, x, y, path.read_bytes()),
-                )
+        for path, revision, zoom, x, y in files:
+            cls(maps_directory, revision).write_tile(zoom, x, y, path.read_bytes())
         for path, _, _, _, _ in files:
             path.unlink()
         for directory in sorted(

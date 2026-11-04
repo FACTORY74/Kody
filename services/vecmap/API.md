@@ -25,7 +25,8 @@ This document records the REST endpoints implemented by this service. Paths are 
 | `GET` | `/api/patch/{zoom}/{x}/{y}` | Return patch. |
 | `GET` | `/api/tiles/revision` | Return raster tile revision. |
 | `GET` | `/api/tiles/status` | Return raster tile status. |
-| `GET` | `/api/tiles/{zoom}/{x}/{y}.webp` | Return raster tile. |
+| `GET` | `/api/tiles/{zoom}/{x}/{y}` | Return a standardized WebP map tile. |
+| `GET` | `/api/tiles/{zoom}/{x}/{y}.webp` | Deprecated compatibility alias for `/api/tiles/{zoom}/{x}/{y}`. |
 
 ## Request models and response formats
 

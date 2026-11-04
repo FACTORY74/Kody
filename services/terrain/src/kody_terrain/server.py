@@ -17,6 +17,7 @@ from array import array
 import gzip
 import json
 import hashlib
+from io import BytesIO
 import os
 import shutil
 from dataclasses import dataclass
@@ -31,9 +32,9 @@ from urllib.request import urlopen
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel, Field, model_validator
+from maptiles import WebPQuadTreeStore, standard_tile_response
 
 SourceProjection = Literal["auto", "geographic", "web-mercator", "world-mercator"]
 
@@ -57,6 +58,29 @@ TERRAIN_PALETTE = (
     (750, (151, 111, 74)),
     (1500, (241, 241, 237)),
 )
+
+
+def terrain_package_tile_store(directory: Path) -> WebPQuadTreeStore:
+    """Return one package namespace within the shared Terrain display database."""
+
+    return WebPQuadTreeStore(
+        TERRAIN_DIRECTORY,
+        database_name="display-tiles.sqlite",
+        namespace=f"package:{directory.name}",
+    )
+
+
+def migrate_terrain_package_tiles(directory: Path) -> int:
+    """Convert generated package display tiles to WebP before removing the PNG tree."""
+
+    def preserve_terrain_coverage(image: Image.Image) -> None:
+        image.putalpha(image.getchannel("A").point(lambda alpha: 255 if alpha else 0))
+
+    return terrain_package_tile_store(directory).migrate_legacy_images(
+        directory / "tiles",
+        lossless=True,
+        prepare_image=preserve_terrain_coverage,
+    )
 
 
 def packages_directory() -> Path:
@@ -685,6 +709,7 @@ def import_terrain(
     }
     count = generate_tiles(grid, package_directory / "tiles", state)
     package_manifest_path(package_directory).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    migrate_terrain_package_tiles(package_directory)
     cached_raster_tile_bytes.cache_clear()
     return (
         f"Imported {grid.ncols}×{grid.nrows} terrain cells as package {package_directory.name}, "
@@ -739,6 +764,7 @@ def rebuild_terrain_display_tiles(state: ImportState | None = None) -> str:
             )
         grid = package_elevation_grid(directory, projection)
         generate_tiles(grid, directory / "tiles", state)
+        migrate_terrain_package_tiles(directory)
         rebuilt += 1
     cached_raster_tile_bytes.cache_clear()
     return f"Rebuilt terrain display tiles for {rebuilt} package(s)."
@@ -765,6 +791,25 @@ def terrain_packages() -> list[dict[str, object]]:
         except (OSError, ValueError, json.JSONDecodeError) as error:
             raise RuntimeError(f"invalid terrain package manifest {manifest_path}: {error}") from error
     return sorted(packages, key=lambda package: float(package["nativeResolutionMetres"]), reverse=True)
+
+
+def terrain_tile_revision() -> str:
+    manifests = [
+        manifest_path.read_bytes()
+        for manifest_path in sorted(packages_directory().glob("*/manifest.json"))
+    ] if packages_directory().is_dir() else []
+    revision_inputs = [RASTER_RENDERING_REVISION, *manifests]
+    return hashlib.sha256(b"\0".join(revision_inputs)).hexdigest() if manifests else ""
+
+
+def terrain_tile_store() -> WebPQuadTreeStore:
+    """Return the revision-scoped rendered terrain tile cache."""
+
+    return WebPQuadTreeStore(
+        TERRAIN_DIRECTORY,
+        database_name="display-tiles.sqlite",
+        namespace=terrain_tile_revision() or "empty",
+    )
 
 
 @lru_cache(maxsize=8)
@@ -1027,9 +1072,11 @@ def create_los_rosette(
 
 
 def terrain_tile_image(directory: Path, zoom: int, x: int, y: int) -> Image.Image | None:
-    path = directory / "tiles" / str(zoom) / str(x) / f"{y}.png"
-    if path.is_file():
-        with Image.open(path) as source:
+    store = terrain_package_tile_store(directory)
+    migrate_terrain_package_tiles(directory)
+    payload = store.get(zoom, x, y)
+    if payload is not None:
+        with Image.open(BytesIO(payload)) as source:
             return source.convert("RGBA")
     if zoom == 0:
         return None
@@ -1051,6 +1098,12 @@ def terrain_tile_image(directory: Path, zoom: int, x: int, y: int) -> Image.Imag
 
 
 def raster_tile_bytes(zoom: int, x: int, y: int) -> bytes | None:
+    revision = terrain_tile_revision()
+    store = terrain_tile_store() if revision else None
+    if store is not None:
+        cached = store.get(zoom, x, y)
+        if cached is not None:
+            return cached
     composite: Image.Image | None = None
     for package in terrain_packages():
         detail = terrain_tile_image(Path(package["directory"]), zoom, x, y)
@@ -1064,11 +1117,14 @@ def raster_tile_bytes(zoom: int, x: int, y: int) -> bytes | None:
         detail.close()
     if composite is None:
         return None
-    from io import BytesIO
-    output = BytesIO()
-    composite.save(output, "PNG")
-    composite.close()
-    return output.getvalue()
+    try:
+        if store is not None:
+            return store.put_image(zoom, x, y, composite, lossless=True)
+        output = BytesIO()
+        composite.save(output, format="WEBP", lossless=True, method=6)
+        return output.getvalue()
+    finally:
+        composite.close()
 
 
 @lru_cache(maxsize=512)
@@ -1083,24 +1139,23 @@ import_state = ImportState()
 los_rosette_state = LosRosetteState()
 
 
-@app.get("/api/raster/revision")
+@app.get("/api/tiles/revision")
+@app.get("/api/raster/revision", deprecated=True)
 def get_raster_revision() -> dict[str, str]:
-    manifests = [
-        manifest_path.read_bytes()
-        for manifest_path in sorted(packages_directory().glob("*/manifest.json"))
-    ] if packages_directory().is_dir() else []
-    revision_inputs = [RASTER_RENDERING_REVISION, *manifests]
-    return {"revision": hashlib.sha256(b"\0".join(revision_inputs)).hexdigest() if manifests else ""}
+    return {"revision": terrain_tile_revision()}
 
 
-@app.get("/api/raster/{zoom}/{x}/{y}")
-def get_raster_tile(zoom: int, x: int, y: int) -> Response:
-    if not 0 <= zoom <= 18 or not 0 <= x < 2**zoom or not 0 <= y < 2**zoom:
-        raise HTTPException(status_code=422, detail="invalid raster tile coordinates")
-    tile = cached_raster_tile_bytes(zoom, x, y)
-    if tile is None:
-        raise HTTPException(status_code=404, detail="local terrain tile is unavailable")
-    return Response(content=tile, media_type="image/png")
+@app.get("/api/tiles/{zoom}/{x}/{y}")
+@app.get("/api/raster/{zoom}/{x}/{y}", deprecated=True)
+def get_raster_tile(zoom: int, x: int, y: int):
+    return standard_tile_response(
+        zoom,
+        x,
+        y,
+        cached_raster_tile_bytes,
+        maximum_zoom=18,
+        missing_detail="local terrain tile is unavailable",
+    )
 
 
 @app.get("/api/elevation")
@@ -1148,9 +1203,9 @@ def get_manifest() -> dict[str, object]:
     return {"kodyApiVersion": "1", "serviceId": "terrain", "displayName": "Terrain", "capabilities": {
         "tileLayer": {
             "kind": "raster-tile",
-            "tilePathTemplate": "/api/raster/{z}/{x}/{y}",
-            "revisionPath": "/api/raster/revision",
-            "contentTypes": ["image/png"],
+            "tilePathTemplate": "/api/tiles/{z}/{x}/{y}",
+            "revisionPath": "/api/tiles/revision",
+            "contentTypes": ["image/webp"],
             "tileSizePixels": 256,
             "minZoom": 0,
             "maxZoom": 18,

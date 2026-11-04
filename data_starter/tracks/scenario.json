@@ -107,8 +107,8 @@
           "id": "waypoint-1",
           "name": "WP01",
           "waypoint": [
-            -3.456096424091129,
-            53.06140654200207
+            -3.4416933576648034,
+            53.08317000963551
           ],
           "targetAltitudeMetres": 1000.0,
           "targetSpeedMetresPerSecond": 74.0
@@ -117,8 +117,8 @@
           "id": "waypoint-17ae0ce3-3a94-46cf-8408-a87a0f4205e6",
           "name": "WP02",
           "waypoint": [
-            -3.3008150077564267,
-            53.106165760413816
+            -3.329291280741586,
+            53.11591476295081
           ],
           "targetAltitudeMetres": 1000.0,
           "targetSpeedMetresPerSecond": 80.0
@@ -127,8 +127,8 @@
           "id": "waypoint-2",
           "name": "WP02",
           "waypoint": [
-            -3.45450149289087,
-            53.19263155582887
+            -3.4258737933932366,
+            53.17733758408219
           ],
           "targetAltitudeMetres": 1000.0,
           "targetSpeedMetresPerSecond": 80.0

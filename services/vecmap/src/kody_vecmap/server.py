@@ -871,7 +871,8 @@ def get_patch(
     }
 
 
-@app.get("/api/tiles/{zoom}/{x}/{y}.webp", response_model=None)
+@app.get("/api/tiles/{zoom}/{x}/{y}", response_model=None)
+@app.get("/api/tiles/{zoom}/{x}/{y}.webp", response_model=None, deprecated=True)
 def get_raster_tile(zoom: int, x: int, y: int) -> Response | JSONResponse:
     configuration = configuration_store.configuration
     enabled_zooms = natural_earth_tile_zooms(configuration.natural_earth_tile_zooms)
@@ -950,6 +951,17 @@ async def get_manifest() -> dict[str, object]:
         "kodyApiVersion": "1",
         "serviceId": "vector-map",
         "displayName": "Vector map",
+        "capabilities": {
+            "tileLayer": {
+                "kind": "raster-tile",
+                "tilePathTemplate": "/api/tiles/{z}/{x}/{y}",
+                "revisionPath": "/api/tiles/revision",
+                "contentTypes": ["image/webp"],
+                "tileSizePixels": 512,
+                "minZoom": 0,
+                "maxZoom": RASTER_MAXIMUM_ZOOM,
+            }
+        },
         "configuration": {
             "readPath": "/api/config",
             "writePath": "/api/config",

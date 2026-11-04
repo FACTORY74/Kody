@@ -44,18 +44,23 @@ Mosaic on 8011, and InteractionServer on 8017.
 
 ## Start everything
 
-After installing the requirements from each service and product tree into the
-same Python environment, start every enabled component with one command from
-the repository root:
+After installing the requirements, start the standalone application and every
+enabled component with either of these equivalent commands from the repository
+root:
 
 ```powershell
-python .\start_kody.py
+.\.venv\Scripts\python.exe .\main.py
+# Or, double-click Kody.cmd in Windows Explorer.
 ```
 
-The complete runtime catalog, including modules, working directories, ports,
-enabled flags, host, and log retention, is stored in
-[`config/kody.json`](./config/kody.json). View the
-enabled launch plan without starting it with `python .\start_kody.py --list`.
+[`main.py`](./main.py) is the field-deployment entrypoint. It starts the
+supervisor in [`start_kody.py`](./start_kody.py), which launches every enabled
+service in the complete runtime catalog. [`Kody.cmd`](./Kody.cmd) uses the
+offline-installed `.venv` automatically and keeps failures visible in its
+console window. The runtime catalog, including modules, working directories,
+ports, enabled flags, host, and log retention, is stored in
+[`config/kody.json`](./config/kody.json). View the enabled launch plan without
+starting it with `.\.venv\Scripts\python.exe .\main.py --list`.
 The configuration API also exposes those settings at
 `GET`/`PUT /api/config/runtime`; changes apply to the next launcher run.
 

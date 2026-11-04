@@ -2,22 +2,22 @@
 
 ## Start Kody
 
-After installing the requirements for the Kody product and its enabled
-services into the same Python environment, open PowerShell at the repository
-root and run:
+After installing the requirements, open PowerShell at the repository root and
+run the standalone application:
 
 ```powershell
-python .\start_kody.py
+.\.venv\Scripts\python.exe .\main.py
 ```
 
-This starts the Kody browser application, its configuration service, and every
-enabled microservice. Press `Ctrl+C` in that window to stop them all.
+Alternatively, double-click [`Kody.cmd`](./Kody.cmd). Both entrypoints start
+the Kody browser application, its configuration service, and every enabled
+microservice. Press `Ctrl+C` in that window to stop them all.
 
 Use the following command to inspect the enabled services, ports, and URLs
 without starting them:
 
 ```powershell
-python .\start_kody.py --list
+.\.venv\Scripts\python.exe .\main.py --list
 ```
 
 Runtime options, including which services start, are in
@@ -29,7 +29,7 @@ create their own empty storage areas there when they start, so a new folder is
 ready to use without pre-creating service-specific directories.
 Only one launcher instance may run at a time. If Kody is already running,
 stop it with `Ctrl+C` in its launcher window before running
-`start_kody.py` again.
+`main.py` again.
 
 Once started, use **Service control** to manage connections. On the map, use
 the dark **Layers** panel to toggle base maps, reference layers, and attached

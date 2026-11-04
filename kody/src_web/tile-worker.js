@@ -28,7 +28,7 @@ async function loadTile(serviceUrl, revision, zoom, x, y, transparentBase, gener
   const controller = new AbortController();
   activeTileRequests.set(key, controller);
   try {
-    const response = await fetch(`${serviceUrl}/api/tiles/${zoom}/${x}/${y}.webp?v=${encodeURIComponent(revision || "unversioned")}`, {
+    const response = await fetch(`${serviceUrl}/api/tiles/${zoom}/${x}/${y}?v=${encodeURIComponent(revision || "unversioned")}`, {
       signal: controller.signal,
     });
     if (response.status === 202) {
@@ -109,13 +109,13 @@ function queueTiles(serviceUrl, revision, tiles, transparentBase, generation) {
 }
 
 async function loadRasterTile(serviceUrl, zoom, x, y) {
-  const key = `${serviceUrl}/raster/${zoom}/${x}/${y}`;
+  const key = `${serviceUrl}/tiles/${zoom}/${x}/${y}`;
   if (pendingRasterTiles.has(key)) {
     return;
   }
   pendingRasterTiles.add(key);
   try {
-    const response = await fetch(`${serviceUrl}/api/raster/${zoom}/${x}/${y}`);
+    const response = await fetch(`${serviceUrl}/api/tiles/${zoom}/${x}/${y}`);
     if (response.status === 404) {
       self.postMessage({ type: "raster-missing", key });
       return;

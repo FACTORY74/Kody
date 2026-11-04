@@ -18,8 +18,10 @@ py -3.15 -m venv .venv
 # Confirm the installed dependency graph is internally consistent.
 .\.venv\Scripts\python.exe -m pip check
 
-# Start all enabled Kody services.
-.\.venv\Scripts\python.exe .\start_kody.py
+# Start the standalone Kody application and every enabled service.
+.\.venv\Scripts\python.exe .\main.py
+
+# Alternatively, double-click Kody.cmd from Windows Explorer.
 
 # Open the map application after startup.
 # http://127.0.0.1:8000/

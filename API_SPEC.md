@@ -297,6 +297,24 @@ The central map substitutes decimal `z`, `x`, and `y` values in
 standard alternative. A service MUST NOT invent a custom successful
 missing-tile payload.
 
+#### Shared WebP quadtree persistence
+
+Every raster-tile service stores rendered display tiles in its own SQLite
+database using the shared `maptiles.WebPQuadTreeStore` schema. The database
+contains a WebP blob keyed by the Web-Mercator `(z, x, y)` coordinate, opaque
+revision metadata, and the schema namespace. The database is owned by the
+service; source imagery, numeric elevation samples, and other domain data
+remain in their existing service-owned stores.
+
+The shared store verifies imported and newly written WebP payloads, uses WAL
+mode with a bounded SQLite busy timeout, and performs an idempotent first-run
+import of legacy `z/x/y.webp` trees. It removes legacy files only after each
+tile has been written and read back successfully. The shared
+`standard_tile_response` helper applies the `200 image/webp`, `404`, and
+`422` HTTP semantics above. Existing `/api/raster/...` paths may remain as
+explicitly deprecated aliases only while their services and the central map
+client migrate to `/api/tiles/...`.
+
 ### 3.4 `tileLayer` (`vector-tile`)
 
 Use for Mapbox Vector Tiles when the central renderer supports them.

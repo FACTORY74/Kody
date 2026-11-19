@@ -37,6 +37,13 @@ def main() -> int:
         wheel_tag = "win_amd64"
         venv_python = VENV / "Scripts" / "python.exe"
     elif sys.platform == "linux" and machine in ("x86_64", "amd64"):
+        libc, libc_version = platform.libc_ver()
+        try:
+            glibc_version = tuple(int(part) for part in libc_version.split(".")[:2])
+        except ValueError:
+            glibc_version = ()
+        if libc != "glibc" or glibc_version < (2, 28):
+            return fail("The bundled Linux wheels require glibc 2.28 or newer on x86-64 Linux.")
         wheel_tag = "manylinux"
         venv_python = VENV / "bin" / "python"
     else:

@@ -21,10 +21,24 @@ all of them.
 
 ## Offline installation
 
-The bundled [`wheels`](./wheels/) directory contains the complete Windows
-CPython 3.15 dependency wheelhouse for Kody and its services. Follow
-[`command_lines.txt`](./command_lines.txt) from the repository root to create
-the virtual environment and install dependencies without contacting PyPI.
+The bundled [`wheels`](./wheels/) directory contains CPython 3.15 dependencies
+for 64-bit Windows and x86-64 Linux with glibc 2.28 or newer. Install Python
+3.15, then run the offline setup script from the repository root:
+
+```powershell
+# Windows
+py -3.15 .\init_environment.py
+```
+
+```sh
+# Linux
+python3.15 ./init_environment.py
+```
+
+The script checks the interpreter and wheel platform before creating `.venv`,
+installs [`requirements.txt`](./requirements.txt) from `wheels` without PyPI,
+and checks the installed dependencies. See [`command_lines.txt`](./command_lines.txt)
+for the equivalent manual Windows commands.
 
 
 - [`kody`](./kody/README.md) — central browser UI and configuration service

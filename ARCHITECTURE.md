@@ -1,5 +1,8 @@
 # Kody architecture
 
+Kody is a map framework application, with plugins providing data and functionality within
+predefined categories tghat defines interface requirements.
+
 Kody is organized as independently runnable source trees. The central product
 does not import service code or own service data.
 

@@ -9,19 +9,23 @@ files when importing different data.
 
 ## 1. Install requirements
 
-From the repository root, create and activate a Python virtual environment,
-then install the requirements for the Kody application and all services:
+Install 64-bit Python 3.15 first. From the repository root, run the offline
+setup script for your platform:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --no-index --find-links .\wheels -r .\requirements.txt
+# Windows
+py -3.15 .\init_environment.py
 ```
 
-The bundled [`wheels`](./wheels/) directory supports this installation without
-internet access on 64-bit Windows with Python 3.15. See
-[`command_lines.txt`](./command_lines.txt) for the complete offline setup
-sequence.
+```sh
+# x86-64 Linux with glibc 2.28 or newer
+python3.15 ./init_environment.py
+```
+
+The script creates `.venv`, installs [`requirements.txt`](./requirements.txt)
+from the bundled [`wheels`](./wheels/) without internet access, and runs
+`pip check`. See [`command_lines.txt`](./command_lines.txt) for manual Windows
+commands.
 
 ## 2. Start Kody
 
@@ -30,6 +34,8 @@ From the repository root, run the standalone application:
 ```powershell
 .\.venv\Scripts\python.exe .\main.py
 ```
+
+On Linux, use `.venv/bin/python main.py`.
 
 Alternatively, double-click [`Kody.cmd`](./Kody.cmd). Both entrypoints start
 the application and every enabled service defined in

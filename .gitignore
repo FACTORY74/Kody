@@ -1,5 +1,6 @@
 /data
 /logs
+/.venv
 /services/tracks/data
 *.pyc
 /temp_import

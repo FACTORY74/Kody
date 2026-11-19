@@ -285,6 +285,32 @@ class NaturalEarthImportTests(unittest.TestCase):
 
 
 class NativeTileStoreTests(unittest.TestCase):
+    def test_existing_library_is_migrated_before_tile_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            maps_directory = Path(directory)
+            library = maps_directory / "vector-library.gpkg"
+            with closing(sqlite3.connect(library)) as connection:
+                connection.execute(
+                    "CREATE TABLE kody_vector_features ("
+                    "id INTEGER PRIMARY KEY, source_id TEXT NOT NULL, "
+                    "fingerprint TEXT NOT NULL UNIQUE, properties_json TEXT NOT NULL, "
+                    "min_zoom INTEGER NOT NULL, geometry BLOB NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE VIRTUAL TABLE rtree_kody_vector_features "
+                    "USING rtree(id, min_x, max_x, min_y, max_y)"
+                )
+                connection.commit()
+
+            store = NativeTileStore(maps_directory)
+            self.assertIsNone(store.tile_collection(0, 0, 0))
+            with closing(sqlite3.connect(library)) as connection:
+                columns = {row[1] for row in connection.execute(
+                    "PRAGMA table_info(kody_vector_features)"
+                )}
+            self.assertIn("overview_geometry", columns)
+            self.assertIn("world_geometry", columns)
+
     def test_label_key_normalizes_duplicate_place_names(self) -> None:
         self.assertEqual(_label_key({"name": "  Atlanta  "}), "atlanta")
         self.assertEqual(_label_key({"name": "ATLANTA"}), "atlanta")

@@ -41,6 +41,11 @@ class NativeTileStore:
     def __init__(self, maps_directory: Path, path: Path | None = None) -> None:
         self.maps_directory = maps_directory
         self.path           = path or maps_directory / VECTOR_LIBRARY_FILE
+        # Existing libraries may predate the overview columns. Migrate before
+        # read-only tile requests use them, without creating a new library.
+        if self.path.is_file():
+            with closing(self._connect()) as connection:
+                connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
         self.maps_directory.mkdir(parents=True, exist_ok=True)

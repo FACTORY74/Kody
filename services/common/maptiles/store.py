@@ -232,6 +232,32 @@ class WebPQuadTreeStore:
                 ),
             )
 
+    def delete_tiles_in_ranges(
+        self, ranges: list[tuple[int, int, int, int, int]]
+    ) -> int:
+        """Delete tiles in (zoom, min_x, min_y, max_x, max_y) ranges."""
+
+        for zoom, min_x, min_y, max_x, max_y in ranges:
+            validate_tile_coordinates(zoom, min_x, min_y)
+            validate_tile_coordinates(zoom, max_x, max_y)
+            if min_x > max_x or min_y > max_y:
+                raise ValueError("invalid tile range")
+        if not ranges:
+            return 0
+
+        deleted = 0
+        with self._connection() as connection:
+            for zoom, min_x, min_y, max_x, max_y in ranges:
+                deleted += connection.execute(
+                    """
+                    DELETE FROM tiles
+                    WHERE namespace = ? AND zoom = ?
+                        AND x BETWEEN ? AND ? AND y BETWEEN ? AND ?
+                    """,
+                    (self.namespace, zoom, min_x, max_x, min_y, max_y),
+                ).rowcount
+        return deleted
+
     def put_image(
         self,
         zoom: int,

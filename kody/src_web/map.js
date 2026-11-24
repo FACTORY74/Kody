@@ -131,6 +131,7 @@ let copernicusRevision = null;
 let terrainRevision = null;
 let esaDemRevision = null;
 let worldcoverRevision = null;
+let worldcoverZoomLevels = [6, 8, 10];
 let terrainPalette = null;
 let viewportElevation = null;
 let overlayServices = [];
@@ -171,7 +172,10 @@ let displayMiniTimeControl = false;
 let measureStart = null;
 let measureEnd = null;
 let configurationSession = null;
+let serviceConfigurationLoadController = null;
+let serviceConfigurationLoadGeneration = 0;
 let serviceActivityTimer = null;
+let serviceActivityGeneration = 0;
 let viewportPublishTimer = null;
 let viewportElevationTimer = null;
 let viewportElevationRequest = 0;
@@ -207,6 +211,7 @@ async function registeredRunningServices(services) {
         url: service.url.replace(/\/$/, ""),
         displayName: manifest.displayName || service.id,
         manifest,
+        available: true,
       };
     } catch {
       return null;
@@ -218,7 +223,11 @@ async function registeredRunningServices(services) {
 }
 
 function activeServiceIds() {
-  return new Set([...mapServices.values(), ...overlayServices, ...symbolServices, ...workspaceServices].map((service) => service.id));
+  return new Set(
+    [...mapServices.values(), ...overlayServices, ...symbolServices, ...workspaceServices]
+      .filter((service) => service.available !== false)
+      .map((service) => service.id),
+  );
 }
 
 async function reconcileRegisteredServices() {
@@ -281,7 +290,13 @@ function renderMapServiceControls(layers) {
     const label = document.createElement("label");
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = details.visible;
+    const available = service.available !== false;
+    checkbox.checked = available && details.visible;
+    checkbox.disabled = !available;
+    if (!available) {
+      row.title = `${service.displayName} is configured but did not respond to its service manifest.`;
+      row.classList.add("service-unavailable");
+    }
     checkbox.addEventListener("change", () => {
       if (checkbox.checked && (service.type === "satmap" || service.type === "copernicus")) {
         const layerName = service.type === "satmap" ? "imagery" : "copernicus";
@@ -305,17 +320,19 @@ function renderMapServiceControls(layers) {
         refreshWorldcoverRevision().catch((error) => { status.textContent = `Unable to refresh ESA WorldCover 2021: ${error.message}`; });
       }
     });
-    label.append(checkbox, ` ${service.displayName}`);
+    label.append(checkbox, ` ${service.displayName}${available ? "" : " (unavailable)"}`);
     const opacity = document.createElement("div");
     opacity.className = "opacity-control";
     const decrease = document.createElement("button");
     decrease.type = "button";
     decrease.textContent = "−";
+    decrease.disabled = !available;
     const value = document.createElement("output");
     value.value = String(layerOpacity[details.opacity]).padStart(2, "0");
     const increase = document.createElement("button");
     increase.type = "button";
     increase.textContent = "+";
+    increase.disabled = !available;
     const changeOpacity = (change) => {
       layerOpacity[details.opacity] = Math.max(1, Math.min(10, layerOpacity[details.opacity] + change));
       value.value = String(layerOpacity[details.opacity]).padStart(2, "0");
@@ -331,7 +348,9 @@ function renderMapServiceControls(layers) {
     configure.dataset.symbol = "gear";
     configure.dataset.symbolFallback = "⚙";
     configure.textContent = "⚙";
-    configure.title = `Configure ${service.displayName}`;
+    configure.title = available
+      ? `Configure ${service.displayName}`
+      : `Try configuring ${service.displayName}; its service manifest is not responding.`;
     renderButtonSymbol(configure);
     configure.addEventListener("click", () => {
       configureService(service).catch((error) => {
@@ -705,13 +724,7 @@ function drawEsaDemLayer(target) {
 }
 
 function drawWorldcoverLayer(target) {
-  const baseZoom = Math.max(0, Math.min(14, Math.floor(camera.zoom)));
-  const detailZoom = Math.min(14, Math.ceil(camera.zoom));
-  const tiles = nearestCachedTiles(baseZoom, worldcoverTileCache, worldcoverTileKey);
-  if (detailZoom > baseZoom) {
-    const detailTiles = exactCachedTiles(detailZoom, worldcoverTileCache, worldcoverTileKey);
-    tiles.push(...detailTiles);
-  }
+  const tiles = exactCachedTiles(worldcoverTileZoom(), worldcoverTileCache, worldcoverTileKey);
   for (const tile of tiles) drawTile(target, tile);
 }
 
@@ -1892,12 +1905,15 @@ function symbolReviewCard(definition) {
   return card;
 }
 
-async function configureSymbolReview(service, manifest) {
-  const response = await fetch(`${service.url}${manifest.dataEndpoint.path}`);
+async function configureSymbolReview(service, manifest, signal, isCurrentRequest) {
+  const response = await fetch(`${service.url}${manifest.dataEndpoint.path}`, { signal });
   if (!response.ok) {
     throw new Error(`symbol catalogue returned ${response.status}`);
   }
   const collection = await response.json();
+  if (!isCurrentRequest()) {
+    return;
+  }
   const definitions = (collection.symbols || []).filter(validateSymbolDefinition).sort((left, right) => left.name.localeCompare(right.name));
   if (definitions.length === 0) {
     throw new Error("symbol catalogue contains no valid definitions");
@@ -1956,7 +1972,12 @@ async function saveServiceConfiguration() {
   } else if (service.type === "copernicus") {
     await refreshCopernicusRevision();
     refreshMap();
+  } else if (service.type === "worldcover") {
+    worldcoverZoomLevels = parseWorldcoverZoomLevels(updated.generationZoomLevels);
+    requestedWorldcoverTileKeys.clear();
+    refreshMap();
   }
+  return updated;
 }
 
 async function waitForServiceAction(service, action) {
@@ -1999,8 +2020,9 @@ async function waitForServiceAction(service, action) {
 }
 
 function stopServiceActivityPolling() {
+  serviceActivityGeneration += 1;
   if (serviceActivityTimer !== null) {
-    window.clearInterval(serviceActivityTimer);
+    window.clearTimeout(serviceActivityTimer);
     serviceActivityTimer = null;
   }
 }
@@ -2034,132 +2056,194 @@ function startServiceActivityPolling(service, manifest) {
   if (!statusPath) {
     return;
   }
-  const refresh = () => {
-    refreshServiceActivity(service, statusPath).catch((error) => {
-      serviceConfigStatus.textContent = `Unable to load service activity: ${error.message}`;
-    });
+  const generation = serviceActivityGeneration;
+  const refresh = async () => {
+    serviceActivityTimer = null;
+    if (generation !== serviceActivityGeneration || !serviceConfigDialog.open) {
+      return;
+    }
+    try {
+      await refreshServiceActivity(service, statusPath);
+    } catch (error) {
+      if (generation === serviceActivityGeneration) {
+        serviceConfigStatus.textContent = `Unable to load service activity: ${error.message}`;
+      }
+    }
+    if (generation === serviceActivityGeneration && serviceConfigDialog.open) {
+      serviceActivityTimer = window.setTimeout(refresh, 1000);
+    }
   };
   refresh();
-  serviceActivityTimer = window.setInterval(refresh, 500);
 }
 
 async function configureService(service) {
-  const manifestResponse = await fetch(`${service.url}/api/kody/manifest`);
-  if (!manifestResponse.ok) {
-    throw new Error(`service manifest returned ${manifestResponse.status}`);
-  }
-  const manifest = await manifestResponse.json();
-  if (manifest.dataEndpoint?.format === "kody-symbols") {
-    await configureSymbolReview(service, manifest);
+  if (serviceConfigDialog.open) {
     return;
   }
-  let configuration = manifest.configuration.initialConfiguration;
-  if (!configuration) {
-    const configurationResponse = await fetch(`${service.url}${manifest.configuration.readPath}`);
-    if (!configurationResponse.ok) {
-      throw new Error(`service configuration returned ${configurationResponse.status}`);
+  const requestId = ++serviceConfigurationLoadGeneration;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 10000);
+  serviceConfigurationLoadController = controller;
+  const isCurrentRequest = () => requestId === serviceConfigurationLoadGeneration;
+  configurationSession = null;
+  try {
+    const manifestResponse = await fetch(`${service.url}/api/kody/manifest`, {
+      signal: controller.signal,
+    });
+    if (!manifestResponse.ok) {
+      throw new Error(`service manifest returned ${manifestResponse.status}`);
     }
-    configuration = await configurationResponse.json();
-  }
-  setServiceConfigurationDialogMode();
-  configurationSession = { service, manifest, revision: configuration.revision };
-  serviceConfigTitle.textContent = `Configure ${manifest.displayName}`;
-  const optionWarnings = [];
-  const fields = await Promise.all(manifest.configuration.fields.map(async (field) => {
-    let configuredField = field;
-    if (field.optionsPath) {
-      const optionsResponse = await fetch(`${service.url}${field.optionsPath}`);
-      if (!optionsResponse.ok) {
-        throw new Error(`${field.label} options returned ${optionsResponse.status}`);
-      }
-      const { options, warning } = await optionsResponse.json();
-      if (!Array.isArray(options) || options.some((option) => (
-        typeof option?.value !== "string" || typeof option.label !== "string"
-      ))) {
-        throw new Error(`${field.label} options are invalid`);
-      }
-      if (typeof warning === "string" && warning) optionWarnings.push(warning);
-      configuredField = { ...field, options };
+    const manifest = await manifestResponse.json();
+    if (!isCurrentRequest()) {
+      return;
     }
-    if (field.secretStoredKey && configuration[field.secretStoredKey]) {
-      return configurationInput(
-        {
-          ...configuredField,
-          label: `${configuredField.label} (saved locally)`,
-          placeholder: "******** (enter a replacement to change it)",
-        },
-        configuration[field.key],
+    if (manifest.dataEndpoint?.format === "kody-symbols") {
+      await configureSymbolReview(service, manifest, controller.signal, isCurrentRequest);
+      return;
+    }
+    let configuration = manifest.configuration.initialConfiguration;
+    if (!configuration) {
+      const configurationResponse = await fetch(
+        `${service.url}${manifest.configuration.readPath}`,
+        { signal: controller.signal },
       );
+      if (!configurationResponse.ok) {
+        throw new Error(`service configuration returned ${configurationResponse.status}`);
+      }
+      configuration = await configurationResponse.json();
     }
-    return configurationInput(configuredField, configuration[field.key]);
-  }));
-  if (fields.length === 0) {
-    const emptyState = document.createElement("p");
-    emptyState.className = "empty-config-state";
-    emptyState.textContent = "This service has no configurable settings.";
-    serviceConfigFields.replaceChildren(emptyState);
-  } else {
-    serviceConfigFields.replaceChildren(...fields);
-  }
-  serviceConfigStatus.textContent = optionWarnings.join(" ");
-  serviceConfigActions.replaceChildren(
-    ...(manifest.configuration.actions || []).map((action) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = typeof action.confirmationMessage === "string"
-        ? "danger-action"
-        : "primary-action";
-      button.textContent = action.label;
-      button.addEventListener("click", async () => {
-        try {
-          if (
-            typeof action.confirmationMessage === "string"
-            && !window.confirm(action.confirmationMessage)
-          ) {
-            return;
-          }
-          if (typeof action.confirmationPath === "string") {
-            const assessmentResponse = await fetch(`${service.url}${action.confirmationPath}`);
-            if (!assessmentResponse.ok) {
-              throw new Error(`service assessment returned ${assessmentResponse.status}`);
-            }
-            const assessment = await assessmentResponse.json();
-            if (assessment.requiresConfirmation && !window.confirm(assessment.message)) {
+    if (!isCurrentRequest()) {
+      return;
+    }
+    setServiceConfigurationDialogMode();
+    configurationSession = { service, manifest, revision: configuration.revision };
+    serviceConfigTitle.textContent = `Configure ${manifest.displayName}`;
+    const optionWarnings = [];
+    const fields = await Promise.all(manifest.configuration.fields.map(async (field) => {
+      let configuredField = field;
+      if (field.optionsPath) {
+        const optionsResponse = await fetch(`${service.url}${field.optionsPath}`, {
+          signal: controller.signal,
+        });
+        if (!optionsResponse.ok) {
+          throw new Error(`${field.label} options returned ${optionsResponse.status}`);
+        }
+        const { options, warning } = await optionsResponse.json();
+        if (!Array.isArray(options) || options.some((option) => (
+          typeof option?.value !== "string" || typeof option.label !== "string"
+        ))) {
+          throw new Error(`${field.label} options are invalid`);
+        }
+        if (typeof warning === "string" && warning) optionWarnings.push(warning);
+        configuredField = { ...field, options };
+      }
+      if (field.secretStoredKey && configuration[field.secretStoredKey]) {
+        return configurationInput(
+          {
+            ...configuredField,
+            label: `${configuredField.label} (saved locally)`,
+            placeholder: "******** (enter a replacement to change it)",
+          },
+          configuration[field.key],
+        );
+      }
+      return configurationInput(configuredField, configuration[field.key]);
+    }));
+    if (!isCurrentRequest()) {
+      return;
+    }
+    if (fields.length === 0) {
+      const emptyState = document.createElement("p");
+      emptyState.className = "empty-config-state";
+      emptyState.textContent = "This service has no configurable settings.";
+      serviceConfigFields.replaceChildren(emptyState);
+    } else {
+      serviceConfigFields.replaceChildren(...fields);
+    }
+    serviceConfigStatus.textContent = optionWarnings.join(" ");
+    serviceConfigActions.replaceChildren(
+      ...(manifest.configuration.actions || []).map((action) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = typeof action.confirmationMessage === "string"
+          ? "danger-action"
+          : "primary-action";
+        button.textContent = action.label;
+        button.addEventListener("click", async () => {
+          try {
+            if (
+              typeof action.confirmationMessage === "string"
+              && !window.confirm(action.confirmationMessage)
+            ) {
               return;
             }
+            if (typeof action.confirmationPath === "string") {
+              const assessmentResponse = await fetch(`${service.url}${action.confirmationPath}`);
+              if (!assessmentResponse.ok) {
+                throw new Error(`service assessment returned ${assessmentResponse.status}`);
+              }
+              const assessment = await assessmentResponse.json();
+              if (assessment.requiresConfirmation && !window.confirm(assessment.message)) {
+                return;
+              }
+            }
+            button.disabled = true;
+            serviceConfigProgress.hidden = false;
+            serviceConfigProgressLabel.textContent = "Submitting action...";
+            serviceConfigProgressValue.textContent = "0%";
+            serviceConfigProgressBar.style.width = "0%";
+            if (action.saveConfiguration !== false) {
+              await saveServiceConfiguration();
+            }
+            const response = await fetch(`${service.url}${action.path}`, { method: action.method || "POST" });
+            if (!response.ok) {
+              throw new Error(`service action returned ${response.status}`);
+            }
+            const result = await response.json();
+            serviceConfigStatus.textContent = result.message || `${action.label} started.`;
+            await waitForServiceAction(service, action);
+            if (service.type === "vecmap") {
+              clearVectorTileCache();
+              await refreshVectorTileRevision();
+              refreshMap();
+            }
+          } catch (error) {
+            serviceConfigProgress.hidden = true;
+            serviceConfigStatus.textContent = `Unable to ${action.label.toLowerCase()}: ${error.message}`;
+          } finally {
+            button.disabled = false;
           }
-          button.disabled = true;
-          serviceConfigProgress.hidden = false;
-          serviceConfigProgressLabel.textContent = "Submitting action...";
-          serviceConfigProgressValue.textContent = "0%";
-          serviceConfigProgressBar.style.width = "0%";
-          await saveServiceConfiguration();
-          const response = await fetch(`${service.url}${action.path}`, { method: action.method || "POST" });
-          if (!response.ok) {
-            throw new Error(`service action returned ${response.status}`);
-          }
-          const result = await response.json();
-          serviceConfigStatus.textContent = result.message || `${action.label} started.`;
-          await waitForServiceAction(service, action);
-          if (service.type === "vecmap") {
-            clearVectorTileCache();
-            await refreshVectorTileRevision();
-            refreshMap();
-          }
-        } catch (error) {
-          serviceConfigProgress.hidden = true;
-          serviceConfigStatus.textContent = `Unable to ${action.label.toLowerCase()}: ${error.message}`;
-        } finally {
-          button.disabled = false;
-        }
-      });
-      return button;
-    }),
-  );
-  serviceConfigStatus.textContent = "";
-  serviceConfigProgress.hidden = true;
-  serviceConfigDialog.showModal();
-  startServiceActivityPolling(service, manifest);
+        });
+        return button;
+      }),
+    );
+    serviceConfigProgress.hidden = true;
+    serviceConfigSubmit.disabled = false;
+    serviceConfigDialog.showModal();
+    startServiceActivityPolling(service, manifest);
+  } catch (error) {
+    if (isCurrentRequest() && serviceConfigDialog.open) {
+      serviceConfigFields.replaceChildren();
+      serviceConfigStatus.textContent = timedOut
+        ? "The service did not respond within 10 seconds. Close and retry when it is responsive."
+        : `Unable to load service settings: ${error.message}`;
+    }
+    if (timedOut && isCurrentRequest()) {
+      throw new Error("service did not respond within 10 seconds");
+    }
+    if (!controller.signal.aborted) {
+      throw error;
+    }
+  } finally {
+    window.clearTimeout(timeoutId);
+    if (serviceConfigurationLoadController === controller) {
+      serviceConfigurationLoadController = null;
+    }
+  }
 }
 
 function trackEditorInput(key, label, value, { type = "text", options = null } = {}) {
@@ -4305,7 +4389,11 @@ serviceConfigForm.addEventListener("submit", async (event) => {
     return;
   }
   try {
-    await saveServiceConfiguration();
+    const updated = await saveServiceConfiguration();
+    if (updated.generation) {
+      serviceConfigStatus.textContent = updated.generation;
+      return;
+    }
     serviceConfigDialog.close();
     await refreshShapes();
   } catch (error) {
@@ -4677,6 +4765,20 @@ function esaDemTileKey({ zoom, x, y }) {
 
 function worldcoverTileKey({ zoom, x, y }) {
   return `${worldcoverServiceUrl}/tiles/${zoom}/${x}/${y}`;
+}
+
+function parseWorldcoverZoomLevels(value) {
+  const levels = [...new Set(String(value).split(",").map((level) => level.trim()).filter(Boolean).map(Number))];
+  if (levels.length === 0 || levels.some((level) => !Number.isInteger(level) || level < 0 || level > 14)) {
+    throw new Error("ESA WorldCover returned invalid generated zoom levels");
+  }
+  return levels.sort((left, right) => left - right);
+}
+
+function worldcoverTileZoom() {
+  const targetZoom = Math.min(14, Math.ceil(camera.zoom));
+  return [...worldcoverZoomLevels].reverse().find((zoom) => zoom <= targetZoom)
+    ?? worldcoverZoomLevels[0];
 }
 
 function exactCachedTiles(zoom, cache, keyForTile) {
@@ -5363,7 +5465,7 @@ function requestVisibleTiles() {
       }
     }
     if (mapServices.has("worldcover") && worldcoverLayer?.checked) {
-      const worldcoverZoom = Math.min(14, Math.ceil(camera.zoom));
+      const worldcoverZoom = worldcoverTileZoom();
       const worldcoverTiles = missingWorldcoverTiles(worldcoverZoom);
       if (worldcoverTiles.length > 0) {
         tileWorker.postMessage({ type: "request-raster-tiles", serviceUrl: worldcoverServiceUrl, tiles: worldcoverTiles });
@@ -5414,6 +5516,17 @@ async function loadConfiguration(restoreMapView = true) {
   [vectorService, satelliteService, copernicusService, terrainService, esaDemService, worldcoverService].filter(Boolean).forEach((service) => {
     mapServices.set(service.type, service);
   });
+  for (const service of configuredMapServices) {
+    if (!mapServices.has(service.type)) {
+      mapServices.set(service.type, {
+        ...service,
+        url: service.url.replace(/\/$/, ""),
+        displayName: service.displayName || service.id,
+        manifest: null,
+        available: false,
+      });
+    }
+  }
   symbolServices = runningServices
     .filter((item) => item.type === "symbols")
     .map((item) => ({ ...item, enabled: true }));
@@ -5484,6 +5597,12 @@ async function loadConfiguration(restoreMapView = true) {
       worldcoverRevision = null;
     }
     worldcoverServiceUrl = nextWorldcoverServiceUrl;
+    const worldcoverConfigurationResponse = await fetch(`${worldcoverServiceUrl}/api/config`);
+    if (!worldcoverConfigurationResponse.ok) {
+      throw new Error(`ESA WorldCover service returned ${worldcoverConfigurationResponse.status} for configuration`);
+    }
+    const worldcoverConfiguration = await worldcoverConfigurationResponse.json();
+    worldcoverZoomLevels = parseWorldcoverZoomLevels(worldcoverConfiguration.generationZoomLevels);
   }
   if (terrainService) {
     await refreshTerrainPalette();
@@ -5680,10 +5799,7 @@ tileWorker.addEventListener("message", (event) => {
         requestVisibleTiles();
       }, 5000);
     } else if (key.startsWith(`${worldcoverServiceUrl}/`)) {
-      window.setTimeout(() => {
-        requestedWorldcoverTileKeys.delete(key);
-        requestVisibleTiles();
-      }, 5000);
+      status.textContent = "WorldCover native source is missing for this area. Download the current viewport in WorldCover service settings.";
     } else if (key.startsWith(`${terrainServiceUrl}/`)) {
       window.setTimeout(() => {
         requestedTerrainTileKeys.delete(key);
@@ -5720,7 +5836,13 @@ tileWorker.addEventListener("message", (event) => {
     window.setTimeout(requestVisibleTiles, 5000);
   }
 });
-serviceConfigDialog.addEventListener("close", stopServiceActivityPolling);
+serviceConfigDialog.addEventListener("close", () => {
+  serviceConfigurationLoadGeneration += 1;
+  serviceConfigurationLoadController?.abort();
+  serviceConfigurationLoadController = null;
+  serviceConfigSubmit.disabled = false;
+  stopServiceActivityPolling();
+});
 
 function clearInterruptedMapGesture(pointerId) {
   if (trackWaypointMove?.pointerId === pointerId) {
@@ -6127,7 +6249,7 @@ window.setInterval(() => {
   reconcileRegisteredServices().catch((error) => {
     status.textContent = `Unable to reconcile registered services: ${error.message}`;
   });
-}, 2000);
+}, 10000);
 window.setInterval(requestVisibleTiles, 1000);
 scheduleLiveOverlayRefresh();
 requestAnimationFrame(renderMap);

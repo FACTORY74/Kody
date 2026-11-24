@@ -13,13 +13,17 @@
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+import hashlib
 from io import BytesIO
 from math import atan, floor, log, pi
 import os
 from pathlib import Path
 import shutil
-from threading import Lock
+import sqlite3
+from threading import BoundedSemaphore, Lock, RLock
 from typing import Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
@@ -27,24 +31,30 @@ from urllib.request import urlopen
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import numpy
 import rasterio
 from maptiles import WebPQuadTreeStore, standard_tile_response
 from rasterio.enums import Resampling
 from rasterio.errors import RasterioIOError
+from rasterio.io import MemoryFile
 from rasterio.transform import from_bounds
 from rasterio.vrt import WarpedVRT
 
 ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
+REPOSITORY_DIRECTORY = Path(__file__).resolve().parents[4]
 DATA_ROOT = Path(os.environ.get("KODY_DATA_DIRECTORY", ROOT_DIRECTORY / "data"))
 WORLDCOVER_DIRECTORY = DATA_ROOT / "worldcover"
 WORLDCOVER_TILE_DIRECTORY = WORLDCOVER_DIRECTORY / "tiles"
+WORLDCOVER_NATIVE_DATABASE = WORLDCOVER_DIRECTORY / "native-sources.sqlite"
+CONFIG_FILE = REPOSITORY_DIRECTORY / "config" / "worldcover.json"
 CONFIGURATION_SERVICE_URL = os.environ.get(
     "KODY_CONFIGURATION_SERVICE_URL", "http://127.0.0.1:8001"
 ).rstrip("/")
 SOURCE_URL = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map"
 TILE_SIZE = 256
+MAX_ACTIVE_TILE_RENDERERS = 2
+MAX_QUEUED_TILE_REQUESTS = 32
 MAX_NATIVE_ZOOM = 14
 MAXIMUM_UNCONFIRMED_DOWNLOAD_TILES = 64
 MAX_LATITUDE = 85.05112878
@@ -58,7 +68,8 @@ PALETTE = {
 ATTRIBUTION = "ESA WorldCover 2021"
 LOCAL_TILE_FORMAT = "WEBP"
 LOCAL_TILE_SAVE_OPTIONS = {"lossless": True, "method": 6}
-TILE_FORMAT_VERSION = "2"
+TILE_CACHE_NAMESPACE = "worldcover-exact-v2"
+TILE_FORMAT_VERSION = "4"
 
 
 class Viewport(BaseModel):
@@ -105,7 +116,261 @@ class DownloadState:
 
 
 class WorldCoverConfiguration(BaseModel):
-    """Empty configuration model required by the shared action dialog."""
+    generation_zoom_levels: str = Field(default="6, 8, 10", alias="generationZoomLevels", max_length=128)
+
+    @field_validator("generation_zoom_levels")
+    @classmethod
+    def validate_generation_zoom_levels(cls, value: str) -> str:
+        parse_generation_zoom_levels(value)
+        return value
+
+
+def parse_generation_zoom_levels(value: str) -> tuple[int, ...]:
+    try:
+        levels = tuple(sorted({int(level.strip()) for level in value.split(",") if level.strip()}))
+    except ValueError as error:
+        raise ValueError("generation zoom levels must be comma-separated whole numbers") from error
+    if not levels:
+        raise ValueError("at least one generation zoom level is required")
+    if any(level < 0 or level > MAX_NATIVE_ZOOM for level in levels):
+        raise ValueError(f"generation zoom levels must be between 0 and {MAX_NATIVE_ZOOM}")
+    return levels
+
+
+class ConfigurationStore:
+    """Persist WorldCover's operator-selected tile generation levels."""
+
+    def __init__(self) -> None:
+        self.lock = RLock()
+        self.configuration = self._load()
+
+    def _load(self) -> WorldCoverConfiguration:
+        try:
+            return WorldCoverConfiguration.model_validate_json(CONFIG_FILE.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return WorldCoverConfiguration()
+        except ValueError as error:
+            raise RuntimeError(f"WorldCover configuration is invalid: {CONFIG_FILE}") from error
+
+    def revision(self) -> str:
+        return hashlib.sha256(
+            self.configuration.model_dump_json(by_alias=True).encode("utf-8")
+        ).hexdigest()
+
+    def response(self) -> dict[str, object]:
+        with self.lock:
+            response = self.configuration.model_dump(by_alias=True)
+            response["revision"] = self.revision()
+            return response
+
+    def update(
+        self,
+        configuration: WorldCoverConfiguration,
+        expected_revision: str | None,
+    ) -> dict[str, object]:
+        with self.lock:
+            if expected_revision is not None and expected_revision != self.revision():
+                raise HTTPException(status_code=409, detail="configuration revision is stale")
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            CONFIG_FILE.write_text(
+                configuration.model_dump_json(indent=2, by_alias=True) + "\n",
+                encoding="utf-8",
+            )
+            self.configuration = configuration
+            return self.response()
+
+
+class NativeSourceStore:
+    """Persist unmodified ESA WorldCover GeoTIFF source files in SQLite."""
+
+    def __init__(self, path: Path = WORLDCOVER_NATIVE_DATABASE) -> None:
+        self.path = path
+        self.lock = RLock()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = self._connect()
+        try:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_sources (
+                    longitude INTEGER NOT NULL,
+                    latitude INTEGER NOT NULL,
+                    source_tiff BLOB NOT NULL,
+                    downloaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (longitude, latitude)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS unavailable_sources (
+                    longitude INTEGER NOT NULL,
+                    latitude INTEGER NOT NULL,
+                    checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (longitude, latitude)
+                )
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=30000")
+        return connection
+
+    def get(self, coordinate: tuple[int, int]) -> bytes | None:
+        return cached_native_source(str(self.path.resolve()), coordinate)
+
+    def is_unavailable(self, coordinate: tuple[int, int]) -> bool:
+        with self.lock:
+            connection = self._connect()
+            try:
+                row = connection.execute(
+                    "SELECT 1 FROM unavailable_sources WHERE longitude = ? AND latitude = ?",
+                    coordinate,
+                ).fetchone()
+            finally:
+                connection.close()
+        return row is not None
+
+    def mark_unavailable(self, coordinate: tuple[int, int]) -> None:
+        with self.lock:
+            connection = self._connect()
+            try:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO unavailable_sources (longitude, latitude)
+                    VALUES (?, ?)
+                    """,
+                    coordinate,
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+    def put(self, coordinate: tuple[int, int], source_tiff: bytes) -> None:
+        if not source_tiff:
+            raise ValueError("native WorldCover source file is empty")
+        with self.lock:
+            connection = self._connect()
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO native_sources (longitude, latitude, source_tiff)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(longitude, latitude) DO UPDATE SET
+                        source_tiff = excluded.source_tiff,
+                        downloaded_at = CURRENT_TIMESTAMP
+                    """,
+                    (*coordinate, source_tiff),
+                )
+                connection.execute(
+                    "DELETE FROM unavailable_sources WHERE longitude = ? AND latitude = ?",
+                    coordinate,
+                )
+                connection.commit()
+                cached_native_source.cache_clear()
+            finally:
+                connection.close()
+
+
+class TileRenderStatus:
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.queued = 0
+        self.rendering = 0
+        self.completed = 0
+        self.failed = 0
+        self.total = 0
+        self.last_error = ""
+
+    def enqueue(self) -> None:
+        with self.lock:
+            if not self.queued and not self.rendering:
+                self.completed = 0
+                self.failed = 0
+                self.total = 0
+                self.last_error = ""
+            self.queued += 1
+            self.total += 1
+
+    def start(self) -> None:
+        with self.lock:
+            self.queued -= 1
+            self.rendering += 1
+
+    def finish(self, error: str | None = None) -> None:
+        with self.lock:
+            self.rendering -= 1
+            if error is None:
+                self.completed += 1
+            else:
+                self.failed += 1
+                self.last_error = error
+
+    def cancel(self) -> None:
+        with self.lock:
+            self.queued -= 1
+            self.total -= 1
+
+    def response(self) -> dict[str, str | int]:
+        with self.lock:
+            processed = self.completed + self.failed
+            active = bool(self.queued or self.rendering)
+            if active:
+                message = (
+                    f"Rendering {self.rendering} WorldCover tile"
+                    f"{'' if self.rendering == 1 else 's'}; {self.queued} queued."
+                )
+            elif self.failed:
+                message = (
+                    f"{self.failed} WorldCover tile render(s) failed: "
+                    f"{self.last_error}"
+                )
+            else:
+                message = ""
+            return {
+                "status": "processing" if active else "idle",
+                "message": message,
+                "progress": round(processed / self.total * 100) if self.total else 0,
+                "processed": processed,
+                "total": self.total,
+                "queued": self.queued,
+                "retained": self.queued,
+            }
+
+
+@lru_cache(maxsize=2)
+def cached_native_source(
+    database_path: str,
+    coordinate: tuple[int, int],
+) -> bytes | None:
+    connection = sqlite3.connect(database_path, timeout=30)
+    try:
+        connection.execute("PRAGMA busy_timeout=30000")
+        row = connection.execute(
+            "SELECT source_tiff FROM native_sources WHERE longitude = ? AND latitude = ?",
+            coordinate,
+        ).fetchone()
+    finally:
+        connection.close()
+    return None if row is None else bytes(row[0])
+
+
+@lru_cache(maxsize=4)
+def cached_native_source_store(database_path: str) -> NativeSourceStore:
+    return NativeSourceStore(Path(database_path))
+
+
+def native_source_store(directory: Path | None = None) -> NativeSourceStore:
+    path = (
+        WORLDCOVER_NATIVE_DATABASE
+        if directory is None
+        else directory / WORLDCOVER_NATIVE_DATABASE.name
+    )
+    return cached_native_source_store(str(path.resolve()))
 
 
 def tile_store(directory: Path | None = None) -> WebPQuadTreeStore:
@@ -113,8 +378,41 @@ def tile_store(directory: Path | None = None) -> WebPQuadTreeStore:
 
     return WebPQuadTreeStore(
         WORLDCOVER_TILE_DIRECTORY if directory is None else directory,
+        namespace=TILE_CACHE_NAMESPACE,
         format_version=TILE_FORMAT_VERSION,
     )
+
+
+def download_native_source(coordinate: tuple[int, int]) -> bytes | None:
+    """Download and validate one native GeoTIFF before committing it to SQLite."""
+
+    try:
+        with urlopen(source_url(coordinate), timeout=120) as response:
+            source_tiff = response.read()
+    except HTTPError as error:
+        if error.code == 404:
+            native_source_store().mark_unavailable(coordinate)
+            return None
+        raise HTTPException(
+            status_code=502,
+            detail=f"ESA WorldCover returned {error.code} for {source_filename(*coordinate)}",
+        ) from error
+    except URLError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"could not download {source_filename(*coordinate)}: {error.reason}",
+        ) from error
+    try:
+        with MemoryFile(source_tiff) as memory_file, memory_file.open() as dataset:
+            if dataset.driver != "GTiff" or dataset.count < 1:
+                raise ValueError("source is not a usable GeoTIFF")
+    except RasterioIOError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"ESA WorldCover returned an invalid GeoTIFF for {source_filename(*coordinate)}",
+        ) from error
+    native_source_store().put(coordinate, source_tiff)
+    return source_tiff
 
 
 def longitude_tile(longitude: float, zoom: int) -> int:
@@ -189,21 +487,56 @@ def viewport_from_configuration_service() -> Viewport:
         raise HTTPException(status_code=502, detail=f"could not read the map viewport: {error.reason}") from error
 
 
-def assessment(requested_zoom: int | None = None) -> dict[str, object]:
-    viewport = viewport_from_configuration_service()
-    zoom, tiles = viewport_tiles(viewport, requested_zoom)
-    sources = set()
-    for x, y in tiles:
-        west, south, east, north = tile_bounds(zoom, x, y)
-        sources.add(source_coordinate((west + east) / 2, (south + north) / 2))
+def generation_zoom_levels(requested_zoom: int | None = None) -> tuple[int, ...]:
+    if requested_zoom is not None:
+        return (requested_zoom,)
+    return parse_generation_zoom_levels(configuration_store.configuration.generation_zoom_levels)
+
+
+def native_source_coordinates(viewport: Viewport) -> list[tuple[int, int]]:
+    return sorted(
+        source_coordinates_for_bounds(
+            viewport.west, viewport.south, viewport.east, viewport.north
+        )
+    )
+
+
+def invalidate_rendered_tiles_for_sources(
+    source_coordinates: list[tuple[int, int]],
+) -> int:
+    ranges = []
+    for zoom in generation_zoom_levels():
+        for longitude, latitude in source_coordinates:
+            ranges.append(
+                (
+                    zoom,
+                    longitude_tile(longitude, zoom),
+                    latitude_tile(min(latitude + 3, MAX_LATITUDE) - 1e-10, zoom),
+                    longitude_tile(longitude + 3 - 1e-10, zoom),
+                    latitude_tile(max(latitude, -MAX_LATITUDE) + 1e-10, zoom),
+                )
+            )
+    return tile_store().delete_tiles_in_ranges(ranges)
+
+
+def native_download_assessment(viewport: Viewport | None = None) -> dict[str, object]:
+    viewport = viewport or viewport_from_configuration_service()
+    sources = native_source_coordinates(viewport)
+    store = native_source_store()
+    missing_sources = [
+        coordinate for coordinate in sources
+        if store.get(coordinate) is None and not store.is_unavailable(coordinate)
+    ]
+    unavailable_sources = sum(store.is_unavailable(coordinate) for coordinate in sources)
     return {
-        "zoom": zoom,
-        "tileCount": len(tiles),
         "sourceTileCount": len(sources),
-        "requiresConfirmation": len(tiles) > MAXIMUM_UNCONFIRMED_DOWNLOAD_TILES,
+        "missingSourceTileCount": len(missing_sources),
+        "unavailableSourceTileCount": unavailable_sources,
+        "requiresConfirmation": len(missing_sources) > MAXIMUM_UNCONFIRMED_DOWNLOAD_TILES,
         "message": (
-            f"Download {len(tiles)} local WorldCover map tiles at zoom {zoom} "
-            f"from {len(sources)} public 3° source tiles."
+            f"Download {len(missing_sources)} missing native ESA WorldCover GeoTIFF "
+            f"source files for this viewport; {unavailable_sources} empty source areas "
+            "are already recorded."
         ),
     }
 
@@ -311,15 +644,21 @@ def raster_tile_bytes(zoom: int, x: int, y: int) -> bytes | None:
     return output.getvalue()
 
 
-def render_tile(zoom: int, x: int, y: int) -> None:
+def render_tile(zoom: int, x: int, y: int) -> bool:
+    """Render one WebP map tile from locally stored native GeoTIFF sources."""
+
     longitude_bounds = tile_bounds(zoom, x, y)
     west, south, east, north = web_mercator_bounds(zoom, x, y)
     transform = from_bounds(west, south, east, north, TILE_SIZE, TILE_SIZE)
     image = Image.new("RGBA", (TILE_SIZE, TILE_SIZE))
-    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif"):
+    rendered = False
+    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR"):
         for coordinate in source_coordinates_for_bounds(*longitude_bounds):
+            source_tiff = native_source_store().get(coordinate)
+            if source_tiff is None:
+                continue
             try:
-                with rasterio.open(source_url(coordinate)) as source:
+                with MemoryFile(source_tiff) as memory_file, memory_file.open() as source:
                     with WarpedVRT(
                         source,
                         crs="EPSG:3857",
@@ -331,36 +670,96 @@ def render_tile(zoom: int, x: int, y: int) -> None:
                         source_image = rgba_image(warped.read(1, masked=True))
                         image.alpha_composite(source_image)
                         source_image.close()
+                        rendered = True
             except RasterioIOError as error:
-                if "HTTP response code: 404" not in str(error):
-                    raise
-    write_tile(zoom, x, y, image)
+                raise RuntimeError(
+                    f"stored WorldCover source {source_filename(*coordinate)} is invalid"
+                ) from error
+    if rendered:
+        write_tile(zoom, x, y, image)
+    else:
+        image.close()
+    return rendered
 
 
-def download_viewport(requested_zoom: int | None = None) -> str:
-    info = assessment(requested_zoom)
-    zoom = int(info["zoom"])
-    viewport = viewport_from_configuration_service()
-    _, tiles = viewport_tiles(viewport, zoom)
-    for index, (x, y) in enumerate(tiles, start=1):
-        download_state.update(f"Rendering WorldCover map tile {index} of {len(tiles)}.")
-        render_tile(zoom, x, y)
-    parent_tiles = build_tile_pyramid(zoom, set(tiles))
+def download_native_viewport(viewport: Viewport | None = None) -> str:
+    viewport = viewport or viewport_from_configuration_service()
+    source_coordinates = native_source_coordinates(viewport)
+    store = native_source_store()
+    downloaded_sources = 0
+    unavailable_sources = 0
+    downloaded_coordinates = []
+    for index, coordinate in enumerate(source_coordinates, start=1):
+        if store.get(coordinate) is not None:
+            continue
+        if store.is_unavailable(coordinate):
+            unavailable_sources += 1
+            continue
+        download_state.update(
+            f"Downloading native WorldCover source {index} of {len(source_coordinates)}."
+        )
+        if download_native_source(coordinate) is None:
+            unavailable_sources += 1
+        else:
+            downloaded_sources += 1
+            downloaded_coordinates.append(coordinate)
+    if downloaded_coordinates:
+        invalidate_rendered_tiles_for_sources(downloaded_coordinates)
+    cached_raster.cache_clear()
     tile_store().set_revision()
     return (
-        f"Downloaded {len(tiles)} local ESA WorldCover 2021 map tiles at zoom {zoom} "
-        f"and built {parent_tiles} parent tiles."
+        f"Stored {downloaded_sources} native ESA WorldCover GeoTIFF source files "
+        f"for the current viewport; {unavailable_sources} source areas had no ESA tile."
     )
 
 
 @lru_cache(maxsize=512)
 def cached_raster(zoom: int, x: int, y: int) -> bytes | None:
+    if zoom in generation_zoom_levels():
+        with tile_render_lock:
+            payload = tile_store().get(zoom, x, y)
+            if payload is None:
+                if not render_tile(zoom, x, y):
+                    return None
+                payload = tile_store().get(zoom, x, y)
+        return payload
     return raster_tile_bytes(zoom, x, y)
+
+
+def tracked_tile_response(zoom: int, x: int, y: int):
+    tile_render_status.start()
+    try:
+        response = standard_tile_response(
+            zoom,
+            x,
+            y,
+            cached_raster,
+            maximum_zoom=MAX_NATIVE_ZOOM,
+            missing_detail=(
+                "local ESA WorldCover source data is unavailable for this tile; "
+                "download the current viewport first"
+            ),
+        )
+    except Exception as error:
+        tile_render_status.finish(str(error))
+        raise
+    tile_render_status.finish()
+    return response
 
 
 app = FastAPI(title="Kody ESA WorldCover 2021", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"], allow_methods=["GET", "PUT", "POST"], allow_headers=["Content-Type", "If-Match"])
 download_state = DownloadState()
+configuration_store = ConfigurationStore()
+tile_render_lock = Lock()
+tile_render_executor = ThreadPoolExecutor(
+    max_workers=MAX_ACTIVE_TILE_RENDERERS,
+    thread_name_prefix="worldcover-tile",
+)
+tile_render_slots = BoundedSemaphore(
+    MAX_ACTIVE_TILE_RENDERERS + MAX_QUEUED_TILE_REQUESTS
+)
+tile_render_status = TileRenderStatus()
 
 
 @app.get("/api/kody/manifest")
@@ -369,26 +768,46 @@ def manifest() -> dict[str, object]:
         "kodyApiVersion": "1", "serviceId": "worldcover", "displayName": "ESA WorldCover 2021",
         "capabilities": {"tileLayer": {"kind": "raster-tile", "tilePathTemplate": "/api/tiles/{z}/{x}/{y}", "revisionPath": "/api/tiles/revision", "contentTypes": ["image/webp"], "tileSizePixels": 256, "minZoom": 0, "maxZoom": MAX_NATIVE_ZOOM}},
         "attribution": ATTRIBUTION,
-        "configuration": {"readPath": "/api/config", "writePath": "/api/config", "fields": [], "actions": [
-            {"label": "Download current viewport", "path": "/api/actions/download-current-viewport", "statusPath": "/api/actions/download-current-viewport", "confirmationPath": "/api/actions/assess-current-viewport", "method": "POST"},
-            {"label": "Clear local data", "path": "/api/actions/clear-local-data", "method": "POST", "confirmationMessage": "Clear all downloaded ESA WorldCover 2021 map tiles? This cannot be undone."},
+        "configuration": {"readPath": "/api/config", "writePath": "/api/config", "activityStatusPath": "/api/tiles/status", "fields": [
+            {"key": "generationZoomLevels", "label": "Generated zoom levels", "type": "string", "required": True},
+        ], "actions": [
+            {"label": "Download current viewport", "path": "/api/actions/download-current-viewport", "statusPath": "/api/actions/download-current-viewport", "confirmationPath": "/api/actions/assess-current-viewport", "method": "POST", "saveConfiguration": False},
+            {"label": "Clear local data", "path": "/api/actions/clear-local-data", "method": "POST", "saveConfiguration": False, "confirmationMessage": "Clear all downloaded ESA WorldCover 2021 map tiles? This cannot be undone."},
         ]},
     }
 
 
 @app.get("/api/config")
-def get_config() -> dict[str, str]:
-    return {"revision": "worldcover-v1"}
+def get_config() -> dict[str, object]:
+    return configuration_store.response()
+
+
+def start_native_download(
+    background_tasks: BackgroundTasks,
+    viewport: Viewport,
+) -> dict[str, str]:
+    """Queue native GeoTIFF acquisition without rendering map tiles."""
+
+    info = native_download_assessment(viewport)
+    download_state.start(str(info["message"]))
+
+    def process() -> None:
+        try:
+            download_state.complete(download_native_viewport(viewport))
+        except Exception as error:
+            download_state.fail(error)
+
+    background_tasks.add_task(process)
+    return {"message": download_state.response()["message"]}
 
 
 @app.put("/api/config")
 def put_config(
     configuration: WorldCoverConfiguration,
     if_match: str | None = Header(default=None),
-) -> dict[str, str]:
-    if if_match not in (None, "worldcover-v1"):
-        raise HTTPException(status_code=409, detail="configuration revision is stale")
-    return {"revision": "worldcover-v1"}
+) -> dict[str, object]:
+    cached_raster.cache_clear()
+    return configuration_store.update(configuration, if_match)
 
 
 @app.get("/api/tiles/revision")
@@ -397,37 +816,46 @@ def revision() -> dict[str, str]:
     return {"revision": tile_store().revision()}
 
 
+@app.get("/api/tiles/status")
+def tile_status() -> dict[str, str | int]:
+    return tile_render_status.response()
+
+
 @app.get("/api/tiles/{zoom}/{x}/{y}")
 @app.get("/api/raster/{zoom}/{x}/{y}", deprecated=True)
-def raster(zoom: int, x: int, y: int):
-    return standard_tile_response(
-        zoom,
-        x,
-        y,
-        cached_raster,
-        maximum_zoom=MAX_NATIVE_ZOOM,
-        missing_detail="local ESA WorldCover raster tile is unavailable",
-    )
+async def raster(zoom: int, x: int, y: int):
+    if not tile_render_slots.acquire(blocking=False):
+        raise HTTPException(
+            status_code=503,
+            detail="WorldCover tile renderer is busy; retry the tile request",
+        )
+    tile_render_status.enqueue()
+    try:
+        future = tile_render_executor.submit(tracked_tile_response, zoom, x, y)
+    except Exception:
+        tile_render_status.cancel()
+        tile_render_slots.release()
+        raise
+    def release_tile_slot(completed_future) -> None:
+        if completed_future.cancelled():
+            tile_render_status.cancel()
+        tile_render_slots.release()
+
+    future.add_done_callback(release_tile_slot)
+    return await asyncio.wrap_future(future)
 
 
 @app.get("/api/actions/assess-current-viewport")
 def assess_current() -> dict[str, object]:
-    return assessment()
+    return native_download_assessment()
 
 
 @app.post("/api/actions/download-current-viewport", status_code=202)
 def download_current(background_tasks: BackgroundTasks) -> dict[str, str]:
-    info = assessment()
-    download_state.start(str(info["message"]))
-
-    def process() -> None:
-        try:
-            download_state.complete(download_viewport())
-        except Exception as error:
-            download_state.fail(error)
-
-    background_tasks.add_task(process)
-    return {"message": download_state.response()["message"]}
+    return start_native_download(
+        background_tasks,
+        viewport_from_configuration_service(),
+    )
 
 
 @app.get("/api/actions/download-current-viewport")
@@ -440,4 +868,6 @@ def clear_data() -> dict[str, str]:
     download_state.assert_idle()
     shutil.rmtree(WORLDCOVER_DIRECTORY, ignore_errors=True)
     cached_raster.cache_clear()
-    return {"message": "Cleared local ESA WorldCover 2021 map tiles."}
+    cached_native_source.cache_clear()
+    cached_native_source_store.cache_clear()
+    return {"message": "Cleared local ESA WorldCover 2021 native sources and map tiles."}

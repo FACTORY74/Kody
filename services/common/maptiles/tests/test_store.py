@@ -46,6 +46,20 @@ class WebPQuadTreeStoreTests(unittest.TestCase):
             self.assertEqual(revision, "test-revision")
             self.assertEqual(store.revision(), "test-revision")
 
+    def test_delete_tiles_in_ranges_preserves_other_tiles(self) -> None:
+        with TemporaryDirectory() as directory:
+            store = WebPQuadTreeStore(Path(directory))
+            payload = webp_payload("red")
+            for x, y in ((4, 5), (5, 6), (7, 5)):
+                store.put(4, x, y, payload)
+
+            deleted = store.delete_tiles_in_ranges([(4, 4, 5, 5, 6)])
+
+            self.assertEqual(deleted, 2)
+            self.assertIsNone(store.get(4, 4, 5))
+            self.assertIsNone(store.get(4, 5, 6))
+            self.assertEqual(store.get(4, 7, 5), payload)
+
     def test_legacy_files_are_verified_before_deletion(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

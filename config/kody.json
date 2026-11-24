@@ -1,16 +1,16 @@
 {
   "externalServices": [],
   "mapView": {
-    "longitude": -3.392908434610348,
-    "latitude": 53.106912468623015,
-    "zoom": 11.800000000000018,
+    "longitude": -4.396373968320717,
+    "latitude": 55.51777357658008,
+    "zoom": 7.200000000000003,
     "layers": {
       "satelliteImagery": false,
-      "copernicus": true,
+      "copernicus": false,
       "terrain": false,
       "esaDem": false,
       "worldcover": false,
-      "vectorMap": false,
+      "vectorMap": true,
       "grid": true,
       "gridCrosshair": true,
       "displayMiniTimeControl": true,
@@ -18,7 +18,7 @@
       "copernicusOpacity": 6,
       "terrainOpacity": 5,
       "esaDemOpacity": 8,
-      "worldcoverOpacity": 4,
+      "worldcoverOpacity": 5,
       "vectorOpacity": 2,
       "gridOpacity": 3,
       "dataSources": {
@@ -27,13 +27,13 @@
         "local-adsb": false,
         "local-ais": false,
         "local-airlanes": false,
-        "local-shape-server": true,
+        "local-shape-server": false,
         "local-interactions": true,
         "local-symbols": true
       },
       "dataSourceOpacity": {
         "local-shapes": 10,
-        "local-track": 6,
+        "local-track": 10,
         "local-adsb": 10,
         "local-ais": 7,
         "local-airlanes": 4,
